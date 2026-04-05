@@ -1,0 +1,182 @@
+package com.ttl.tabletennis.controller;
+
+import com.ttl.tabletennis.dto.PlayerAliasDto;
+import com.ttl.tabletennis.dto.DuplicatePlayerCandidateDto;
+import com.ttl.tabletennis.dto.EloSyncResultDto;
+import com.ttl.tabletennis.dto.Glicko2RebuildDto;
+import com.ttl.tabletennis.dto.Glicko2TauTuningDto;
+import com.ttl.tabletennis.dto.ModelTrainingReportDto;
+import com.ttl.tabletennis.dto.OddsRefreshResultDto;
+import com.ttl.tabletennis.dto.PaperTradingSessionDto;
+import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
+import com.ttl.tabletennis.dto.RatingSnapshotDto;
+import com.ttl.tabletennis.dto.StatisticsBenchmarkDto;
+import com.ttl.tabletennis.mapper.AliasMapper;
+import com.ttl.tabletennis.request.AliasUpsertRequest;
+import com.ttl.tabletennis.request.MergePlayersRequest;
+import com.ttl.tabletennis.request.RatingSnapshotRequest;
+import com.ttl.tabletennis.service.Glicko2RatingService;
+import com.ttl.tabletennis.service.MatchResultBackfillService;
+import com.ttl.tabletennis.service.OddsValueEngineService;
+import com.ttl.tabletennis.service.PaperTradingService;
+import com.ttl.tabletennis.service.PredictionModelService;
+import com.ttl.tabletennis.service.PlayerIdentityService;
+import com.ttl.tabletennis.service.RatingSnapshotService;
+import com.ttl.tabletennis.service.StatisticsBenchmarkService;
+import com.ttl.tabletennis.service.TtSeriesEloSyncService;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/admin")
+public class AdminController {
+
+    private final PlayerIdentityService playerIdentityService;
+    private final RatingSnapshotService ratingSnapshotService;
+    private final StatisticsBenchmarkService statisticsBenchmarkService;
+    private final MatchResultBackfillService matchResultBackfillService;
+    private final Glicko2RatingService glicko2RatingService;
+    private final PredictionModelService predictionModelService;
+    private final OddsValueEngineService oddsValueEngineService;
+    private final PaperTradingService paperTradingService;
+    private final TtSeriesEloSyncService ttSeriesEloSyncService;
+
+    public AdminController(PlayerIdentityService playerIdentityService,
+                           RatingSnapshotService ratingSnapshotService,
+                           StatisticsBenchmarkService statisticsBenchmarkService,
+                           MatchResultBackfillService matchResultBackfillService,
+                           Glicko2RatingService glicko2RatingService,
+                           PredictionModelService predictionModelService,
+                           OddsValueEngineService oddsValueEngineService,
+                           PaperTradingService paperTradingService,
+                           TtSeriesEloSyncService ttSeriesEloSyncService) {
+        this.playerIdentityService = playerIdentityService;
+        this.ratingSnapshotService = ratingSnapshotService;
+        this.statisticsBenchmarkService = statisticsBenchmarkService;
+        this.matchResultBackfillService = matchResultBackfillService;
+        this.glicko2RatingService = glicko2RatingService;
+        this.predictionModelService = predictionModelService;
+        this.oddsValueEngineService = oddsValueEngineService;
+        this.paperTradingService = paperTradingService;
+        this.ttSeriesEloSyncService = ttSeriesEloSyncService;
+    }
+
+    @GetMapping("/aliases")
+    public List<PlayerAliasDto> listAliases(@RequestParam(required = false) Long playerId) {
+        return playerIdentityService.listAliases(playerId)
+                .stream()
+                .map(AliasMapper::toDto)
+                .toList();
+    }
+
+    @GetMapping("/aliases/player/{playerId}")
+    public List<PlayerAliasDto> aliasesForPlayer(@PathVariable Long playerId) {
+        return playerIdentityService.listAliases(playerId)
+                .stream()
+                .map(AliasMapper::toDto)
+                .toList();
+    }
+
+    @PostMapping("/aliases")
+    public PlayerAliasDto upsertAlias(@Valid @RequestBody AliasUpsertRequest request) {
+        return AliasMapper.toDto(playerIdentityService.upsertAlias(request.playerId(), request.aliasName()));
+    }
+
+    @PostMapping("/players/merge")
+    public ResponseEntity<Map<String, Object>> mergePlayers(@Valid @RequestBody MergePlayersRequest request) {
+        int impactedMatches = playerIdentityService.mergePlayers(request.sourcePlayerId(), request.targetPlayerId());
+        return ResponseEntity.ok(Map.of(
+                "sourcePlayerId", request.sourcePlayerId(),
+                "targetPlayerId", request.targetPlayerId(),
+                "impactedMatches", impactedMatches
+        ));
+    }
+
+    @GetMapping("/players/potential-duplicates")
+    public List<DuplicatePlayerCandidateDto> potentialDuplicates(@RequestParam(defaultValue = "0.82") double minSimilarity,
+                                                                 @RequestParam(defaultValue = "50") int limit) {
+        return playerIdentityService.findPotentialDuplicates(minSimilarity, limit);
+    }
+
+    @GetMapping("/ratings/player/{playerId}")
+    public List<RatingSnapshotDto> getRatingHistory(@PathVariable Long playerId) {
+        return ratingSnapshotService.getByPlayer(playerId);
+    }
+
+    @PostMapping("/ratings")
+    public RatingSnapshotDto upsertRatingSnapshot(@Valid @RequestBody RatingSnapshotRequest request) {
+        return ratingSnapshotService.upsert(request);
+    }
+
+    @PostMapping("/ratings/elo/sync")
+    public EloSyncResultDto syncEloRatings() {
+        return ttSeriesEloSyncService.syncFromRankingPage();
+    }
+
+    @PostMapping("/ratings/glicko2/rebuild")
+    public Glicko2RebuildDto rebuildGlicko2(@RequestParam(required = false) LocalDate fromDate,
+                                            @RequestParam(required = false) LocalDate toDate) {
+        return glicko2RatingService.rebuild(fromDate, toDate);
+    }
+
+    @PostMapping("/ratings/glicko2/tune-tau")
+    public Glicko2TauTuningDto tuneGlicko2Tau(@RequestParam(required = false) LocalDate fromDate,
+                                              @RequestParam(required = false) LocalDate toDate,
+                                              @RequestParam(required = false, name = "tau") List<Double> tauCandidates) {
+        return glicko2RatingService.tuneTau(fromDate, toDate, tauCandidates);
+    }
+
+    @PostMapping("/models/train")
+    public ModelTrainingReportDto trainPredictionModels(@RequestParam(required = false) LocalDate fromDate,
+                                                        @RequestParam(required = false) LocalDate toDate) {
+        matchResultBackfillService.backfillStructuredResults();
+        return predictionModelService.trainModels(fromDate, toDate);
+    }
+
+    @GetMapping("/models/last-report")
+    public ModelTrainingReportDto lastModelTrainingReport() {
+        return predictionModelService.latestTrainingReport();
+    }
+
+    @PostMapping("/odds/refresh")
+    public OddsRefreshResultDto refreshOddsValueEngine(@RequestParam(defaultValue = "CONSERVATIVE") String strategy,
+                                                       @RequestParam(required = false) String modelVersion) {
+        return oddsValueEngineService.refresh(strategy, modelVersion);
+    }
+
+    @PostMapping("/paper-trading/sync")
+    public PaperTradingSyncResultDto syncPaperTrading(@RequestParam(defaultValue = "CONSERVATIVE") String strategy,
+                                                      @RequestParam(required = false) String modelVersion,
+                                                      @RequestParam(required = false) Integer limit) {
+        return paperTradingService.syncLiveSession(strategy, modelVersion, limit);
+    }
+
+    @PostMapping("/paper-trading/reset")
+    public PaperTradingSessionDto resetPaperTrading(@RequestParam(required = false) Double startingBankroll,
+                                                    @RequestParam(required = false) String label,
+                                                    @RequestParam(defaultValue = "true") boolean clearHistory) {
+        return paperTradingService.resetSession(startingBankroll, label, clearHistory);
+    }
+
+    @GetMapping("/benchmark/statistics")
+    public StatisticsBenchmarkDto benchmarkStatistics(@RequestParam(defaultValue = "10") int iterations) {
+        return statisticsBenchmarkService.benchmarkPlayerStats(iterations);
+    }
+
+    @PostMapping("/backfill/match-results")
+    public ResponseEntity<Map<String, Integer>> backfillMatchResults() {
+        int updated = matchResultBackfillService.backfillStructuredResults();
+        return ResponseEntity.ok(Map.of("updatedMatches", updated));
+    }
+}

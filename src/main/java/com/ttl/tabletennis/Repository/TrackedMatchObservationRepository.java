@@ -1,0 +1,23 @@
+package com.ttl.tabletennis.repository;
+
+import com.ttl.tabletennis.domain.TrackedMatchObservation;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface TrackedMatchObservationRepository extends JpaRepository<TrackedMatchObservation, Long> {
+
+    Optional<TrackedMatchObservation> findTopByBetIdOrderByObservedAtDesc(Long betId);
+
+    Optional<TrackedMatchObservation> findTopByBetIdAndTrackedAfterCloseTrueOrderByObservedAtDesc(Long betId);
+
+    List<TrackedMatchObservation> findByBetIdOrderByObservedAtAsc(Long betId);
+
+    List<TrackedMatchObservation> findByEventKeyOrderByObservedAtAsc(String eventKey);
+
+    List<TrackedMatchObservation> findBySessionIdOrderByObservedAtDesc(Long sessionId, Pageable pageable);
+
+    long countBySessionIdAndSourceKind(Long sessionId, String sourceKind);
+}

@@ -1,6 +1,6 @@
-package com.ttl.tabletennis.Repository;
+package com.ttl.tabletennis.repository;
 
-import com.ttl.tabletennis.Entity.Player;
+import com.ttl.tabletennis.domain.Player;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
@@ -15,14 +15,16 @@ public interface PlayerRepository extends JpaRepository<Player, Long> {
 
     Optional<Player> findByFirstNameIgnoreCaseAndLastNameIgnoreCase(String firstName, String lastName);
 
-    // For partial name search
-    @Query("SELECT p FROM Player p WHERE " +
-            "LOWER(p.firstName) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
-            "LOWER(p.lastName) LIKE LOWER(CONCAT('%', :search, '%')) " +
-            "ORDER BY p.lastName ASC, p.firstName ASC")
+    Optional<Player> findByNormalizedName(String normalizedName);
+
+    @Query("""
+           SELECT p FROM Player p
+           WHERE LOWER(p.firstName) LIKE LOWER(CONCAT('%', :search, '%'))
+              OR LOWER(p.lastName) LIKE LOWER(CONCAT('%', :search, '%'))
+           ORDER BY p.lastName ASC, p.firstName ASC
+           """)
     List<Player> searchPlayers(String search);
 
-    // NEW: Get all players in alphabetical order by lastName, then firstName
     @Query("SELECT p FROM Player p ORDER BY p.lastName ASC, p.firstName ASC")
     List<Player> findAllByOrderByLastNameAscFirstNameAsc();
 }

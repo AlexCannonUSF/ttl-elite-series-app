@@ -1,14 +1,14 @@
 package com.ttl.tabletennis;
 
-import com.ttl.tabletennis.Entity.Match;
-import com.ttl.tabletennis.Entity.ParlayMatch;
-import com.ttl.tabletennis.Entity.Player;
-import com.ttl.tabletennis.Repository.MatchRepository;
-import com.ttl.tabletennis.Repository.PlayerRepository;
-import com.ttl.tabletennis.Service.PlayerService;
-import com.ttl.tabletennis.Service.StatisticsService;
+import com.ttl.tabletennis.domain.Match;
+import com.ttl.tabletennis.domain.ParlayMatch;
+import com.ttl.tabletennis.domain.Player;
+import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.PlayerRepository;
+import com.ttl.tabletennis.service.PlayerService;
+import com.ttl.tabletennis.service.StatisticsService;
 import com.ttl.tabletennis.scrape.TtSeriesScraper;
-import com.ttl.tabletennis.Utility.ChartUtils;
+import com.ttl.tabletennis.util.ChartUtils;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;

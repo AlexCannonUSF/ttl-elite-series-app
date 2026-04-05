@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -e
+
+cd web
+npm run lint -- --max-warnings=0
+npm run format:check

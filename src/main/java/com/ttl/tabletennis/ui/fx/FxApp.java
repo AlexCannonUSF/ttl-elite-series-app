@@ -1,6 +1,6 @@
 package com.ttl.tabletennis.ui.fx;
 
-import com.ttl.tabletennis.Repository.MatchRepository;
+import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.TtlEliteSeriesApplication;
 import com.ttl.tabletennis.scrape.TtSeriesScraper;
 import javafx.application.Application;

@@ -1,0 +1,25 @@
+package com.ttl.tabletennis.dto;
+
+public record LiveScoreSnapshotDto(String source,
+                                   String sourceType,
+                                   double sourceConfidence,
+                                   long sourceAgeSeconds,
+                                   String eventName,
+                                   String competitionName,
+                                   boolean live,
+                                   String startTimeIso,
+                                   String liveScore,
+                                   String matchPhase,
+                                   String externalEventId,
+                                   boolean displayed,
+                                   boolean resulted,
+                                   boolean matchCompleted,
+                                   String sourceFeedCode,
+                                   String sourceFeedEventId,
+                                   String scoreDetail,
+                                   Long player1Id,
+                                   String player1Name,
+                                   Long player2Id,
+                                   String player2Name,
+                                   String matchupKey) {
+}

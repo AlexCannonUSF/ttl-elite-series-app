@@ -1,35 +1,50 @@
-package com.ttl.tabletennis.Controller;
+package com.ttl.tabletennis.controller;
 
-import com.ttl.tabletennis.Entity.Player;
-import com.ttl.tabletennis.Service.PlayerService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
+import com.ttl.tabletennis.dto.PlayerDto;
+import com.ttl.tabletennis.mapper.PlayerMapper;
+import com.ttl.tabletennis.request.CreatePlayerRequest;
+import com.ttl.tabletennis.service.PlayerService;
+import jakarta.validation.Valid;
+import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
-import java.util.logging.Logger;
 
 @RestController
 @RequestMapping("/api/players")
 public class PlayerController {
 
-    private static final Logger logger = Logger.getLogger(PlayerController.class.getName());
-
     private final PlayerService playerService;
 
-    @Autowired
     public PlayerController(PlayerService playerService) {
         this.playerService = playerService;
     }
 
     @GetMapping
-    public List<Player> getAllPlayers() {
-        logger.info("Fetching all players via REST");
-        return playerService.getAllPlayers();
+    public List<PlayerDto> getAllPlayers() {
+        return playerService.getAllPlayerDtos();
+    }
+
+    @GetMapping("/search")
+    public List<PlayerDto> searchPlayers(@RequestParam(value = "q", required = false) String q,
+                                         @RequestParam(value = "query", required = false) String query) {
+        String search = StringUtils.hasText(q) ? q : query;
+        if (!StringUtils.hasText(search)) {
+            return playerService.getAllPlayerDtos();
+        }
+        return playerService.searchPlayers(search)
+                .stream()
+                .map(PlayerMapper::toDto)
+                .toList();
     }
 
     @PostMapping
-    public Player addPlayer(@RequestBody Player player) {
-        logger.info("Adding new player (REST): " + player.getName());
-        return playerService.savePlayer(player);
+    public PlayerDto addPlayer(@Valid @RequestBody CreatePlayerRequest request) {
+        return playerService.createPlayer(request);
     }
 }
