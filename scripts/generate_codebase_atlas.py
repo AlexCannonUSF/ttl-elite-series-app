@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = ROOT / "src" / "main" / "java" / "com" / "ttl" / "tabletennis"
+FRONTEND_ROOT = ROOT / "web" / "src"
+TEST_ROOT = ROOT / "src" / "test" / "java"
+SCRIPTS_ROOT = ROOT / "scripts"
+ATLAS_GENERATED = ROOT / "docs" / "codebase-atlas" / "generated"
+
+
+PACKAGE_PURPOSE = {
+    "(root)": "Application entrypoints and legacy desktop launcher",
+    "controller": "HTTP API entrypoints and route wiring",
+    "service": "Business logic and workflow orchestration",
+    "repository": "Persistence access",
+    "domain": "JPA entities and long-lived state",
+    "dto": "Contracts returned by controllers and services",
+    "scrape": "External data-source fetching and parsing",
+    "analytics": "Support algorithms for rating/recommendation logic",
+    "config": "Spring startup, async, and web configuration",
+    "exception": "Error handling and exception translation",
+    "mapper": "Entity/DTO mapping helpers",
+    "model": "Supporting in-memory models",
+    "projection": "Repository projection types",
+    "request": "Validated request payloads",
+    "ui/fx": "JavaFX launcher surface",
+    "util": "Utility helpers",
+}
+
+
+CLASS_RE = re.compile(r"public\s+(class|record|enum)\s+(\w+)")
+PACKAGE_RE = re.compile(r"^package\s+(.+?);", re.MULTILINE)
+METHOD_RE = re.compile(
+    r"^\s*public\s+(?!class\b|record\b|enum\b)(?:static\s+)?(?P<return>[^\(\n=;]+?)\s+(?P<name>\w+)\s*\(",
+    re.MULTILINE,
+)
+EXPORT_RE = re.compile(r"export\s+(?:function|const)\s+(\w+)")
+API_CLIENT_RE = re.compile(r"^\s*(\w+):\s*async\s*\(", re.MULTILINE)
+API_CALL_RE = re.compile(r"apiClient\.(\w+)")
+QUERY_RE = re.compile(r"const\s+(\w+(?:Query|Mutation))\s*=")
+ANNOTATION_RE = re.compile(r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|RequestMapping)(?:\("([^"]*)"\))?')
+REQUEST_MAPPING_ARRAY_RE = re.compile(r'@RequestMapping\((.+)\)')
+
+
+def repo_link(path: Path) -> str:
+    rel = path.relative_to(ROOT).as_posix()
+    return f"[`/Users/alexcannon/Downloads/TTLEliteSeries/{rel}`]({rel})"
+
+
+def parse_java_file(path: Path) -> dict:
+    text = path.read_text()
+    package_match = PACKAGE_RE.search(text)
+    package_name = package_match.group(1) if package_match else ""
+    class_match = CLASS_RE.search(text)
+    kind = class_match.group(1) if class_match else "class"
+    class_name = class_match.group(2) if class_match else path.stem
+    relative_package_path = path.parent.relative_to(BACKEND_ROOT).as_posix()
+    if relative_package_path in ("", "."):
+        relative_package_path = "(root)"
+    methods = []
+    for match in METHOD_RE.finditer(text):
+        method_name = match.group("name")
+        if method_name == class_name:
+            continue
+        return_type = " ".join(match.group("return").split())
+        methods.append(f"{return_type} {method_name}(...)")
+    return {
+        "path": path,
+        "package": package_name,
+        "subpackage": relative_package_path,
+        "class_name": class_name,
+        "kind": kind,
+        "methods": methods,
+    }
+
+
+def extract_controller_endpoints(path: Path) -> list[dict]:
+    text = path.read_text().splitlines()
+    base_path = ""
+    pending = None
+    endpoints = []
+
+    for line in text:
+        stripped = line.strip()
+        if stripped.startswith("@RequestMapping"):
+            array_match = REQUEST_MAPPING_ARRAY_RE.search(stripped)
+            if array_match and "method =" not in stripped:
+                values = re.findall(r'"([^"]*)"', array_match.group(1))
+                if values:
+                    base_path = values[0]
+                    continue
+        ann = ANNOTATION_RE.search(stripped)
+        if ann and ann.group(1) != "RequestMapping":
+            pending = {
+                "http_method": ann.group(1).replace("Mapping", "").upper(),
+                "path": ann.group(2) or "",
+            }
+            continue
+        method = METHOD_RE.match(line)
+        if pending and method:
+            full_path = f"{base_path}{pending['path']}"
+            endpoints.append(
+                {
+                    "controller": path.stem,
+                    "method": pending["http_method"],
+                    "path": full_path or "/",
+                    "return_type": " ".join(method.group("return").split()),
+                    "handler": method.group("name"),
+                    "file": path,
+                }
+            )
+            pending = None
+    return endpoints
+
+
+def render_backend_index() -> str:
+    package_entries = defaultdict(list)
+    for path in sorted(BACKEND_ROOT.rglob("*.java")):
+        entry = parse_java_file(path)
+        package_entries[entry["subpackage"]].append(entry)
+
+    lines = [
+        "# Backend File Index",
+        "",
+        "> Generated by `python3 ./scripts/generate_codebase_atlas.py`. Do not hand-edit.",
+        "",
+    ]
+
+    for package in sorted(package_entries):
+        lines.append(f"## `{package}`")
+        lines.append("")
+        purpose = PACKAGE_PURPOSE.get(package, "Repository source area")
+        lines.append(f"- Purpose: {purpose}")
+        lines.append(f"- File count: {len(package_entries[package])}")
+        lines.append("")
+        lines.append("| Class | Kind | File | Public API |")
+        lines.append("| --- | --- | --- | --- |")
+        for entry in package_entries[package]:
+            methods = "<br>".join(entry["methods"][:8]) if entry["methods"] else "-"
+            lines.append(
+                f"| `{entry['class_name']}` | `{entry['kind']}` | {repo_link(entry['path'])} | {methods} |"
+            )
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def render_endpoint_map() -> str:
+    endpoints = []
+    for path in sorted((BACKEND_ROOT / "controller").glob("*.java")):
+        endpoints.extend(extract_controller_endpoints(path))
+
+    lines = [
+        "# Endpoint Map",
+        "",
+        "> Generated by `python3 ./scripts/generate_codebase_atlas.py`. Do not hand-edit.",
+        "",
+        "| Method | Path | Controller | Handler | Return Type | File |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for endpoint in endpoints:
+        lines.append(
+            f"| `{endpoint['method']}` | `{endpoint['path']}` | `{endpoint['controller']}` | "
+            f"`{endpoint['handler']}` | `{endpoint['return_type']}` | {repo_link(endpoint['file'])} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_frontend_index() -> str:
+    pages = sorted((FRONTEND_ROOT / "pages").glob("*.tsx"))
+    app_files = sorted((FRONTEND_ROOT / "app").glob("*"))
+    component_files = sorted((FRONTEND_ROOT / "components").glob("*"))
+    lib_files = sorted((FRONTEND_ROOT / "lib").glob("*"))
+    type_files = sorted((FRONTEND_ROOT / "types").glob("*"))
+
+    api_text = (FRONTEND_ROOT / "lib" / "api.ts").read_text()
+    api_methods = sorted(API_CLIENT_RE.findall(api_text))
+
+    lines = [
+        "# Frontend File Index",
+        "",
+        "> Generated by `python3 ./scripts/generate_codebase_atlas.py`. Do not hand-edit.",
+        "",
+        "## Application Shell",
+        "",
+        "| File | What It Owns |",
+        "| --- | --- |",
+    ]
+
+    for path in app_files + component_files + lib_files + type_files:
+        if path.is_dir():
+            continue
+        lines.append(f"| {repo_link(path)} | `{path.parent.name}` area |")
+
+    lines.extend([
+        "",
+        "## Pages",
+        "",
+        "| Page | Exports | API Calls | Query/Mutation Handles |",
+        "| --- | --- | --- | --- |",
+    ])
+
+    for path in pages:
+        text = path.read_text()
+        exports = ", ".join(EXPORT_RE.findall(text)) or "-"
+        api_calls = sorted(set(API_CALL_RE.findall(text)))
+        queries = ", ".join(sorted(set(QUERY_RE.findall(text)))) or "-"
+        lines.append(
+            f"| {repo_link(path)} | `{exports}` | "
+            f"{', '.join(f'`{item}`' for item in api_calls) if api_calls else '-'} | `{queries}` |"
+        )
+
+    lines.extend([
+        "",
+        "## API Client Methods",
+        "",
+        "| Method | File |",
+        "| --- | --- |",
+    ])
+    api_file = FRONTEND_ROOT / "lib" / "api.ts"
+    for method in api_methods:
+        lines.append(f"| `{method}` | {repo_link(api_file)} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_tests_and_scripts_index() -> str:
+    test_files = sorted(TEST_ROOT.rglob("*.java"))
+    script_files = sorted(
+        path for path in SCRIPTS_ROOT.iterdir() if path.is_file() and path.name != "README.md"
+    )
+
+    lines = [
+        "# Tests And Scripts Index",
+        "",
+        "> Generated by `python3 ./scripts/generate_codebase_atlas.py`. Do not hand-edit.",
+        "",
+        "## Test Suites",
+        "",
+        "| Suite | Package | File |",
+        "| --- | --- | --- |",
+    ]
+    for path in test_files:
+        pkg = path.parent.relative_to(TEST_ROOT).as_posix()
+        lines.append(f"| `{path.stem}` | `{pkg}` | {repo_link(path)} |")
+
+    lines.extend([
+        "",
+        "## Scripts",
+        "",
+        "| Script | Purpose | File |",
+        "| --- | --- | --- |",
+    ])
+
+    purpose = {
+        "live_studio_smoke.sh": "Clean-session Live Studio smoke check",
+        "live_settlement_watch.sh": "Watch a live session for transitions and settlement evidence",
+        "release_gate.sh": "One-command release gate",
+        "generate_codebase_atlas.py": "Regenerate codebase index documents",
+    }
+
+    for path in script_files:
+        lines.append(f"| `{path.name}` | {purpose.get(path.name, 'Repository helper script')} | {repo_link(path)} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    ATLAS_GENERATED.mkdir(parents=True, exist_ok=True)
+    (ATLAS_GENERATED / "backend-file-index.md").write_text(render_backend_index())
+    (ATLAS_GENERATED / "endpoint-map.md").write_text(render_endpoint_map())
+    (ATLAS_GENERATED / "frontend-file-index.md").write_text(render_frontend_index())
+    (ATLAS_GENERATED / "tests-and-scripts-index.md").write_text(render_tests_and_scripts_index())
+    print("Generated codebase atlas indexes in docs/codebase-atlas/generated")
+
+
+if __name__ == "__main__":
+    main()

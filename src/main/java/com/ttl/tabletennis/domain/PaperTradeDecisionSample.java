@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -114,6 +115,9 @@ public class PaperTradeDecisionSample {
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
+
     @PrePersist
     void prePersist() {
         if (strategy == null || strategy.isBlank()) {
@@ -130,6 +134,9 @@ public class PaperTradeDecisionSample {
         }
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -375,5 +382,13 @@ public class PaperTradeDecisionSample {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 }

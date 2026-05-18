@@ -424,6 +424,13 @@ export interface PaperTradeBetDto {
   liveAtPlacement: boolean
   startTimeIso: string | null
   externalEventId: string | null
+  identityLocked: boolean
+  identityLockedAt: string | null
+  lockedStartTimeIso: string | null
+  lockedExternalEventId: string | null
+  lockedSourceFeedEventId: string | null
+  identityDriftCount: number
+  lastIdentityDriftAt: string | null
   player1Name: string
   player2Name: string
   sideName: string

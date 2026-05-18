@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -50,10 +51,16 @@ public class ScrapeError {
     @Column(name = "html_snippet", length = 4000)
     private String htmlSnippet;
 
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
+
     @PrePersist
     void prePersist() {
         if (occurredAt == null) {
             occurredAt = LocalDateTime.now();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -123,5 +130,13 @@ public class ScrapeError {
 
     public void setHtmlSnippet(String htmlSnippet) {
         this.htmlSnippet = htmlSnippet;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 }

@@ -1,0 +1,32 @@
+groups:
+  - name: ttl-phase-02-score-truth
+    rules:
+      - alert: ContradictionsPerDay
+        expr: ttl_settlement_diff_contradictions > 0
+        for: 5m
+        labels:
+          severity: warning
+          phase: "3.0-p02"
+        annotations:
+          summary: "Score Truth contradictions have been recorded"
+          description: "At least one score-truth contradiction exists in settlement_diff_log; triage /v3/ops/diffs before promotion."
+
+      - alert: SettlementDiffRateHigh
+        expr: ttl_settlement_diff_disagreements / clamp_min(ttl_settlement_diff_rows, 1) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          phase: "3.0-p02"
+        annotations:
+          summary: "Settlement shadow diff rate is above 1%"
+          description: "Score Truth shadow decisions are diverging from the 2.0 settlement path above the Phase 02 parity gate."
+
+      - alert: StreamCVSilent
+        expr: sum(stream_worker_state{state="RUNNING"}) > 0 and sum(increase(stream_frames_emitted_total[3m])) == 0
+        for: 3m
+        labels:
+          severity: warning
+          phase: "3.0-p02"
+        annotations:
+          summary: "Stream-CV worker is running without emitted frames"
+          description: "A running Stream-CV worker has not emitted stream.frame observations for more than three minutes."

@@ -1,0 +1,13 @@
+{
+  "templateId": "wstt.generic.v1",
+  "frameWidth": 1280,
+  "frameHeight": 720,
+  "roi": {"x": 48, "y": 32, "w": 260, "h": 96},
+  "colorProfile": "bright-on-dark",
+  "digitFields": [
+    {"name": "topGames", "rel": [0, 0, 40, 96]},
+    {"name": "topPoints", "rel": [44, 0, 80, 96]},
+    {"name": "botGames", "rel": [128, 0, 40, 96]},
+    {"name": "botPoints", "rel": [172, 0, 80, 96]}
+  ]
+}

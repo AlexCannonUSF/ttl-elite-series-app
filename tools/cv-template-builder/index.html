@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CV Template Builder</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./src/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-label="Frame workspace">
+        <div class="toolbar">
+          <label class="file-button">
+            <input id="frame-file" type="file" accept="image/*">
+            Frame
+          </label>
+          <button class="active" data-mode="roi" type="button">ROI</button>
+          <button data-mode="topGames" type="button">TG</button>
+          <button data-mode="topPoints" type="button">TP</button>
+          <button data-mode="botGames" type="button">BG</button>
+          <button data-mode="botPoints" type="button">BP</button>
+          <button id="auto-fields" type="button">Auto Fields</button>
+        </div>
+        <div class="stage">
+          <canvas id="frame-canvas" width="1280" height="720"></canvas>
+        </div>
+      </section>
+
+      <aside class="inspector" aria-label="Template inspector">
+        <div class="field-row">
+          <label for="template-id">Template</label>
+          <input id="template-id" type="text" autocomplete="off">
+        </div>
+        <div class="field-grid">
+          <label for="frame-width">Width</label>
+          <input id="frame-width" type="number" min="1">
+          <label for="frame-height">Height</label>
+          <input id="frame-height" type="number" min="1">
+        </div>
+        <div class="field-row">
+          <label for="color-profile">Profile</label>
+          <select id="color-profile">
+            <option value="bright-on-dark">bright-on-dark</option>
+            <option value="dark-on-bright">dark-on-bright</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button id="copy-json" type="button">Copy JSON</button>
+          <button id="save-json" type="button">Save roi.json</button>
+        </div>
+        <textarea id="json-output" spellcheck="false" aria-label="Generated roi.json"></textarea>
+        <pre id="status-output" aria-live="polite"></pre>
+        <label class="file-button block">
+          <input id="clip-file" type="file" accept="application/json,.json">
+          Smoke Clip
+        </label>
+        <pre id="smoke-output" aria-live="polite">No smoke run</pre>
+      </aside>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

@@ -9,6 +9,7 @@ import com.ttl.tabletennis.repository.ScrapeErrorRepository;
 import com.ttl.tabletennis.repository.ScrapeRunRepository;
 import com.ttl.tabletennis.service.PlayerIdentityService;
 import com.ttl.tabletennis.util.MatchResultParser;
+import com.ttl.tabletennis.util.CorrelationContext;
 import com.ttl.tabletennis.util.NameUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -23,14 +24,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -192,6 +196,47 @@ public class TtSeriesScraper {
             return 0;
         }
         return scrapeAndSaveMatchDetails(postUrls);
+    }
+
+    public List<OfficialLedgerMatch> lookupOfficialMatchesForPair(String player1Name,
+                                                                  String player2Name,
+                                                                  int limit) {
+        if (!StringUtils.hasText(player1Name) || !StringUtils.hasText(player2Name)) {
+            return List.of();
+        }
+
+        String leftQuery = toTtSeriesQueryName(player1Name);
+        String rightQuery = toTtSeriesQueryName(player2Name);
+        if (!StringUtils.hasText(leftQuery) || !StringUtils.hasText(rightQuery)) {
+            return List.of();
+        }
+
+        int take = Math.max(1, Math.min(limit, 40));
+        List<OfficialLedgerMatch> merged = new ArrayList<>();
+        merged.addAll(fetchOfficialLedgerMatches(buildH2hUrl(leftQuery, rightQuery), "official-h2h"));
+        merged.addAll(fetchOfficialLedgerMatches(buildPlayerUrl(leftQuery), "official-player-left"));
+        merged.addAll(fetchOfficialLedgerMatches(buildPlayerUrl(rightQuery), "official-player-right"));
+        if (merged.isEmpty()) {
+            return List.of();
+        }
+
+        String leftLookup = NameUtils.normalizeForLookup(player1Name);
+        String rightLookup = NameUtils.normalizeForLookup(player2Name);
+
+        return merged.stream()
+                .filter(match -> isSamePairLookup(
+                        NameUtils.normalizeForLookup(match.player1Raw()),
+                        NameUtils.normalizeForLookup(match.player2Raw()),
+                        leftLookup,
+                        rightLookup
+                ))
+                .sorted(Comparator
+                        .comparing(OfficialLedgerMatch::date, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing((OfficialLedgerMatch match) -> sourcePriority(match.sourceType()))
+                        .thenComparing(OfficialLedgerMatch::sourceUrl))
+                .distinct()
+                .limit(take)
+                .toList();
     }
 
     @Async("ttlScraperExecutor")
@@ -654,6 +699,177 @@ public class TtSeriesScraper {
         return !(candidate.isBefore(minDate) || candidate.isAfter(maxDate));
     }
 
+    private List<OfficialLedgerMatch> fetchOfficialLedgerMatches(String url, String context) {
+        if (!StringUtils.hasText(url)) {
+            return List.of();
+        }
+        try {
+            Document doc = fetch(url, context);
+            return parseOfficialLedgerRows(doc, url, context);
+        } catch (Exception ex) {
+            log.warn("[scrape] official ledger fetch failed for {}: {}", url, ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<OfficialLedgerMatch> parseOfficialLedgerRows(Document doc, String url, String context) {
+        if (doc == null) {
+            return List.of();
+        }
+        List<OfficialLedgerMatch> out = new ArrayList<>();
+        for (Element table : doc.select("table")) {
+            Optional<OfficialLedgerColumns> resolvedColumns = resolveOfficialLedgerColumns(table);
+            if (resolvedColumns.isEmpty()) {
+                continue;
+            }
+            OfficialLedgerColumns columns = resolvedColumns.get();
+            Elements rows = table.select("tr");
+            for (int rowIndex = columns.firstDataRowIndex(); rowIndex < rows.size(); rowIndex++) {
+                Element tr = rows.get(rowIndex);
+                Elements cells = tr.select("td, th");
+                if (cells.isEmpty() || cells.size() <= columns.maxIndex()) {
+                    continue;
+                }
+                String player1Raw = text(cells, columns.player1Col());
+                String resultRaw = text(cells, columns.resultCol());
+                String player2Raw = text(cells, columns.player2Col());
+                String dateRaw = text(cells, columns.dateCol());
+                String winnerRaw = text(cells, columns.winnerCol());
+                if (!isLikelyPlayerCell(player1Raw) || !isLikelyPlayerCell(player2Raw)) {
+                    continue;
+                }
+                LocalDate parsedDate = safeParseDate(dateRaw, null);
+                if (!isReasonableDate(parsedDate)) {
+                    continue;
+                }
+                String normalizedResult = normalizeLedgerResult(resultRaw);
+                out.add(new OfficialLedgerMatch(
+                        context,
+                        url,
+                        player1Raw.trim(),
+                        player2Raw.trim(),
+                        normalizedResult,
+                        parsedDate,
+                        StringUtils.hasText(winnerRaw) ? winnerRaw.trim() : null
+                ));
+            }
+        }
+        return out;
+    }
+
+    private Optional<OfficialLedgerColumns> resolveOfficialLedgerColumns(Element table) {
+        if (table == null) {
+            return Optional.empty();
+        }
+        Elements rows = table.select("tr");
+        for (int rowIndex = 0; rowIndex < Math.min(rows.size(), 6); rowIndex++) {
+            Element row = rows.get(rowIndex);
+            Elements cells = row.select("th, td");
+            if (cells.size() < 5) {
+                continue;
+            }
+            int player1Col = -1;
+            int resultCol = -1;
+            int player2Col = -1;
+            int dateCol = -1;
+            int winnerCol = -1;
+            for (int col = 0; col < cells.size(); col++) {
+                String header = normalizeLedgerHeader(cells.get(col).text());
+                if (header.startsWith("player1")) {
+                    player1Col = col;
+                } else if (header.equals("score") || header.equals("result")) {
+                    resultCol = col;
+                } else if (header.startsWith("player2")) {
+                    player2Col = col;
+                } else if (header.equals("date")) {
+                    dateCol = col;
+                } else if (header.equals("winner")) {
+                    winnerCol = col;
+                }
+            }
+            if (player1Col >= 0 && resultCol >= 0 && player2Col >= 0 && dateCol >= 0 && winnerCol >= 0) {
+                return Optional.of(new OfficialLedgerColumns(player1Col, resultCol, player2Col, dateCol, winnerCol, rowIndex + 1));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private String normalizeLedgerHeader(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return "";
+        }
+        return raw.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u00a0', ' ')
+                .replaceAll("[^a-z0-9]+", "");
+    }
+
+    private String normalizeLedgerResult(String rawResult) {
+        if (!StringUtils.hasText(rawResult)) {
+            return "";
+        }
+        String trimmed = rawResult.trim();
+        if (MatchResultParser.isAcceptedResultFormat(trimmed)) {
+            return trimmed.replace('/', ':');
+        }
+        return "";
+    }
+
+    private String toTtSeriesQueryName(String rawName) {
+        if (!StringUtils.hasText(rawName)) {
+            return "";
+        }
+        String[] split = NameUtils.splitFirstLast(rawName);
+        String first = split[0] == null ? "" : NameUtils.cleanRawName(split[0]);
+        String last = split[1] == null ? "" : NameUtils.cleanRawName(split[1]);
+        String combined = (last + " " + first).trim();
+        if (combined.isBlank()) {
+            return NameUtils.cleanRawName(rawName);
+        }
+        return combined;
+    }
+
+    private String buildPlayerUrl(String queryName) {
+        return normalizedBaseUrl() + "/player/?player=" + encodeQueryValue(queryName);
+    }
+
+    private String buildH2hUrl(String playerAQueryName, String playerBQueryName) {
+        return normalizedBaseUrl() + "/h2h/?player_a=" + encodeQueryValue(playerAQueryName)
+                + "&player_b=" + encodeQueryValue(playerBQueryName);
+    }
+
+    private String normalizedBaseUrl() {
+        return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+    }
+
+    private String encodeQueryValue(String value) {
+        return URLEncoder.encode(value == null ? "" : value.trim(), StandardCharsets.UTF_8)
+                .replace("+", "%20");
+    }
+
+    private boolean isSamePairLookup(String leftA, String rightA, String leftB, String rightB) {
+        if (!StringUtils.hasText(leftA) || !StringUtils.hasText(rightA)
+                || !StringUtils.hasText(leftB) || !StringUtils.hasText(rightB)) {
+            return false;
+        }
+        return (leftA.equals(leftB) && rightA.equals(rightB))
+                || (leftA.equals(rightB) && rightA.equals(leftB));
+    }
+
+    private int sourcePriority(String sourceType) {
+        if (!StringUtils.hasText(sourceType)) {
+            return 10;
+        }
+        String normalized = sourceType.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("h2h")) {
+            return 0;
+        }
+        if (normalized.contains("player")) {
+            return 1;
+        }
+        return 5;
+    }
+
     private void politePause() {
         if (delayBetweenRequestsMs <= 0) return;
         try {
@@ -691,6 +907,26 @@ public class TtSeriesScraper {
                     .replaceAll("\\s+", "_")
                     .replaceAll("[^a-zA-Z0-9_\\-|]", "");
         }
+    }
+
+    private record OfficialLedgerColumns(int player1Col,
+                                         int resultCol,
+                                         int player2Col,
+                                         int dateCol,
+                                         int winnerCol,
+                                         int firstDataRowIndex) {
+        int maxIndex() {
+            return Math.max(Math.max(player1Col, resultCol), Math.max(Math.max(player2Col, dateCol), winnerCol));
+        }
+    }
+
+    public record OfficialLedgerMatch(String sourceType,
+                                      String sourceUrl,
+                                      String player1Raw,
+                                      String player2Raw,
+                                      String result,
+                                      LocalDate date,
+                                      String winnerRaw) {
     }
 
     public ScrapeStatus status() {
@@ -835,23 +1071,25 @@ public class TtSeriesScraper {
     }
 
     private void executeRun(String mode, CheckedRunnable runnable) {
-        if (!markStart(mode)) {
-            String message = "Scrape already running. Wait for the active run to finish.";
-            lastError.set(message);
-            ActiveRun run = activeRun.get();
-            int runId = run == null ? -1 : run.runId;
-            addErrorRecord(new ScrapeErrorRecord(runId, LocalDateTime.now(), mode, message, null, "executeRun", null));
-            log.warn("[scrape] {}", message);
-            return;
-        }
-        try {
-            validateScraperConfig();
-            runnable.run();
-        } catch (Exception e) {
-            markError(e);
-            log.warn("[scrape] FAILED: {}", e.getMessage(), e);
-        } finally {
-            markFinish();
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            if (!markStart(mode)) {
+                String message = "Scrape already running. Wait for the active run to finish.";
+                lastError.set(message);
+                ActiveRun run = activeRun.get();
+                int runId = run == null ? -1 : run.runId;
+                addErrorRecord(new ScrapeErrorRecord(runId, LocalDateTime.now(), mode, message, null, "executeRun", null));
+                log.warn("[scrape] {}", message);
+                return;
+            }
+            try {
+                validateScraperConfig();
+                runnable.run();
+            } catch (Exception e) {
+                markError(e);
+                log.warn("[scrape] FAILED: {}", e.getMessage(), e);
+            } finally {
+                markFinish();
+            }
         }
     }
 

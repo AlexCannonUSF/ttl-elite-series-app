@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TTL Backend - Local H2" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.ttl.tabletennis.TtlEliteSeriesApplication" />
+    <module name="TTLEliteSeries" />
+    <option name="PROGRAM_PARAMETERS" value="--scrape.auto=false --ttl.elo.sync.onStartup=false --ttl.elo.sync.scheduled=false --ttl.glicko2.rebuildOnStartupIfMissing=false --server.port=8080" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

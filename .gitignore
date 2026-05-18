@@ -226,6 +226,9 @@ gradle-app.setting
 web/node_modules/
 web/dist/
 web/dev-dist/
+node_modules/
+.npm-cache/
+*.tsbuildinfo
 
 # Local workspace helpers
 .claude/

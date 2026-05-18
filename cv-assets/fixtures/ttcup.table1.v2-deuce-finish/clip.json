@@ -1,0 +1,38 @@
+{
+  "fixtureId": "ttcup.table1.v2-deuce-finish",
+  "description": "TTCUP Tier A replay fixture covering deuce and a game flip.",
+  "matchId": "fixture:ttcup:deuce-finish",
+  "templateId": "ttcup.table1.v2",
+  "bestOf": 5,
+  "sampleRateFps": 1,
+  "capturedAtStart": "2026-04-19T12:05:00Z",
+  "frame": {
+    "width": 1280,
+    "height": 720
+  },
+  "minimumAccuracy": 0.95,
+  "frames": [
+    {"sequence": 1, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 9}, "confidence": 0.92},
+    {"sequence": 2, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 9}, "confidence": 0.92},
+    {"sequence": 3, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 9}, "confidence": 0.92},
+    {"sequence": 4, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 10}, "confidence": 0.93},
+    {"sequence": 5, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 10}, "confidence": 0.93},
+    {"sequence": 6, "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 10}, "confidence": 0.93},
+    {"sequence": 7, "score": {"topGames": 0, "botGames": 0, "topPoints": 11, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 8, "score": {"topGames": 0, "botGames": 0, "topPoints": 11, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 9, "score": {"topGames": 0, "botGames": 0, "topPoints": 11, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 10, "score": {"topGames": 0, "botGames": 0, "topPoints": 12, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 11, "score": {"topGames": 0, "botGames": 0, "topPoints": 12, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 12, "score": {"topGames": 0, "botGames": 0, "topPoints": 12, "botPoints": 10}, "confidence": 0.94},
+    {"sequence": 13, "score": {"topGames": 1, "botGames": 0, "topPoints": 0, "botPoints": 0}, "confidence": 0.92},
+    {"sequence": 14, "score": {"topGames": 1, "botGames": 0, "topPoints": 0, "botPoints": 0}, "confidence": 0.92},
+    {"sequence": 15, "score": {"topGames": 1, "botGames": 0, "topPoints": 0, "botPoints": 0}, "confidence": 0.92}
+  ],
+  "expectedEmissions": [
+    {"frameId": "fixture:ttcup:deuce-finish:3", "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 9}, "phase": "NORMAL"},
+    {"frameId": "fixture:ttcup:deuce-finish:6", "score": {"topGames": 0, "botGames": 0, "topPoints": 10, "botPoints": 10}, "phase": "DEUCE"},
+    {"frameId": "fixture:ttcup:deuce-finish:9", "score": {"topGames": 0, "botGames": 0, "topPoints": 11, "botPoints": 10}, "phase": "DEUCE"},
+    {"frameId": "fixture:ttcup:deuce-finish:12", "score": {"topGames": 0, "botGames": 0, "topPoints": 12, "botPoints": 10}, "phase": "DEUCE"},
+    {"frameId": "fixture:ttcup:deuce-finish:15", "score": {"topGames": 1, "botGames": 0, "topPoints": 0, "botPoints": 0}, "phase": "NORMAL"}
+  ]
+}

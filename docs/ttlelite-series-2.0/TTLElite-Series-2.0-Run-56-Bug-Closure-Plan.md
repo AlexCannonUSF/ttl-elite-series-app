@@ -1,5 +1,13 @@
 # TTLElite Series 2.0 Run 56 Bug Closure Plan
 
+## Current Implementation Status
+
+- Phase 1 is now implemented in code.
+- Non-feed-identity archive/database settlements are blocked when candidate selection is ambiguous.
+- Feed-identity settlement now refuses conflicting duplicate candidates instead of silently picking one.
+- Strong late live-score leaders now block later-date archive auto-settlement when the archive winner conflicts.
+- Replay coverage now includes same-day duplicate official results and contradictory later-date archive candidates.
+
 ## Purpose
 
 This document captures what the current live run is teaching us, which bugs look real versus cosmetic, and the exact closure plan needed to finish the remaining 2.0 reliability work.

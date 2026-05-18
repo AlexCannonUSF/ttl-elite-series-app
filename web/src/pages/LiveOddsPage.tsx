@@ -168,6 +168,8 @@ function openBetReasonLabel(bet: {
   lastSourceFeedEventId: string | null
   settlementReason: string | null
   startTimeIso: string | null
+  identityLocked: boolean
+  identityDriftCount: number
 }) {
   const trackingState = (bet.trackingState ?? '').trim().toUpperCase()
   const observedAt = bet.lastObservedAt ? asLocalDate(bet.lastObservedAt) : null
@@ -180,6 +182,9 @@ function openBetReasonLabel(bet: {
   }
   if (bet.lastObservationResulted) {
     return 'Sportsbook marked the market resulted; awaiting the next settlement pass.'
+  }
+  if (bet.identityDriftCount > 0) {
+    return `Identity locked; blocked ${bet.identityDriftCount} conflicting match candidate${bet.identityDriftCount === 1 ? '' : 's'} while waiting for the correct match to finish.`
   }
   if (trackingState === 'MARKET_CLOSED_SCORE_TRACKED') {
     return observedAt
@@ -214,6 +219,25 @@ function openBetReasonLabel(bet: {
     return bet.settlementReason
   }
   return 'Open and waiting for the next sportsbook or result confirmation update.'
+}
+
+function identityEvidenceLabel(bet: {
+  identityLocked: boolean
+  identityDriftCount: number
+  lockedSourceFeedEventId: string | null
+  lockedExternalEventId: string | null
+}) {
+  if (!bet.identityLocked && bet.identityDriftCount <= 0) return null
+  const parts = ['Identity locked']
+  if (bet.identityDriftCount > 0) {
+    parts.push(`drift blocked x${bet.identityDriftCount}`)
+  }
+  if (bet.lockedSourceFeedEventId) {
+    parts.push(bet.lockedSourceFeedEventId)
+  } else if (bet.lockedExternalEventId) {
+    parts.push(`event ${bet.lockedExternalEventId}`)
+  }
+  return parts.join(' • ')
 }
 
 function marketVisibilityLabel(displayed: boolean, resulted: boolean): string {
@@ -1962,6 +1986,11 @@ export function LiveOddsPage() {
                           {bet.lastMatchCompleted ? ' • Feed completed' : ''}
                           {bet.lastSourceFeedEventId ? ` • ${bet.lastSourceFeedEventId}` : ''}
                         </Typography>
+                        {identityEvidenceLabel(bet) ? (
+                          <Typography color="text.secondary" variant="caption">
+                            {identityEvidenceLabel(bet)}
+                          </Typography>
+                        ) : null}
                         {bet.lastScoreDetail ? (
                           <Typography color="text.secondary" variant="caption">
                             {bet.lastScoreDetail}
@@ -2031,6 +2060,11 @@ export function LiveOddsPage() {
                                 bet.lastSourceFeedCode,
                                 bet.lastSourceFeedEventId
                               )}
+                            </Typography>
+                          ) : null}
+                          {identityEvidenceLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {identityEvidenceLabel(bet)}
                             </Typography>
                           ) : null}
                         </Stack>
@@ -2226,6 +2260,11 @@ export function LiveOddsPage() {
                                 bet.lastSourceFeedCode,
                                 bet.lastSourceFeedEventId
                               )}
+                            </Typography>
+                          ) : null}
+                          {identityEvidenceLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {identityEvidenceLabel(bet)}
                             </Typography>
                           ) : null}
                         </Stack>

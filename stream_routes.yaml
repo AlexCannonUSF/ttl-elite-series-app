@@ -1,0 +1,20 @@
+version: 1
+# Operator-editable fallback map.
+# Loader accepts eventCode/event_code, tableNumber/table, baseUrl/url_template,
+# streamUrl/url, and roiTemplateId/roi_template_id. URL fields may use
+# ${ENV_OR_SYSTEM_PROPERTY:fallback} placeholders.
+routes:
+  - match:
+      eventCode: "TTCUP"
+      tableNumber: 1
+    platform: youtube
+    channelId: "UCxxxxxxxxxxxxxxxxxxx"
+    roiTemplateId: "ttcup.table1.v2"
+    notes: "Phase 02 staging placeholder; replace channelId before enabling Stream-CV workers."
+  - match:
+      eventCode: "WSTT"
+      tableNumber: "*"
+    platform: ttseries_hls
+    baseUrl: "https://stream.tt-series.example/hls/{tableNumber}.m3u8"
+    roiTemplateId: "wstt.generic.v1"
+    notes: "Phase 02 staging placeholder for wildcard WSTT table routing."

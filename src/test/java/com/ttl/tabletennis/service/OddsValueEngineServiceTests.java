@@ -55,7 +55,7 @@ class OddsValueEngineServiceTests {
     private JdbcTemplate jdbcTemplate;
 
     @MockBean
-    private PredictionModelService predictionModelService;
+    private PredictionFacade predictionFacade;
 
     @MockBean
     private PlayerIdentityService playerIdentityService;
@@ -70,7 +70,7 @@ class OddsValueEngineServiceTests {
 
         when(playerIdentityService.findCanonicalPlayer("Alpha One")).thenReturn(Optional.of(p1));
         when(playerIdentityService.findCanonicalPlayer("Beta Two")).thenReturn(Optional.of(p2));
-        when(predictionModelService.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
                 .thenReturn(new PredictionModelService.AdaptiveRegimeTuning("All Settled", 0.0, 1.0, 0.0, 0.0, 0.0));
 
         PredictionModelService.PredictionSnapshot snapshot = new PredictionModelService.PredictionSnapshot(
@@ -90,7 +90,7 @@ class OddsValueEngineServiceTests {
                 0.69,
                 0.70
         );
-        when(predictionModelService.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
                 .thenReturn(snapshot);
 
         MatchOdds quote = new MatchOdds("Alpha One", "Beta Two", 2.20, 1.75);
@@ -122,9 +122,9 @@ class OddsValueEngineServiceTests {
         when(playerIdentityService.findCanonicalPlayer("Signal Alpha")).thenReturn(Optional.of(p1));
         when(playerIdentityService.findCanonicalPlayer("Signal Beta")).thenReturn(Optional.of(p2));
         when(hardRockOddsScraper.fetch()).thenReturn(List.of(new MatchOdds("Signal Alpha", "Signal Beta", 2.05, 1.82)));
-        when(predictionModelService.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
                 .thenReturn(new PredictionModelService.AdaptiveRegimeTuning("Live", 0.42, 0.97, 0.01, 0.03, -0.01));
-        when(predictionModelService.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
                 .thenReturn(new PredictionModelService.PredictionSnapshot(
                         "ENSEMBLE",
                         "20260404091500-ENSEMBLE-1",
@@ -221,11 +221,11 @@ class OddsValueEngineServiceTests {
         when(playerIdentityService.findCanonicalPlayer("Broken Beta")).thenReturn(Optional.of(badP2));
         when(playerIdentityService.findCanonicalPlayer("Healthy Alpha")).thenReturn(Optional.of(p1));
         when(playerIdentityService.findCanonicalPlayer("Healthy Beta")).thenReturn(Optional.of(p2));
-        when(predictionModelService.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
                 .thenReturn(new PredictionModelService.AdaptiveRegimeTuning("All Settled", 0.25, 1.0, 0.0, 0.0, 0.0));
-        when(predictionModelService.predict(eq(badP1.getId()), eq(badP2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+        when(predictionFacade.predict(eq(badP1.getId()), eq(badP2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
                 .thenThrow(new IllegalStateException("broken test row"));
-        when(predictionModelService.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
                 .thenReturn(new PredictionModelService.PredictionSnapshot(
                         "ENSEMBLE",
                         "20260404091500-ENSEMBLE-1",
@@ -301,9 +301,9 @@ class OddsValueEngineServiceTests {
         when(hardRockOddsScraper.fetch()).thenReturn(List.of(healthy));
         when(playerIdentityService.findCanonicalPlayer("Legacy Alpha")).thenReturn(Optional.of(p1));
         when(playerIdentityService.findCanonicalPlayer("Legacy Beta")).thenReturn(Optional.of(p2));
-        when(predictionModelService.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
                 .thenReturn(new PredictionModelService.AdaptiveRegimeTuning("All Settled", 0.25, 1.0, 0.0, 0.0, 0.0));
-        when(predictionModelService.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
                 .thenReturn(new PredictionModelService.PredictionSnapshot(
                         "ENSEMBLE",
                         "20260404091500-ENSEMBLE-1",

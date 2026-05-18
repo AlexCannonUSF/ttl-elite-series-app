@@ -1,0 +1,319 @@
+package com.ttl.tabletennis.config;
+
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.Test;
+
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.Locale;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FlywayMigrationTests {
+
+    @Test
+    void phase00MigrationCreatesShadowTablesAndAddsCorrelationColumns() throws Exception {
+        String url = "jdbc:h2:mem:flyway-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE scrape_run (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE scrape_error (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE odds_quote (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE paper_trade_decision_sample (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE paper_trade_learning_sample (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE value_opportunity (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+                statement.execute("CREATE TABLE tracked_match_observation (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            }
+        }
+
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, "sa", "")
+                .baselineOnMigrate(true)
+                .cleanDisabled(false)
+                .locations("classpath:db/migration")
+                .load();
+
+        assertTrue(flyway.migrate().migrationsExecuted >= 2);
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertTrue(tableExists(metaData, "flyway_schema_history"));
+            assertTrue(tableExists(metaData, "paper_trade_session_shadow"));
+            assertTrue(tableExists(metaData, "paper_trade_bet_shadow"));
+            assertTrue(tableExists(metaData, "settlement_diff_log"));
+
+            assertTrue(columnExists(metaData, "scrape_run", "correlation_id"));
+            assertTrue(columnExists(metaData, "scrape_error", "correlation_id"));
+            assertTrue(columnExists(metaData, "odds_quote", "correlation_id"));
+            assertTrue(columnExists(metaData, "paper_trade_decision_sample", "correlation_id"));
+            assertTrue(columnExists(metaData, "paper_trade_learning_sample", "correlation_id"));
+            assertTrue(columnExists(metaData, "value_opportunity", "correlation_id"));
+            assertTrue(columnExists(metaData, "tracked_match_observation", "correlation_id"));
+            assertTrue(columnExists(metaData, "paper_trade_session_shadow", "source_session_id"));
+            assertTrue(columnExists(metaData, "paper_trade_bet_shadow", "source_bet_id"));
+            assertTrue(columnExists(metaData, "paper_trade_session_shadow", "mirrored_at"));
+            assertTrue(columnExists(metaData, "paper_trade_bet_shadow", "mirrored_at"));
+        }
+
+        assertEquals(0, flyway.migrate().migrationsExecuted);
+        flyway.clean();
+    }
+
+    @Test
+    void phase01MigrationCreatesIngestionAndObservationTables() throws Exception {
+        String url = "jdbc:h2:mem:flyway-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, "sa", "")
+                .baselineOnMigrate(true)
+                .cleanDisabled(false)
+                .locations("classpath:db/migration")
+                .load();
+
+        assertTrue(flyway.migrate().migrationsExecuted >= 3);
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            assertTrue(tableExists(metaData, "odds_snapshot"));
+            assertTrue(tableExists(metaData, "mirror_observation"));
+            assertTrue(tableExists(metaData, "stream_observation"));
+            assertTrue(tableExists(metaData, "feed_health_sample"));
+            assertTrue(tableExists(metaData, "ingest_dlq"));
+
+            assertTrue(columnExists(metaData, "odds_snapshot", "tracked_event_id"));
+            assertTrue(columnExists(metaData, "odds_snapshot", "correlation_id"));
+            assertTrue(columnExists(metaData, "mirror_observation", "payload_json"));
+            assertTrue(columnExists(metaData, "mirror_observation", "completion_signal"));
+            assertTrue(columnExists(metaData, "stream_observation", "frame_ref"));
+            assertTrue(columnExists(metaData, "stream_observation", "vlm_fallback_used"));
+            assertTrue(columnExists(metaData, "feed_health_sample", "rolling_p50_latency_ms"));
+            assertTrue(columnExists(metaData, "feed_health_sample", "rolling_p95_latency_ms"));
+            assertTrue(columnExists(metaData, "ingest_dlq", "payload_json"));
+            assertTrue(columnExists(metaData, "ingest_dlq", "next_retry_at"));
+
+            assertTrue(indexExists(metaData, "odds_snapshot", "idx_odds_snapshot_event_time"));
+            assertTrue(indexExists(metaData, "mirror_observation", "idx_mirror_observation_event_time"));
+            assertTrue(indexExists(metaData, "stream_observation", "idx_stream_observation_event_time"));
+            assertTrue(indexExists(metaData, "feed_health_sample", "idx_feed_health_sample_source_observed"));
+            assertTrue(indexExists(metaData, "ingest_dlq", "idx_ingest_dlq_next_retry"));
+        }
+
+        assertEquals(0, flyway.migrate().migrationsExecuted);
+        flyway.clean();
+    }
+
+    @Test
+    void phase02MigrationCreatesScoreTruthPersistenceTables() throws Exception {
+        String url = "jdbc:h2:mem:flyway-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, "sa", "")
+                .baselineOnMigrate(true)
+                .cleanDisabled(false)
+                .locations("classpath:db/migration")
+                .load();
+
+        assertTrue(flyway.migrate().migrationsExecuted >= 4);
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            assertTrue(tableExists(metaData, "settlement_evidence"));
+            assertTrue(tableExists(metaData, "contradiction"));
+            assertTrue(tableExists(metaData, "settlement_audit"));
+
+            assertTrue(columnExists(metaData, "settlement_evidence", "tracked_event_id"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "payload_json"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "correlation_id"));
+            assertTrue(columnExists(metaData, "contradiction", "evidence_id"));
+            assertTrue(columnExists(metaData, "contradiction", "payload_json"));
+            assertTrue(columnExists(metaData, "contradiction", "resolved"));
+            assertTrue(columnExists(metaData, "settlement_audit", "tracked_event_id"));
+            assertTrue(columnExists(metaData, "settlement_audit", "payload_json"));
+            assertTrue(columnExists(metaData, "settlement_audit", "evidence_id"));
+
+            assertTrue(indexExists(metaData, "settlement_evidence", "idx_settlement_evidence_bet_asof"));
+            assertTrue(indexExists(metaData, "settlement_evidence", "idx_settlement_evidence_event_asof"));
+            assertTrue(indexExists(metaData, "contradiction", "idx_contradiction_bet_observed"));
+            assertTrue(indexExists(metaData, "contradiction", "idx_contradiction_evidence"));
+            assertTrue(indexExists(metaData, "settlement_audit", "idx_settlement_audit_bet_decided"));
+            assertTrue(indexExists(metaData, "settlement_audit", "idx_settlement_audit_event_decided"));
+        }
+
+        assertEquals(0, flyway.migrate().migrationsExecuted);
+        flyway.clean();
+    }
+
+    @Test
+    void phase03MigrationAddsPendingEvidenceHoldOpenColumnsAndIndexes() throws Exception {
+        String url = "jdbc:h2:mem:flyway-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("""
+                        CREATE TABLE paper_trade_bet (
+                            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                            status VARCHAR(16) NOT NULL
+                        )
+                        """);
+            }
+        }
+
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, "sa", "")
+                .baselineOnMigrate(true)
+                .cleanDisabled(false)
+                .locations("classpath:db/migration")
+                .load();
+
+        assertTrue(flyway.migrate().migrationsExecuted >= 6);
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            assertTrue(tableExists(metaData, "paper_trade_bet"));
+            assertTrue(tableExists(metaData, "paper_trade_bet_shadow"));
+            assertTrue(tableExists(metaData, "settlement_policy_audit"));
+
+            assertPendingEvidenceColumns(metaData, "paper_trade_bet");
+            assertPendingEvidenceColumns(metaData, "paper_trade_bet_shadow");
+
+            assertTrue(indexExists(metaData, "paper_trade_bet", "idx_paper_bet_pending_poll"));
+            assertTrue(indexExists(metaData, "paper_trade_bet", "idx_paper_bet_pending_until"));
+            assertTrue(indexExists(metaData, "paper_trade_bet_shadow", "idx_paper_bet_shadow_pending_poll"));
+            assertTrue(indexExists(metaData, "paper_trade_bet_shadow", "idx_paper_bet_shadow_pending_until"));
+            assertTrue(indexExists(metaData, "settlement_policy_audit", "idx_settlement_policy_audit_policy_time"));
+            assertTrue(indexExists(metaData, "settlement_policy_audit", "idx_settlement_policy_audit_status_time"));
+        }
+
+        assertEquals(0, flyway.migrate().migrationsExecuted);
+        flyway.clean();
+    }
+
+    @Test
+    void phase03MigrationCreatesStreamWorkerTables() throws Exception {
+        String url = "jdbc:h2:mem:flyway-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, "sa", "")
+                .baselineOnMigrate(true)
+                .cleanDisabled(false)
+                .locations("classpath:db/migration")
+                .load();
+
+        assertTrue(flyway.migrate().migrationsExecuted >= 7);
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            assertTrue(tableExists(metaData, "stream_worker_config"));
+            assertTrue(tableExists(metaData, "stream_worker_health_1m"));
+            assertTrue(tableExists(metaData, "stream_route"));
+
+            assertStreamWorkerConfigColumns(metaData);
+            assertStreamWorkerHealthColumns(metaData);
+            assertStreamRouteColumns(metaData);
+
+            assertTrue(indexExists(metaData, "stream_worker_config", "idx_stream_worker_config_state"));
+            assertTrue(indexExists(metaData, "stream_worker_config", "idx_stream_worker_config_updated"));
+            assertTrue(indexExists(metaData, "stream_worker_health_1m", "idx_stream_worker_health_bucket"));
+            assertTrue(indexExists(metaData, "stream_worker_health_1m", "idx_stream_worker_health_match_bucket"));
+            assertTrue(indexExists(metaData, "stream_route", "idx_stream_route_event_table"));
+            assertTrue(indexExists(metaData, "stream_route", "idx_stream_route_platform"));
+            assertTrue(indexExists(metaData, "stream_route", "idx_stream_route_updated"));
+        }
+
+        assertEquals(0, flyway.migrate().migrationsExecuted);
+        flyway.clean();
+    }
+
+    private boolean tableExists(DatabaseMetaData metaData, String tableName) throws Exception {
+        try (ResultSet rs = metaData.getTables(null, null, null, new String[]{"TABLE"})) {
+            while (rs.next()) {
+                if (matches(rs.getString("TABLE_NAME"), tableName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private boolean columnExists(DatabaseMetaData metaData, String tableName, String columnName) throws Exception {
+        try (ResultSet rs = metaData.getColumns(null, null, null, null)) {
+            while (rs.next()) {
+                if (matches(rs.getString("TABLE_NAME"), tableName)
+                        && matches(rs.getString("COLUMN_NAME"), columnName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private boolean indexExists(DatabaseMetaData metaData, String tableName, String indexName) throws Exception {
+        String lookupTable = tableName == null ? null : tableName.toUpperCase(Locale.ROOT);
+        try (ResultSet rs = metaData.getIndexInfo(null, null, lookupTable, false, false)) {
+            while (rs.next()) {
+                if (matches(rs.getString("TABLE_NAME"), tableName)
+                        && matches(rs.getString("INDEX_NAME"), indexName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private void assertPendingEvidenceColumns(DatabaseMetaData metaData, String tableName) throws Exception {
+        assertTrue(columnExists(metaData, tableName, "pending_evidence_until"));
+        assertTrue(columnExists(metaData, tableName, "pending_evidence_next_poll_at"));
+        assertTrue(columnExists(metaData, tableName, "pending_evidence_reason"));
+        assertTrue(columnExists(metaData, tableName, "pending_evidence_note"));
+        assertTrue(columnExists(metaData, tableName, "pending_evidence_updated_at"));
+    }
+
+    private void assertStreamWorkerConfigColumns(DatabaseMetaData metaData) throws Exception {
+        assertTrue(columnExists(metaData, "stream_worker_config", "match_id"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "stream_url"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "platform"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "roi_template_id"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "started_at_utc"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "stopped_at_utc"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "last_state"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "last_error"));
+        assertTrue(columnExists(metaData, "stream_worker_config", "updated_at_utc"));
+    }
+
+    private void assertStreamWorkerHealthColumns(DatabaseMetaData metaData) throws Exception {
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "match_id"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "minute_bucket_utc"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "frames_ingested"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "frames_emitted"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "p50_confidence"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "p95_latency_ms"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "vlm_calls"));
+        assertTrue(columnExists(metaData, "stream_worker_health_1m", "state_seen_json"));
+    }
+
+    private void assertStreamRouteColumns(DatabaseMetaData metaData) throws Exception {
+        assertTrue(columnExists(metaData, "stream_route", "route_id"));
+        assertTrue(columnExists(metaData, "stream_route", "event_code"));
+        assertTrue(columnExists(metaData, "stream_route", "table_number"));
+        assertTrue(columnExists(metaData, "stream_route", "platform"));
+        assertTrue(columnExists(metaData, "stream_route", "channel_or_base"));
+        assertTrue(columnExists(metaData, "stream_route", "roi_template_id"));
+        assertTrue(columnExists(metaData, "stream_route", "updated_at_utc"));
+    }
+
+    private boolean matches(String actual, String expected) {
+        return actual != null
+                && expected != null
+                && actual.trim().toLowerCase(Locale.ROOT).equals(expected.trim().toLowerCase(Locale.ROOT));
+    }
+}

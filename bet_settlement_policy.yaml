@@ -1,0 +1,20 @@
+schema_version: 1
+settlement_policy:
+  ambiguity:
+    max_allowed_without_tiebreaker: 0.70
+  settlement:
+    min_confidence_to_auto_settle: 0.85
+    contradiction_block_severity: 0.50
+    require_sources: 2
+  stale_live_recovery:
+    enter_after_minutes_dark: 10
+    official_window_minutes: 180
+    escalation_order:
+      - HR_TGT
+      - SOFASCORE
+      - AISCORE
+      - BETSAPI
+      - STREAM_CV
+  heuristic:
+    allowed: true
+    after_dark_minutes: 240

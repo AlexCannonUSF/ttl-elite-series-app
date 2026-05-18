@@ -1,0 +1,72 @@
+schema_version: 1
+
+features:
+  "features.canonicaliser":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Enables PlayerCanonicaliser inside feed adapters and alias resolution paths."
+    allowed_states:
+      - "off"
+      - "on"
+
+  "features.stream-cv":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Enables Stream-CV workers, frame sampling, and stream-derived observations."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "on"
+
+  "features.score-truth":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Controls Score Truth Engine rollout from shadow to advisory to primary settlement."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "advisory"
+      - "primary"
+
+  "features.predict-v3":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Routes prediction traffic into the 3.0 prediction stack and Python microservice."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "on"
+
+  "features.ui-shell-v3":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Mounts the 3.0 web shell and controls route-level cutover to the v3 workspace."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "on"
+
+  "features.redis-streams":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Switches ingestion events from in-process Spring events to Redis Streams."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "on"
+
+  "features.stake-policy-v3":
+    owner: "Alex"
+    expires_on: "2026-07-15"
+    state: "off"
+    description: "Enables the 3.0 staking policy and portfolio-cap enforcement path."
+    allowed_states:
+      - "off"
+      - "shadow"
+      - "on"
