@@ -97,14 +97,16 @@ These are the unchecked rows from the master Implementation Checklist.
 
 ## 5. CLV plumbing (the one real spec gap)
 
-The §11 CLV gate requires *closing-line* CLV, but today `ttl_staking_clv_7d` is a net-PnL/stake proxy.
+The §11 CLV gate requires *closing-line* CLV. `ttl_staking_clv_7d` now
+contains only rows with a real closing snapshot; coverage is reported
+separately so missing prices cannot masquerade as CLV.
 
 - `[x]` Add `closing_decimal_odds` column to `PaperTradeLearningSample` + migration.
   - 2026-05-19: added `closing_decimal_odds` and `closing_observed_at` columns via JPA. The project uses `spring.jpa.hibernate.ddl-auto=update` so no separate Flyway migration is needed; the columns appear on next boot.
 - `[x]` Capture the closing line snapshot per bet (last odds at market close from `OddsSnapshot`).
   - 2026-05-19: new `ClosingLineLookupService` resolves the closing snapshot for a settled `PaperTradeBet` via `OddsSnapshotRepository.findClosingCandidates(...)`. `PaperTradingService.persistLearningSample` now calls it best-effort; exceptions and missing snapshots are swallowed so the sample still saves with `closingDecimalOdds=null`.
 - `[x]` Switch `StakingClvWatcher` math from `pnl/stake` to `(implied(close) − implied(taken)) / implied(taken)` weighted by stake.
-  - 2026-05-19: per-bet CLV uses true `(implied(close) − implied(taken)) / implied(taken)` when the closing snapshot is present, falls back to `pnl/stake` otherwise. Window aggregate is stake-weighted. New `ttl_staking_clv_7d_coverage` gauge reports the fraction of samples on the true-CLV path so dashboards can see when the gauge becomes fully accurate.
+  - 2026-07-29: per-bet CLV uses true `(implied(close) − implied(taken)) / implied(taken)` only when the closing snapshot is present. Rows without one are excluded rather than substituted with PnL. The stake-weighted window aggregate and `ttl_staking_clv_7d_coverage` therefore report value and evidence coverage independently.
 - `[x]` Update the `CLVNegative7Day` alert to use the corrected gauge (the rule itself doesn't change).
   - 2026-05-19: alert expression unchanged — same `ttl_staking_clv_7d` gauge, now with corrected math when coverage is high.
 - `[x]` Backfill closing lines for the existing 26-bet history so the soak window has continuous data.

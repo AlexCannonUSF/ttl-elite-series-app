@@ -23,10 +23,11 @@ public record TriggerAggregate(int decisions,
                                double modelProbabilitySum,
                                double pnlSum,
                                double stakeSum,
-                               double weightSum) {
+                               double weightSum,
+                               double squaredWeightSum) {
 
     public static TriggerAggregate empty() {
-        return new TriggerAggregate(0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return new TriggerAggregate(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
 
     public TriggerAggregate add(AdaptiveDecisionSample sample, double weight) {
@@ -37,7 +38,12 @@ public record TriggerAggregate(int decisions,
                 modelProbabilitySum + (sample.modelProbability() * weight),
                 pnlSum + (sample.profitLoss() * weight),
                 stakeSum + (sample.stake() * weight),
-                weightSum + weight
+                weightSum + weight,
+                squaredWeightSum + (weight * weight)
         );
+    }
+
+    public double effectiveSampleSize() {
+        return squaredWeightSum <= 1.0e-9 ? 0.0 : (weightSum * weightSum) / squaredWeightSum;
     }
 }

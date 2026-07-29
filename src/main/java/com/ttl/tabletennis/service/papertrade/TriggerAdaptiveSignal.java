@@ -17,12 +17,13 @@ package com.ttl.tabletennis.service.papertrade;
  * @param edgeThresholdShift  additive nudge to the minimum-edge gate
  */
 public record TriggerAdaptiveSignal(int sampleSize,
+                                    double effectiveSampleSize,
                                     double probabilityShift,
                                     double modelGapShift,
                                     double selectionPenalty,
                                     double edgeThresholdShift) {
 
     public static TriggerAdaptiveSignal neutral() {
-        return new TriggerAdaptiveSignal(0, 0.0, 0.0, 0.0, 0.0);
+        return new TriggerAdaptiveSignal(0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
 }

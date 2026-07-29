@@ -97,6 +97,8 @@ export type PaperTradingSyncResult = {
   betsVoided: number
   syncedAt: string
   session: PaperTradingSession
+  status?: 'COMPLETED' | 'ALREADY_RUNNING' | string
+  message?: string | null
 }
 
 export type LiveOddsRecommendation = {

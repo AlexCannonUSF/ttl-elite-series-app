@@ -53,7 +53,7 @@ The checklist is complete. Production authority is gated on the §11 exit criter
 
 - `StakingPolicyHotReloadFailed` — `increase(ttl_staking_policy_reloads_total{status="RELOAD_FAILED"}[5m]) > 0` for 1m. Any rejected hot-reload pages: the previous policy is still in force, but a quiet failure means operators are editing a YAML that never lands.
 - `ExposureCapBreach` — `increase(ttl_staking_exposure_cap_breach_total[15m]) > 0` for 5m. Counter is tagged by `cap=portfolio|event|player`, so the page identifies which limit is binding. The exit criterion is "staking v3 caps never breached"; this alert is how it gets measured.
-- `CLVNegative7Day` — `ttl_staking_clv_7d < 0` for 1h. The `StakingClvWatcher` recomputes a rolling 7-day net-PnL/stake proxy every minute from settled `PaperTradeLearningSample` rows and republishes the gauge. A negative value sustained for an hour means the v3 stack is bleeding versus closing prices and needs investigation before the drawdown trigger fires.
+- `CLVNegative7Day` — `ttl_staking_clv_7d < 0` for 1h. The `StakingClvWatcher` recomputes rolling 7-day, stake-weighted true CLV every minute from settled `PaperTradeLearningSample` rows that have a valid closing snapshot. `ttl_staking_clv_7d_coverage` reports the excluded-price gap. A negative value sustained for an hour means the v3 stack is losing versus available closing prices and needs investigation before the drawdown trigger fires.
 
 ## Endpoints, services, and tables added in Phase 06
 

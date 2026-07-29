@@ -22,17 +22,18 @@ class StakingClvWatcherTests {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-05-19T10:00:00Z"), ZoneOffset.UTC);
 
     @Test
-    void computesPositiveClvWhenWindowProfitable() {
+    void pnlWithoutClosingPricesDoesNotMasqueradeAsClv() {
         StakingClvWatcher.ClvSnapshot snapshot = StakingClvWatcher.compute(List.of(
                 settled(100.0, 80.0),
                 settled(100.0, -100.0),
                 settled(200.0, 180.0)
         ));
-        // pnl = 80 - 100 + 180 = 160; stake = 400; clv = 0.40
-        assertEquals(0.40, snapshot.clv(), 1e-9);
+        assertEquals(0.0, snapshot.clv(), 1e-9);
         assertEquals(3, snapshot.sampleCount());
         assertEquals(400.0, snapshot.totalStake(), 1e-9);
         assertEquals(160.0, snapshot.totalPnL(), 1e-9);
+        assertEquals(0, snapshot.closingLineSamples());
+        assertEquals(0.0, snapshot.coverageRatio(), 1e-9);
     }
 
     @Test
@@ -54,14 +55,13 @@ class StakingClvWatcherTests {
 
         StakingClvWatcher.ClvSnapshot snapshot = watcher.refresh();
 
-        // pnl = -30, stake = 100, clv = -0.30
-        assertEquals(-0.30, snapshot.clv(), 1e-9);
+        assertEquals(0.0, snapshot.clv(), 1e-9);
         assertEquals(2, snapshot.sampleCount());
-        assertEquals(-0.30, watcher.currentClv(), 1e-9);
+        assertEquals(0.0, watcher.currentClv(), 1e-9);
         assertEquals(2, watcher.currentSampleCount());
 
         assertNotNull(registry.find(StakingClvWatcher.METRIC_CLV).gauge());
-        assertEquals(-0.30, registry.find(StakingClvWatcher.METRIC_CLV).gauge().value(), 1e-9);
+        assertEquals(0.0, registry.find(StakingClvWatcher.METRIC_CLV).gauge().value(), 1e-9);
         assertEquals(2.0, registry.find(StakingClvWatcher.METRIC_SAMPLES).gauge().value(), 1e-9);
     }
 
@@ -107,15 +107,14 @@ class StakingClvWatcherTests {
     }
 
     @Test
-    void blendsTrueClvWithProxyWhenCoverageIsPartial() {
+    void excludesRowsWithoutCloseWhenCoverageIsPartial() {
         // Row 1: closing-line present, +25% CLV, stake 100
         PaperTradeLearningSample beatClose = settledWithClose(100.0, 0.0, 0.40, 2.00);
-        // Row 2: no closing snapshot, falls back to PnL/stake = +0.30 (stake 100, pnl +30)
+        // Row 2: no closing snapshot; PnL remains separate from CLV.
         PaperTradeLearningSample noClose = settledWithClose(100.0, 30.0, 0.50, null);
         StakingClvWatcher.ClvSnapshot snapshot = StakingClvWatcher.compute(java.util.List.of(beatClose, noClose));
 
-        // Stake-weighted blend: (100*0.25 + 100*0.30) / 200 = 0.275
-        assertEquals(0.275, snapshot.clv(), 1e-9);
+        assertEquals(0.25, snapshot.clv(), 1e-9);
         assertEquals(2, snapshot.sampleCount());
         assertEquals(1, snapshot.closingLineSamples());
         assertEquals(0.5, snapshot.coverageRatio(), 1e-9);

@@ -11,6 +11,7 @@ import com.ttl.tabletennis.dto.OddsRefreshResultDto;
 import com.ttl.tabletennis.dto.ValueOpportunityDto;
 import com.ttl.tabletennis.model.MatchOdds;
 import com.ttl.tabletennis.repository.OddsQuoteRepository;
+import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.ValueOpportunityRepository;
 import com.ttl.tabletennis.scrape.HardRockOddsScraper;
 import com.ttl.tabletennis.util.CorrelationContext;
@@ -103,6 +104,7 @@ public class OddsValueEngineService {
     private final HardRockOddsScraper hardRockOddsScraper;
     private final OddsQuoteRepository oddsQuoteRepository;
     private final ValueOpportunityRepository valueOpportunityRepository;
+    private final MatchRepository matchRepository;
 
     @Value("${ttl.odds.defaultModelFamily:ENSEMBLE}")
     private String defaultModelFamily;
@@ -119,16 +121,21 @@ public class OddsValueEngineService {
     @Value("${ttl.odds.maxRecommendedAmericanOdds:220}")
     private int maxRecommendedAmericanOdds;
 
+    @Value("${ttl.odds.maxCompletedDataAgeDays:14}")
+    private int maxCompletedDataAgeDays;
+
     public OddsValueEngineService(PredictionFacade predictionFacade,
                                   PlayerIdentityService playerIdentityService,
                                   HardRockOddsScraper hardRockOddsScraper,
                                   OddsQuoteRepository oddsQuoteRepository,
-                                  ValueOpportunityRepository valueOpportunityRepository) {
+                                  ValueOpportunityRepository valueOpportunityRepository,
+                                  MatchRepository matchRepository) {
         this.predictionFacade = predictionFacade;
         this.playerIdentityService = playerIdentityService;
         this.hardRockOddsScraper = hardRockOddsScraper;
         this.oddsQuoteRepository = oddsQuoteRepository;
         this.valueOpportunityRepository = valueOpportunityRepository;
+        this.matchRepository = matchRepository;
     }
 
     /**
@@ -453,6 +460,10 @@ public class OddsValueEngineService {
         List<MatchOdds> fetched = fetchWithCache();
         List<LiveOddsRecommendationDto> out = new ArrayList<>();
         LocalDateTime snapshotTime = LocalDateTime.now();
+        LocalDate latestCompleted = matchRepository.findLastCompletedMatchDate();
+        int freshnessDays = Math.max(1, Math.min(90, maxCompletedDataAgeDays));
+        boolean modelDataFresh = latestCompleted != null
+                && !latestCompleted.isBefore(LocalDate.now().minusDays(freshnessDays));
 
         for (MatchOdds odds : fetched) {
             try {
@@ -650,7 +661,10 @@ public class OddsValueEngineService {
                 boolean confidenceOk = pickPlayer1 ? p1ConfidenceOk : p2ConfidenceOk;
                 int suggestedAmericanOdds = pickPlayer1 ? decimalToAmerican(odds.getOddsA()) : decimalToAmerican(odds.getOddsB());
                 boolean longshotRisk = suggestedAmericanOdds > Math.abs(maxRecommendedAmericanOdds);
-                boolean recommended = suggestedEdge >= threshold && confidenceOk && !longshotRisk;
+                boolean recommended = suggestedEdge >= threshold
+                        && confidenceOk
+                        && !longshotRisk
+                        && modelDataFresh;
                 String topTrigger = null;
                 Double topTriggerContribution = null;
                 if (prediction.featureContributions() != null && !prediction.featureContributions().isEmpty()) {
@@ -679,6 +693,10 @@ public class OddsValueEngineService {
                         suggestedSideBaselineStability,
                         pickPlayer1 ? p1RegimeTuning : p2RegimeTuning
                 );
+                if (!modelDataFresh) {
+                    rationale += " Recommendation paused: completed-match data is stale"
+                            + (latestCompleted == null ? "." : " (latest " + latestCompleted + ").");
+                }
 
                 out.add(new LiveOddsRecommendationDto(
                         source,
@@ -730,7 +748,8 @@ public class OddsValueEngineService {
                         odds.isMatchCompleted(),
                         odds.getSourceFeedCode(),
                         odds.getSourceFeedEventId(),
-                        odds.getScoreDetail()
+                        odds.getScoreDetail(),
+                        prediction.featureContributions()
                 ));
             } catch (Exception ex) {
                 log.warn(

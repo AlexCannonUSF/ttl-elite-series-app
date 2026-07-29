@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.LocalDateTime;
 
 public interface TrackedMatchObservationRepository extends JpaRepository<TrackedMatchObservation, Long> {
 
@@ -18,6 +19,10 @@ public interface TrackedMatchObservationRepository extends JpaRepository<Tracked
     List<TrackedMatchObservation> findByEventKeyOrderByObservedAtAsc(String eventKey);
 
     List<TrackedMatchObservation> findBySessionIdOrderByObservedAtDesc(Long sessionId, Pageable pageable);
+
+    List<TrackedMatchObservation> findByProvisionalResolvedAtAfterAndProvisionalCorrectIsNotNull(
+            LocalDateTime threshold
+    );
 
     long countBySessionIdAndSourceKind(Long sessionId, String sourceKind);
 

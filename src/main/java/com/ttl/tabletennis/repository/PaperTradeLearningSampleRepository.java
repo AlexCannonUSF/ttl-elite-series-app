@@ -7,14 +7,41 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 public interface PaperTradeLearningSampleRepository extends JpaRepository<PaperTradeLearningSample, Long> {
 
     boolean existsByBetId(Long betId);
 
+    Optional<PaperTradeLearningSample> findByBetId(Long betId);
+
     List<PaperTradeLearningSample> findByStatusInOrderBySettledAtDesc(Collection<String> statuses, Pageable pageable);
 
+    List<PaperTradeLearningSample> findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+            Collection<String> statuses,
+            Pageable pageable
+    );
+
     List<PaperTradeLearningSample> findBySettledAtAfter(LocalDateTime threshold);
+
+    @org.springframework.data.jpa.repository.Query("""
+            select s from PaperTradeLearningSample s
+            where s.calibrationEligible = true
+              and coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) >= :threshold
+            order by coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) asc
+            """)
+    List<PaperTradeLearningSample> findCalibrationEligibleAfter(
+            @org.springframework.data.repository.query.Param("threshold") LocalDateTime threshold
+    );
+
+    @org.springframework.data.jpa.repository.Query("""
+            select s from PaperTradeLearningSample s
+            where coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) >= :threshold
+            order by coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) asc
+            """)
+    List<PaperTradeLearningSample> findLearningEvidenceAfter(
+            @org.springframework.data.repository.query.Param("threshold") LocalDateTime threshold
+    );
 
     /** Used by the §5 closing-line backfill to find rows that need enrichment. */
     List<PaperTradeLearningSample> findByClosingDecimalOddsIsNullOrderBySettledAtDesc(Pageable pageable);

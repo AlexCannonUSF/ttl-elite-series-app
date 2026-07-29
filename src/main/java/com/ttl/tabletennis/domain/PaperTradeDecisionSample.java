@@ -73,6 +73,21 @@ public class PaperTradeDecisionSample {
     @Column(name = "top_trigger", length = 180)
     private String topTrigger;
 
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
+    @Column(name = "overall_reliability")
+    private Double overallReliability;
+
+    @Column(name = "rating_agreement")
+    private Double ratingAgreement;
+
+    @Column(name = "trigger_reliability")
+    private Double triggerReliability;
+
+    @Column(name = "baseline_stability")
+    private Double baselineStability;
+
     @Column(name = "recommended", nullable = false)
     private boolean recommended;
 
@@ -270,6 +285,46 @@ public class PaperTradeDecisionSample {
 
     public void setTopTrigger(String topTrigger) {
         this.topTrigger = topTrigger;
+    }
+
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
+    }
+
+    public Double getOverallReliability() {
+        return overallReliability;
+    }
+
+    public void setOverallReliability(Double overallReliability) {
+        this.overallReliability = overallReliability;
+    }
+
+    public Double getRatingAgreement() {
+        return ratingAgreement;
+    }
+
+    public void setRatingAgreement(Double ratingAgreement) {
+        this.ratingAgreement = ratingAgreement;
+    }
+
+    public Double getTriggerReliability() {
+        return triggerReliability;
+    }
+
+    public void setTriggerReliability(Double triggerReliability) {
+        this.triggerReliability = triggerReliability;
+    }
+
+    public Double getBaselineStability() {
+        return baselineStability;
+    }
+
+    public void setBaselineStability(Double baselineStability) {
+        this.baselineStability = baselineStability;
     }
 
     public boolean isRecommended() {

@@ -22,5 +22,32 @@ public record AdaptiveDecisionSample(Long betId,
                                      double stake,
                                      double profitLoss,
                                      double confidenceWidth,
-                                     LocalDateTime settledAt) {
+                                     LocalDateTime eventOccurredAt,
+                                     double settlementConfidence) {
+
+    /** Backward-compatible constructor for focused builder tests. */
+    public AdaptiveDecisionSample(Long betId,
+                                  String topTrigger,
+                                  String status,
+                                  double modelProbability,
+                                  double impliedProbability,
+                                  double edge,
+                                  double stake,
+                                  double profitLoss,
+                                  double confidenceWidth,
+                                  LocalDateTime eventOccurredAt) {
+        this(
+                betId,
+                topTrigger,
+                status,
+                modelProbability,
+                impliedProbability,
+                edge,
+                stake,
+                profitLoss,
+                confidenceWidth,
+                eventOccurredAt,
+                1.0
+        );
+    }
 }

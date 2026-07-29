@@ -9,6 +9,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import java.time.LocalDateTime;
 
@@ -25,6 +26,10 @@ public class PaperTradeSession {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Version
+    @Column(name = "row_version", nullable = false, columnDefinition = "bigint default 0 not null")
+    private long rowVersion;
 
     @Column(name = "status", nullable = false, length = 20)
     private String status;
@@ -133,6 +138,10 @@ public class PaperTradeSession {
 
     public Long getId() {
         return id;
+    }
+
+    public long getRowVersion() {
+        return rowVersion;
     }
 
     public String getStatus() {

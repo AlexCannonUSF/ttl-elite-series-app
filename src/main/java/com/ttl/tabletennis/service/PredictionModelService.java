@@ -59,6 +59,8 @@ public class PredictionModelService {
     );
 
     private static final double EPS = 1e-9;
+    private static final double MIN_FEATURE_STD = 1.0e-3;
+    private static final double MAX_STANDARDIZED_FEATURE = 6.0;
     private static final DateTimeFormatter VERSION_TS = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final LocalDate MIN_REASONABLE_MATCH_DATE = LocalDate.of(1990, 1, 1);
 
@@ -74,7 +76,11 @@ public class PredictionModelService {
             "Volatility Advantage",
             "P1 Recent Form",
             "P2 Recent Form",
-            "Form × H2H Interaction"
+            "Form × H2H Interaction",
+            "TrueSkill2 Probability Delta",
+            "Weng-Lin Probability Delta",
+            "Rater Ensemble Delta",
+            "Rater Consensus Signal"
     };
 
     private final MatchRepository matchRepository;
@@ -155,11 +161,17 @@ public class PredictionModelService {
     @Value("${ttl.prediction.liveLearningEnabled:true}")
     private boolean liveLearningEnabled;
 
+    @Value("${ttl.prediction.liveLearningApplyEnabled:false}")
+    private boolean liveLearningApplyEnabled;
+
     @Value("${ttl.prediction.liveLearningWindow:200}")
     private int liveLearningWindow;
 
     @Value("${ttl.prediction.liveLearningMinSamples:25}")
     private int liveLearningMinSamples;
+
+    @Value("${ttl.prediction.liveLearningMinEffectiveSamples:50}")
+    private int liveLearningMinEffectiveSamples;
 
     @Value("${ttl.prediction.liveLearningHalfLifeDays:21}")
     private double liveLearningHalfLifeDays;
@@ -178,6 +190,9 @@ public class PredictionModelService {
 
     @Value("${ttl.prediction.regimeLearningMaxScaleShift:0.08}")
     private double regimeLearningMaxScaleShift;
+
+    @Value("${ttl.prediction.regimeLearningApplyEnabled:false}")
+    private boolean regimeLearningApplyEnabled;
 
     public PredictionModelService(MatchRepository matchRepository,
                                   FeatureService featureService,
@@ -299,7 +314,7 @@ public class PredictionModelService {
     }
 
     public AdaptiveRegimeTuning currentAdaptiveRegimeTuning(boolean live, String phase, double impliedProbability) {
-        if (!liveLearningEnabled) {
+        if (!liveLearningEnabled || !regimeLearningApplyEnabled) {
             return AdaptiveRegimeTuning.neutral("All Settled");
         }
         List<AdaptiveRegimeProfile> profiles = loadAdaptiveRegimeProfiles();
@@ -494,6 +509,12 @@ public class PredictionModelService {
 
             activeModels.clear();
             activeModels.putAll(trained);
+            if (!FAMILY_ENSEMBLE.equals(championFamily) && trained.get(championFamily) != null) {
+                // "ENSEMBLE" is the product's default selector. Route it to
+                // the validated champion when the ensemble did not win the
+                // holdout instead of silently serving an inactive candidate.
+                activeModels.put(FAMILY_ENSEMBLE, trained.get(championFamily));
+            }
 
             List<ModelTrainingReportDto.CandidateMetricDto> candidates = List.of(
                     toCandidateDto(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC), logisticMetrics, FAMILY_LOGISTIC.equals(championFamily)),
@@ -596,7 +617,7 @@ public class PredictionModelService {
         uncertainty = clamp(uncertainty + (clamp(sampleUncertaintyWeight, 0.0, 1.0) * sampleUncertainty), 0.0, 1.0);
         double shrink = clamp(uncertaintyShrink, 0.0, 0.8) * uncertainty;
         double blended = 0.5 + ((consensusBlended - 0.5) * (1.0 - shrink));
-        if (liveCalibration != null) {
+        if (liveLearningApplyEnabled && liveCalibration != null) {
             blended = 0.5 + ((blended - 0.5) * liveCalibration.confidenceScale());
         }
 
@@ -631,7 +652,7 @@ public class PredictionModelService {
         spread *= (1.0 + Math.min(0.8, avgVol * 6.0));
         spread += clamp(disagreementCiBoost, 0.0, 1.5) * clamp(disagreement, 0.0, 0.35) * 0.35;
         spread += clamp(sampleCiBoost, 0.0, 0.5) * sampleUncertainty;
-        if (liveCalibration != null) {
+        if (liveLearningApplyEnabled && liveCalibration != null) {
             spread += liveCalibration.ciBoost();
         }
         spread = clamp(spread, 0.06, 0.50);
@@ -805,6 +826,13 @@ public class PredictionModelService {
         double p1Form = 0.5 + ((fv.player1().recentForm() - 0.5) * p1RecentReliability);
         double p2Form = 0.5 + ((fv.player2().recentForm() - 0.5) * p2RecentReliability);
         double interaction = recentDiff * h2hDelta;
+        double trueSkill2Delta = fv.trueSkill2ProbabilityPlayer1() - 0.5;
+        double wengLinDelta = fv.wengLinProbabilityPlayer1() - 0.5;
+        double raterEnsembleDelta = fv.raterEnsembleProbabilityPlayer1() - 0.5;
+        double ratingAgreement = fv.reliabilitySummary() == null
+                ? 0.0
+                : clamp(fv.reliabilitySummary().ratingAgreement(), 0.0, 1.0);
+        double raterConsensusSignal = raterEnsembleDelta * ratingAgreement;
         return new double[]{
                 h2hDelta,
                 recentDiff,
@@ -817,7 +845,11 @@ public class PredictionModelService {
                 volAdvantage,
                 p1Form,
                 p2Form,
-                interaction
+                interaction,
+                trueSkill2Delta,
+                wengLinDelta,
+                raterEnsembleDelta,
+                raterConsensusSignal
         };
     }
 
@@ -833,11 +865,18 @@ public class PredictionModelService {
         z += 0.25 * x[7];
         z += 0.15 * x[8];
         z += 0.20 * x[11];
+        z += 1.10 * x[12];
+        z += 0.80 * x[13];
+        z += 0.70 * x[14];
+        z += 0.45 * x[15];
         return sigmoid(z);
     }
 
     private List<MatchupAnalysisDto.FeatureContributionDto> baselineContributions(double[] x) {
-        double[] weights = new double[]{0.90, 0.95, 0.55, 0.35, 0.85, 1.05, 0.45, 0.25, 0.15, 0.0, 0.0, 0.20};
+        double[] weights = new double[]{
+                0.90, 0.95, 0.55, 0.35, 0.85, 1.05, 0.45, 0.25,
+                0.15, 0.0, 0.0, 0.20, 1.10, 0.80, 0.70, 0.45
+        };
         List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
         for (int i = 0; i < BASE_FEATURE_NAMES.length; i++) {
             double contribution = x[i] * weights[i];
@@ -939,13 +978,13 @@ public class PredictionModelService {
             for (int i = 0; i < n; i++) {
                 double z = weights[0];
                 for (int j = 0; j < d; j++) {
-                    z += weights[j + 1] * ((X[i][j] - means[j]) / stds[j]);
+                    z += weights[j + 1] * standardized(X[i][j], means[j], stds[j]);
                 }
                 double p = sigmoid(z);
                 double err = (p - y[i]) * sampleWeights[i];
                 grad[0] += err;
                 for (int j = 0; j < d; j++) {
-                    grad[j + 1] += err * ((X[i][j] - means[j]) / stds[j]);
+                    grad[j + 1] += err * standardized(X[i][j], means[j], stds[j]);
                 }
             }
             double invW = 1.0 / weightSum;
@@ -1111,7 +1150,8 @@ public class PredictionModelService {
 
         int take = clamp(liveLearningWindow, 30, 1000);
         int minSamples = clamp(liveLearningMinSamples, 10, 400);
-        List<PaperTradeLearningSample> rows = learningSampleRepository.findByStatusInOrderBySettledAtDesc(
+        List<PaperTradeLearningSample> rows =
+                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
@@ -1127,15 +1167,18 @@ public class PredictionModelService {
         double weightedStake = 0.0;
         double weightedPnl = 0.0;
         double weightSum = 0.0;
+        double squaredWeightSum = 0.0;
         for (PaperTradeLearningSample row : rows) {
             if (row == null) {
                 continue;
             }
-            double w = recencyWeight(row.getSettledAt(), now, halfLifeDays);
+            double w = recencyWeight(learningEventTime(row), now, halfLifeDays)
+                    * clamp(row.getSettlementConfidence(), 0.0, 1.0);
             if (w <= 0.0) {
                 continue;
             }
             weightSum += w;
+            squaredWeightSum += w * w;
             if (PaperTradeBet.STATUS_WON.equals(row.getStatus())) {
                 weightedWins += w;
             }
@@ -1155,15 +1198,24 @@ public class PredictionModelService {
         double predicted = weightedModel / weightSum;
         double calibrationError = predicted - observed;
         double roiSignal = weightedStake <= EPS ? 0.0 : weightedPnl / weightedStake;
+        double effectiveSampleSize = squaredWeightSum <= EPS
+                ? 0.0
+                : (weightSum * weightSum) / squaredWeightSum;
+        int minimumEffective = clamp(liveLearningMinEffectiveSamples, 20, 400);
         double reliability = clamp(
-                (rows.size() - minSamples + 1.0) / Math.max(1.0, take - minSamples + 1.0),
+                effectiveSampleSize / (effectiveSampleSize + Math.max(minimumEffective, minSamples * 2.0)),
                 0.0,
                 1.0
         );
+        if (effectiveSampleSize < minimumEffective) {
+            reliability = 0.0;
+        }
         double maxScaleShift = clamp(liveLearningMaxScaleShift, 0.01, 0.25);
-        double scaleShiftRaw = (-calibrationError * 0.75) + (roiSignal * 0.08);
-        double scaleShift = clamp(scaleShiftRaw * reliability, -maxScaleShift, maxScaleShift * 0.6);
-        double confidenceScale = clamp(1.0 + scaleShift, 1.0 - maxScaleShift, 1.0 + (maxScaleShift * 0.6));
+        // Online data may only shrink confidence. Increasing confidence or
+        // moving thresholds requires a separately promoted offline model.
+        double scaleShiftRaw = -Math.max(0.0, calibrationError) * 0.75;
+        double scaleShift = clamp(scaleShiftRaw * reliability, -maxScaleShift, 0.0);
+        double confidenceScale = clamp(1.0 + scaleShift, 1.0 - maxScaleShift, 1.0);
         double ciBoost = clamp(
                 ((Math.max(0.0, calibrationError) * 0.32) + (Math.max(0.0, -roiSignal) * 0.08)) * reliability,
                 0.0,
@@ -1194,7 +1246,8 @@ public class PredictionModelService {
         }
 
         int take = clamp(regimeLearningWindow, 40, 800);
-        List<PaperTradeLearningSample> rows = learningSampleRepository.findByStatusInOrderBySettledAtDesc(
+        List<PaperTradeLearningSample> rows =
+                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
@@ -1212,9 +1265,9 @@ public class PredictionModelService {
         addAdaptiveProfile(profiles, "All Settled", rows, now, row -> true, false, "ALL", "ALL");
         addAdaptiveProfile(profiles, "Prematch", rows, now, row -> !row.isLiveAtPlacement(), false, "PREMATCH", "ALL");
         addAdaptiveProfile(profiles, "Live", rows, now, PaperTradeLearningSample::isLiveAtPlacement, true, "LIVE", "ALL");
-        addAdaptiveProfile(profiles, "LIVE_EARLY", rows, now, row -> "LIVE_EARLY".equals(normalizePhase(row.getLastObservedPhase())), true, "LIVE_EARLY", "ALL");
-        addAdaptiveProfile(profiles, "LIVE_MID", rows, now, row -> "LIVE_MID".equals(normalizePhase(row.getLastObservedPhase())), true, "LIVE_MID", "ALL");
-        addAdaptiveProfile(profiles, "LIVE_LATE", rows, now, row -> "LIVE_LATE".equals(normalizePhase(row.getLastObservedPhase())), true, "LIVE_LATE", "ALL");
+        addAdaptiveProfile(profiles, "LIVE_EARLY", rows, now, row -> "LIVE_EARLY".equals(normalizePhase(placementPhase(row))), true, "LIVE_EARLY", "ALL");
+        addAdaptiveProfile(profiles, "LIVE_MID", rows, now, row -> "LIVE_MID".equals(normalizePhase(placementPhase(row))), true, "LIVE_MID", "ALL");
+        addAdaptiveProfile(profiles, "LIVE_LATE", rows, now, row -> "LIVE_LATE".equals(normalizePhase(placementPhase(row))), true, "LIVE_LATE", "ALL");
         addAdaptiveProfile(profiles, "Favorite Side", rows, now, row -> row.getImpliedProbability() >= 0.55, false, "ALL", "FAVORITE");
         addAdaptiveProfile(profiles, "Underdog Side", rows, now, row -> row.getImpliedProbability() <= 0.45, false, "ALL", "UNDERDOG");
         profiles.sort(Comparator.comparingDouble(AdaptiveRegimeProfile::reliability).reversed().thenComparing(AdaptiveRegimeProfile::label));
@@ -1241,12 +1294,15 @@ public class PredictionModelService {
         double weightedStake = 0.0;
         double weightedPnl = 0.0;
         double weightSum = 0.0;
+        double squaredWeightSum = 0.0;
         for (PaperTradeLearningSample row : selected) {
-            double w = recencyWeight(row.getSettledAt(), now, halfLifeDays);
+            double w = recencyWeight(learningEventTime(row), now, halfLifeDays)
+                    * clamp(row.getSettlementConfidence(), 0.0, 1.0);
             if (w <= 0.0) {
                 continue;
             }
             weightSum += w;
+            squaredWeightSum += w * w;
             predicted += clamp(row.getModelProbability(), 0.01, 0.99) * w;
             observed += (PaperTradeBet.STATUS_WON.equals(row.getStatus()) ? 1.0 : 0.0) * w;
             weightedStake += Math.max(0.0, row.getStake()) * w;
@@ -1260,15 +1316,21 @@ public class PredictionModelService {
         double observedRate = observed / weightSum;
         double calibrationError = meanPredicted - observedRate;
         double roiSignal = weightedStake <= EPS ? 0.0 : weightedPnl / weightedStake;
+        double effectiveSampleSize = squaredWeightSum <= EPS
+                ? 0.0
+                : (weightSum * weightSum) / squaredWeightSum;
         double reliability = clamp(
-                (selected.size() - minSamples + 1.0) / Math.max(1.0, clamp(regimeLearningWindow, 40, 800) - minSamples + 1.0),
+                effectiveSampleSize / (effectiveSampleSize + Math.max(minSamples * 3.0, 24.0)),
                 0.0,
                 1.0
         );
+        if (effectiveSampleSize < minSamples) {
+            reliability = 0.0;
+        }
         double maxScaleShift = clamp(regimeLearningMaxScaleShift, 0.01, 0.18);
-        double scaleShiftRaw = (-calibrationError * 0.65) + (roiSignal * 0.05);
-        double scaleShift = clamp(scaleShiftRaw * reliability, -maxScaleShift, maxScaleShift * 0.55);
-        double confidenceScale = clamp(1.0 + scaleShift, 1.0 - maxScaleShift, 1.0 + (maxScaleShift * 0.55));
+        double scaleShiftRaw = -Math.max(0.0, calibrationError) * 0.65;
+        double scaleShift = clamp(scaleShiftRaw * reliability, -maxScaleShift, 0.0);
+        double confidenceScale = clamp(1.0 + scaleShift, 1.0 - maxScaleShift, 1.0);
         double ciBoost = clamp(
                 ((Math.max(0.0, calibrationError) * 0.28) + (Math.max(0.0, -roiSignal) * 0.07)) * reliability,
                 0.0,
@@ -1299,13 +1361,32 @@ public class PredictionModelService {
                 .orElse(null);
     }
 
-    private double recencyWeight(LocalDateTime settledAt, LocalDateTime now, double halfLifeDays) {
-        if (settledAt == null || now == null) {
+    private double recencyWeight(LocalDateTime eventOccurredAt, LocalDateTime now, double halfLifeDays) {
+        if (eventOccurredAt == null || now == null) {
             return 1.0;
         }
-        long days = Math.max(0L, ChronoUnit.DAYS.between(settledAt.toLocalDate(), now.toLocalDate()));
+        long days = Math.max(0L, ChronoUnit.DAYS.between(eventOccurredAt.toLocalDate(), now.toLocalDate()));
         double halfLife = Math.max(2.0, halfLifeDays);
         return Math.pow(0.5, days / halfLife);
+    }
+
+    private LocalDateTime learningEventTime(PaperTradeLearningSample row) {
+        if (row == null) {
+            return null;
+        }
+        if (row.getEventOccurredAt() != null) {
+            return row.getEventOccurredAt();
+        }
+        return row.getPlacedAt() != null ? row.getPlacedAt() : row.getSettledAt();
+    }
+
+    private String placementPhase(PaperTradeLearningSample row) {
+        if (row == null) {
+            return null;
+        }
+        return StringUtils.hasText(row.getPlacementPhase())
+                ? row.getPlacementPhase()
+                : row.getLastObservedPhase();
     }
 
     private List<ModelTrainingReportDto.CalibrationBinDto> buildCalibrationCurve(PredictModel model,
@@ -1399,7 +1480,8 @@ public class PredictionModelService {
 
     private List<ModelTrainingReportDto.RegimeMetricDto> buildOperationalRegimes() {
         int take = clamp(liveLearningWindow * 2, 80, 600);
-        List<PaperTradeLearningSample> rows = learningSampleRepository.findByStatusInOrderBySettledAtDesc(
+        List<PaperTradeLearningSample> rows =
+                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
@@ -1418,7 +1500,7 @@ public class PredictionModelService {
                     row.getStake(),
                     row.getProfitLoss(),
                     row.isLiveAtPlacement(),
-                    normalizePhase(row.getLastObservedPhase()),
+                    normalizePhase(placementPhase(row)),
                     clamp(row.getImpliedProbability(), 0.0, 1.0)
             ));
         }
@@ -1647,17 +1729,40 @@ public class PredictionModelService {
     private void tryLoadModelsFromRegistry() {
         Map<String, TrainedModel> loadedByFamily = new HashMap<>();
         Map<String, TrainedModel> loadedByVersion = new HashMap<>();
+        TrainedModel activeChampion = null;
 
         for (String family : List.of(FAMILY_LOGISTIC, FAMILY_GBT_LIKE, FAMILY_RF_LIKE)) {
             loadLatestModelForFamily(family, loadedByVersion).ifPresent(model -> {
                 loadedByFamily.put(family, model);
                 loadedByVersion.put(model.version, model);
             });
+            List<PredictionModelRegistryEntry> activeRows =
+                    registryRepository.findActiveByFamily(family, PageRequest.of(0, 1));
+            if (!activeRows.isEmpty()) {
+                TrainedModel active = restoreModelFromRegistryEntry(activeRows.get(0), loadedByVersion);
+                if (active != null) {
+                    activeChampion = active;
+                    loadedByFamily.put(family, active);
+                    loadedByVersion.put(active.version, active);
+                }
+            }
         }
+        final TrainedModel nonEnsembleChampion = activeChampion;
         loadLatestModelForFamily(FAMILY_ENSEMBLE, loadedByVersion).ifPresent(model -> {
             loadedByFamily.put(FAMILY_ENSEMBLE, model);
             loadedByVersion.put(model.version, model);
         });
+        List<PredictionModelRegistryEntry> activeEnsembleRows =
+                registryRepository.findActiveByFamily(FAMILY_ENSEMBLE, PageRequest.of(0, 1));
+        if (!activeEnsembleRows.isEmpty()) {
+            TrainedModel activeEnsemble =
+                    restoreModelFromRegistryEntry(activeEnsembleRows.get(0), loadedByVersion);
+            if (activeEnsemble != null) {
+                loadedByFamily.put(FAMILY_ENSEMBLE, activeEnsemble);
+            }
+        } else if (nonEnsembleChampion != null) {
+            loadedByFamily.put(FAMILY_ENSEMBLE, nonEnsembleChampion);
+        }
 
         if (!loadedByFamily.isEmpty()) {
             activeModels.clear();
@@ -1845,7 +1950,10 @@ public class PredictionModelService {
         if (featureCount == gbt.featureNames.length) {
             return gbt.transform;
         }
-        return FeatureSet.base().transform;
+        if (featureCount == 18) {
+            return FeatureSet.legacyGbtTransform();
+        }
+        return x -> Arrays.copyOf(x, Math.min(featureCount, x.length));
     }
 
     private String[] readStringArray(JsonNode node, int expectedLength) {
@@ -1932,6 +2040,21 @@ public class PredictionModelService {
         }
         double ez = Math.exp(z);
         return ez / (1.0 + ez);
+    }
+
+    /**
+     * Neutralizes untrained/constant columns and clips out-of-distribution
+     * z-scores. A near-zero training standard deviation must never amplify a
+     * live feature into a double-digit logit contribution.
+     */
+    private static double standardized(double value, double mean, double std) {
+        if (!Double.isFinite(value) || !Double.isFinite(mean) || !Double.isFinite(std)
+                || Math.abs(std) < MIN_FEATURE_STD) {
+            return 0.0;
+        }
+        return clamp((value - mean) / Math.abs(std),
+                -MAX_STANDARDIZED_FEATURE,
+                MAX_STANDARDIZED_FEATURE);
     }
 
     private static double clamp01(double value) {
@@ -2100,7 +2223,7 @@ public class PredictionModelService {
         }
 
         static FeatureSet base() {
-            return new FeatureSet(BASE_FEATURE_NAMES, x -> Arrays.copyOf(x, x.length));
+            return new FeatureSet(BASE_FEATURE_NAMES, x -> Arrays.copyOf(x, BASE_FEATURE_NAMES.length));
         }
 
         static FeatureSet gbtLike() {
@@ -2108,14 +2231,24 @@ public class PredictionModelService {
                     BASE_FEATURE_NAMES[0], BASE_FEATURE_NAMES[1], BASE_FEATURE_NAMES[2], BASE_FEATURE_NAMES[3],
                     BASE_FEATURE_NAMES[4], BASE_FEATURE_NAMES[5], BASE_FEATURE_NAMES[6], BASE_FEATURE_NAMES[7],
                     BASE_FEATURE_NAMES[8], BASE_FEATURE_NAMES[9], BASE_FEATURE_NAMES[10], BASE_FEATURE_NAMES[11],
+                    BASE_FEATURE_NAMES[12], BASE_FEATURE_NAMES[13], BASE_FEATURE_NAMES[14], BASE_FEATURE_NAMES[15],
                     "Recent Form Delta^2", "Glicko Probability Delta^2", "Rating Delta^2",
                     "H2H × Recent Form Delta", "Recent Form × OppAdj Delta", "Elo × Glicko Probability Delta"
             };
             return new FeatureSet(expandedNames, x -> new double[]{
                     x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11],
+                    x[12], x[13], x[14], x[15],
                     x[1] * x[1], x[5] * x[5], x[6] * x[6],
                     x[0] * x[1], x[1] * x[2], x[4] * x[5]
             });
+        }
+
+        static Function<double[], double[]> legacyGbtTransform() {
+            return x -> new double[]{
+                    x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11],
+                    x[1] * x[1], x[5] * x[5], x[6] * x[6],
+                    x[0] * x[1], x[1] * x[2], x[4] * x[5]
+            };
         }
     }
 
@@ -2177,7 +2310,7 @@ public class PredictionModelService {
             double[] x = transform.apply(baseFeatures);
             double z = weights[0];
             for (int j = 0; j < x.length; j++) {
-                z += weights[j + 1] * ((x[j] - means[j]) / stds[j]);
+                z += weights[j + 1] * standardized(x[j], means[j], stds[j]);
             }
             return z;
         }
@@ -2187,7 +2320,7 @@ public class PredictionModelService {
             double[] x = transform.apply(baseFeatures);
             List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
             for (int j = 0; j < x.length; j++) {
-                double contribution = weights[j + 1] * ((x[j] - means[j]) / stds[j]);
+                double contribution = weights[j + 1] * standardized(x[j], means[j], stds[j]);
                 out.add(new MatchupAnalysisDto.FeatureContributionDto(featureNames[j], round4(contribution)));
             }
             out.sort((a, b) -> Double.compare(Math.abs(b.contribution()), Math.abs(a.contribution())));

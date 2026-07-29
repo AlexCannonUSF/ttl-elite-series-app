@@ -62,6 +62,16 @@ public class SessionLifecycleService {
     }
 
     /**
+     * Placement-only variant that obtains a database write lock on the active
+     * ledger row. Call only from an existing transaction.
+     */
+    @Transactional
+    public PaperTradeSession getOrCreateActiveSessionForUpdate() {
+        return sessionRepository.findLatestByStatusForUpdate(PaperTradeSession.STATUS_ACTIVE)
+                .orElseGet(() -> createSession(null, null));
+    }
+
+    /**
      * Create a fresh ACTIVE session with the supplied starting bankroll and
      * label (both nullable — null bankroll falls back to the {@code @Value}
      * default; null label uses {@code "Paper Session <today>"}). Persists +

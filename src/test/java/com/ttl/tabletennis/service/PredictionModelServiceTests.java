@@ -269,8 +269,12 @@ class PredictionModelServiceTests {
         sample.setProfitLoss(profitLoss);
         sample.setConfidenceWidth(0.18);
         sample.setLastObservedPhase(phase);
+        sample.setPlacementPhase(phase);
         sample.setPlacedAt(settledAt.minusMinutes(25));
+        sample.setEventOccurredAt(settledAt.minusMinutes(25));
         sample.setSettledAt(settledAt);
+        sample.setSettlementConfidence(1.0);
+        sample.setCalibrationEligible(true);
         learningSampleRepository.save(sample);
     }
 }

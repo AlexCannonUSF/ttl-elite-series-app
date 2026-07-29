@@ -70,6 +70,38 @@ public class PaperTradeLearningSample {
     @Column(name = "last_observed_phase", length = 64)
     private String lastObservedPhase;
 
+    @Column(name = "placement_phase", length = 64)
+    private String placementPhase;
+
+    /**
+     * Match/placement clock used for recency weighting. Settlement time is
+     * deliberately not used because a late official result must not turn an
+     * old prediction into a brand-new observation.
+     */
+    @Column(name = "event_occurred_at")
+    private LocalDateTime eventOccurredAt;
+
+    @Column(name = "settlement_source", length = 48)
+    private String settlementSource;
+
+    @Column(name = "settlement_reason", length = 120)
+    private String settlementReason;
+
+    @Column(name = "settlement_confidence", nullable = false, columnDefinition = "double precision default 0 not null")
+    private double settlementConfidence;
+
+    @Column(name = "calibration_eligible", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean calibrationEligible;
+
+    @Column(name = "price_regime", length = 24)
+    private String priceRegime;
+
+    @Column(name = "side_orientation", length = 4)
+    private String sideOrientation;
+
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
     @Column(name = "placed_at")
     private LocalDateTime placedAt;
 
@@ -92,8 +124,8 @@ public class PaperTradeLearningSample {
      * the historical samples after settlement, so older rows may not
      * have a closing snapshot in {@code odds_snapshot}, and (b) the
      * source feed may not have observed a CLOSED state for some events.
-     * The {@link com.ttl.tabletennis.prediction.staking.StakingClvWatcher}
-     * gauge falls back to the PnL/stake proxy when either is null.
+     * Missing closing prices remain explicitly uncovered. They must never be
+     * replaced with PnL because profitability is not closing-line value.
      */
     @Column(name = "closing_decimal_odds")
     private Double closingDecimalOdds;
@@ -248,6 +280,78 @@ public class PaperTradeLearningSample {
 
     public void setLastObservedPhase(String lastObservedPhase) {
         this.lastObservedPhase = lastObservedPhase;
+    }
+
+    public String getPlacementPhase() {
+        return placementPhase;
+    }
+
+    public void setPlacementPhase(String placementPhase) {
+        this.placementPhase = placementPhase;
+    }
+
+    public LocalDateTime getEventOccurredAt() {
+        return eventOccurredAt;
+    }
+
+    public void setEventOccurredAt(LocalDateTime eventOccurredAt) {
+        this.eventOccurredAt = eventOccurredAt;
+    }
+
+    public String getSettlementSource() {
+        return settlementSource;
+    }
+
+    public void setSettlementSource(String settlementSource) {
+        this.settlementSource = settlementSource;
+    }
+
+    public String getSettlementReason() {
+        return settlementReason;
+    }
+
+    public void setSettlementReason(String settlementReason) {
+        this.settlementReason = settlementReason;
+    }
+
+    public double getSettlementConfidence() {
+        return settlementConfidence;
+    }
+
+    public void setSettlementConfidence(double settlementConfidence) {
+        this.settlementConfidence = settlementConfidence;
+    }
+
+    public boolean isCalibrationEligible() {
+        return calibrationEligible;
+    }
+
+    public void setCalibrationEligible(boolean calibrationEligible) {
+        this.calibrationEligible = calibrationEligible;
+    }
+
+    public String getPriceRegime() {
+        return priceRegime;
+    }
+
+    public void setPriceRegime(String priceRegime) {
+        this.priceRegime = priceRegime;
+    }
+
+    public String getSideOrientation() {
+        return sideOrientation;
+    }
+
+    public void setSideOrientation(String sideOrientation) {
+        this.sideOrientation = sideOrientation;
+    }
+
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
     }
 
     public LocalDateTime getPlacedAt() {

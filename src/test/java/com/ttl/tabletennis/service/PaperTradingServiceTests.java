@@ -39,6 +39,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +50,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -87,6 +89,25 @@ class PaperTradingServiceTests {
 
     @MockBean
     private TtSeriesScraper ttSeriesScraper;
+
+    @Test
+    void overlappingSyncIsCoalescedWithoutTouchingTheLiveEngine() {
+        AtomicBoolean guard = (AtomicBoolean) ReflectionTestUtils.getField(paperTradingService, "syncInProgress");
+        assertNotNull(guard);
+        guard.set(true);
+        try {
+            PaperTradingSyncResultDto result =
+                    paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals("ALREADY_RUNNING", result.status());
+            assertEquals(0, result.rowsScanned());
+            assertNotNull(result.session());
+            assertTrue(result.message().contains("already in progress"));
+            verifyNoInteractions(oddsValueEngineService);
+        } finally {
+            guard.set(false);
+        }
+    }
 
     @Test
     void syncPlacesAndSettlesSingleLegBet() {

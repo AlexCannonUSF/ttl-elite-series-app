@@ -8,6 +8,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 import java.time.LocalDateTime;
 
@@ -18,6 +19,8 @@ import java.time.LocalDateTime;
         @Index(name = "idx_paper_bet_session_settled", columnList = "session_id, settled_at"),
         @Index(name = "idx_paper_bet_matchup", columnList = "player1_id, player2_id"),
         @Index(name = "idx_paper_bet_dedupe", columnList = "session_id, dedupe_key")
+}, uniqueConstraints = {
+        @UniqueConstraint(name = "uk_paper_bet_session_dedupe", columnNames = {"session_id", "dedupe_key"})
 })
 public class PaperTradeBet {
 
@@ -89,6 +92,9 @@ public class PaperTradeBet {
     @Column(name = "live_at_placement", nullable = false)
     private boolean liveAtPlacement;
 
+    @Column(name = "placement_phase", length = 48)
+    private String placementPhase;
+
     @Column(name = "player1_id")
     private Long player1Id;
 
@@ -148,6 +154,9 @@ public class PaperTradeBet {
 
     @Column(name = "top_trigger_contribution")
     private Double topTriggerContribution;
+
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
 
     @Column(name = "grade", length = 8)
     private String grade;
@@ -423,6 +432,14 @@ public class PaperTradeBet {
         this.liveAtPlacement = liveAtPlacement;
     }
 
+    public String getPlacementPhase() {
+        return placementPhase;
+    }
+
+    public void setPlacementPhase(String placementPhase) {
+        this.placementPhase = placementPhase;
+    }
+
     public Long getPlayer1Id() {
         return player1Id;
     }
@@ -581,6 +598,14 @@ public class PaperTradeBet {
 
     public void setTopTriggerContribution(Double topTriggerContribution) {
         this.topTriggerContribution = topTriggerContribution;
+    }
+
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
     }
 
     public String getGrade() {

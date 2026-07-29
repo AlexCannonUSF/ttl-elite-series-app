@@ -1,6 +1,8 @@
 package com.ttl.tabletennis.controller;
 
 import com.ttl.tabletennis.dto.MlQualityDto;
+import com.ttl.tabletennis.dto.ModelLearningAuditDto;
+import com.ttl.tabletennis.service.ModelLearningAuditService;
 import com.ttl.tabletennis.service.MlQualityService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -12,9 +14,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class V3MlController {
 
     private final MlQualityService mlQualityService;
+    private final ModelLearningAuditService modelLearningAuditService;
 
-    public V3MlController(MlQualityService mlQualityService) {
+    public V3MlController(MlQualityService mlQualityService,
+                          ModelLearningAuditService modelLearningAuditService) {
         this.mlQualityService = mlQualityService;
+        this.modelLearningAuditService = modelLearningAuditService;
     }
 
     /**
@@ -27,5 +32,11 @@ public class V3MlController {
             @RequestParam(required = false, defaultValue = "14") int windowDays,
             @RequestParam(required = false, defaultValue = "10") int binCount) {
         return mlQualityService.snapshot(windowDays, binCount);
+    }
+
+    @GetMapping("/learning-audit")
+    public ModelLearningAuditDto learningAudit(
+            @RequestParam(required = false, defaultValue = "180") int windowDays) {
+        return modelLearningAuditService.snapshot(windowDays);
     }
 }

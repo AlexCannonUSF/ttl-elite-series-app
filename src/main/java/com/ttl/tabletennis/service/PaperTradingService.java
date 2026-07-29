@@ -42,6 +42,7 @@ import com.ttl.tabletennis.service.papertrade.RowLookup;
 import com.ttl.tabletennis.service.papertrade.ScorePair;
 import com.ttl.tabletennis.service.papertrade.TriggerAdaptiveSignal;
 import com.ttl.tabletennis.service.papertrade.TriggerAggregate;
+import com.ttl.tabletennis.service.papertrade.LearningSampleQuality;
 
 import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.lockBetIdentityIfEligible;
 import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.markIdentityDriftAttempt;
@@ -87,6 +88,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -94,6 +96,7 @@ import java.util.regex.Pattern;
 public class PaperTradingService {
 
     private static final Logger log = LoggerFactory.getLogger(PaperTradingService.class);
+    private final AtomicBoolean syncInProgress = new AtomicBoolean(false);
     // EPS / clamp / round2 / round4 / valueOrZero / safeText / normalizeTrigger
     // moved to PaperTradingHelpers (import-static at the top of this file)
     // as part of the §4 decomposition (2026-05-19).
@@ -129,6 +132,10 @@ public class PaperTradingService {
     private final com.ttl.tabletennis.service.papertrade.SessionSnapshotService sessionSnapshotService;
     private final com.ttl.tabletennis.service.papertrade.SessionResetService sessionResetService;
     private final com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver scoreWinnerResolver;
+    private final com.ttl.tabletennis.service.papertrade.SessionLedgerReconciler sessionLedgerReconciler;
+    private final com.ttl.tabletennis.prediction.staking.StakingPolicy stakingPolicy;
+    private final com.ttl.tabletennis.service.papertrade.ProvisionalScoreOutcomeTracker provisionalScoreOutcomeTracker;
+    private final com.ttl.tabletennis.config.FeatureFlagCatalog featureFlagCatalog;
 
     @Value("${ttl.paper.startingBankroll:1000.0}")
     private double defaultStartingBankroll;
@@ -144,6 +151,9 @@ public class PaperTradingService {
 
     @Value("${ttl.paper.maxStake:250.0}")
     private double maxStake;
+
+    @Value("${ttl.paper.stakingUnitPct:0.025}")
+    private double stakingUnitPct;
 
     @Value("${ttl.paper.minEdge:0.024}")
     private double minEdgeForBet;
@@ -321,6 +331,9 @@ public class PaperTradingService {
     @Value("${ttl.paper.adaptive.enabled:true}")
     private boolean adaptiveEnabled;
 
+    @Value("${ttl.paper.adaptive.applyEnabled:false}")
+    private boolean adaptiveApplyEnabled;
+
     @Value("${ttl.paper.adaptive.minSettledDecisions:12}")
     private int adaptiveMinSettledDecisions;
 
@@ -381,7 +394,11 @@ public class PaperTradingService {
                                com.ttl.tabletennis.service.papertrade.SessionLifecycleService sessionLifecycleService,
                                com.ttl.tabletennis.service.papertrade.SessionSnapshotService sessionSnapshotService,
                                com.ttl.tabletennis.service.papertrade.SessionResetService sessionResetService,
-                               com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver scoreWinnerResolver) {
+                               com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver scoreWinnerResolver,
+                               com.ttl.tabletennis.service.papertrade.SessionLedgerReconciler sessionLedgerReconciler,
+                               com.ttl.tabletennis.prediction.staking.StakingPolicy stakingPolicy,
+                               com.ttl.tabletennis.service.papertrade.ProvisionalScoreOutcomeTracker provisionalScoreOutcomeTracker,
+                               com.ttl.tabletennis.config.FeatureFlagCatalog featureFlagCatalog) {
         this.oddsValueEngineService = oddsValueEngineService;
         this.settlementFacade = settlementFacade;
         this.sessionRepository = sessionRepository;
@@ -403,6 +420,10 @@ public class PaperTradingService {
         this.sessionSnapshotService = sessionSnapshotService;
         this.sessionResetService = sessionResetService;
         this.scoreWinnerResolver = scoreWinnerResolver;
+        this.sessionLedgerReconciler = sessionLedgerReconciler;
+        this.stakingPolicy = stakingPolicy;
+        this.provisionalScoreOutcomeTracker = provisionalScoreOutcomeTracker;
+        this.featureFlagCatalog = featureFlagCatalog;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -422,10 +443,32 @@ public class PaperTradingService {
     public PaperTradingSyncResultDto syncLiveSession(String strategyRaw,
                                                      String modelVersionRaw,
                                                      Integer limit) {
+        String requestedStrategy = normalizeStrategy(strategyRaw);
+        String requestedModelVersion = StringUtils.hasText(modelVersionRaw)
+                ? modelVersionRaw.trim()
+                : "ENSEMBLE";
+        if (!syncInProgress.compareAndSet(false, true)) {
+            log.info("[paper] sync request coalesced because another sync is already in progress");
+            return new PaperTradingSyncResultDto(
+                    requestedStrategy,
+                    requestedModelVersion,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    LocalDateTime.now(),
+                    getSessionSnapshot(),
+                    "ALREADY_RUNNING",
+                    "A scheduled or manual sync is already in progress; this request was safely coalesced."
+            );
+        }
+        try {
         try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
-            PaperTradeSession session = getOrCreateActiveSession();
-            String strategy = normalizeStrategy(strategyRaw);
-            String modelVersion = StringUtils.hasText(modelVersionRaw) ? modelVersionRaw.trim() : "ENSEMBLE";
+            PaperTradeSession session = sessionLifecycleService.getOrCreateActiveSessionForUpdate();
+            sessionLedgerReconciler.reconcile(session);
+            String strategy = requestedStrategy;
+            String modelVersion = requestedModelVersion;
             int take = clamp(limit == null ? liveRowsLimit : limit, 5, 250);
             List<PaperTradeBet> existingOpenBets = betRepository.findBySessionIdAndStatusOrderByPlacedAtAsc(
                     session.getId(),
@@ -468,7 +511,10 @@ public class PaperTradingService {
                 scoreSnapshots = mergedSnapshots;
             }
         }
-        AdaptiveProfile adaptiveProfile = buildAdaptiveProfile(session);
+        AdaptiveProfile observedAdaptiveProfile = buildAdaptiveProfile(session);
+        AdaptiveProfile adaptiveProfile = adaptiveApplyEnabled
+                ? observedAdaptiveProfile
+                : AdaptiveProfile.neutral();
 
         int placed = 0;
         int skipped = 0;
@@ -477,6 +523,10 @@ public class PaperTradingService {
         List<RankedCandidate> fallbackCandidates = new ArrayList<>();
         double minScore = clamp(minSelectionScore + adaptiveProfile.selectionScoreShift(), -5.0, 30.0);
         ExposureProfile exposureProfile = ExposureProfile.fromOpenBets(existingOpenBets);
+        List<com.ttl.tabletennis.prediction.staking.OpenPosition> policyOpenPositions =
+                new ArrayList<>(toPolicyOpenPositions(existingOpenBets, session));
+        List<com.ttl.tabletennis.prediction.staking.SettledStake> policySettledHistory =
+                toPolicySettledHistory(session);
         double exposureCapitalBase = Math.max(
                 session.getCurrentBankroll(),
                 round2(session.getCurrentBankroll() + exposureProfile.openStake())
@@ -749,8 +799,39 @@ public class PaperTradingService {
                     candidate.americanOdds(),
                     adaptiveProfile
             );
+            com.ttl.tabletennis.prediction.staking.StakingDecision policyDecision = stakingDecision(
+                    session,
+                    ranked,
+                    policyOpenPositions,
+                    policySettledHistory
+            );
+            boolean stakePolicyPrimary = "on".equalsIgnoreCase(featureFlagCatalog.stateOf(
+                    com.ttl.tabletennis.config.FeatureFlagCatalog.STAKE_POLICY_V3_FLAG
+            ));
+            if (stakePolicyPrimary && !policyDecision.isBet()) {
+                persistDecisionSample(
+                        session.getId(),
+                        strategy,
+                        modelVersion,
+                        ranked.row(),
+                        ranked.candidate(),
+                        ranked.eventKey(),
+                        ranked.dedupeKey(),
+                        ranked.selectionScore(),
+                        proposedStake,
+                        0.0,
+                        ranked.fallbackPick(),
+                        "SKIPPED",
+                        "STAKING_POLICY_" + String.join("+", policyDecision.reasonCodes())
+                );
+                skipped++;
+                continue;
+            }
+            double policyStake = stakePolicyPrimary
+                    ? policyDecision.stakeUnits() * stakingUnitSize(session)
+                    : proposedStake;
             double stake = applyExposureCaps(
-                    proposedStake,
+                    Math.min(proposedStake, policyStake),
                     candidate,
                     exposureProfile,
                     exposureCapitalBase
@@ -790,6 +871,9 @@ public class PaperTradingService {
                     ? row.externalEventId().trim()
                     : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(row.source()));
             bet.setLiveAtPlacement(row.live());
+            bet.setPlacementPhase(StringUtils.hasText(row.matchPhase())
+                    ? row.matchPhase().trim()
+                    : (row.live() ? "LIVE" : "PREMATCH"));
             bet.setPlayer1Id(row.player1Id());
             bet.setPlayer2Id(row.player2Id());
             bet.setSidePlayerId(candidate.sidePlayerId());
@@ -833,6 +917,7 @@ public class PaperTradingService {
             bet.setPotentialPayout(round2(stake * candidate.decimalOdds()));
             bet.setTopTrigger(row.topTrigger());
             bet.setTopTriggerContribution(row.topTriggerContribution());
+            bet.setFeatureContributions(serializeFeatureContributions(row));
             bet.setGrade(row.grade());
             String rationale = safeText(row.rationale(), "Model value pick");
             String fallbackTag = ranked.fallbackPick() ? " | fallbackPick=true" : "";
@@ -877,6 +962,7 @@ public class PaperTradingService {
             session.setTotalStaked(round2(session.getTotalStaked() + stake));
             session.setTotalBets(session.getTotalBets() + 1);
             exposureProfile = exposureProfile.addPlacement(candidate.sidePlayerId(), candidate.triggerKey(), stake);
+            policyOpenPositions.add(toPolicyOpenPosition(bet, session, stake));
             placed++;
         }
 
@@ -898,6 +984,7 @@ public class PaperTradingService {
         session.setSimulationBetsVoided(session.getSimulationBetsVoided() + voided);
         AdaptiveProfile postSyncProfile = buildAdaptiveProfile(session);
         postSyncProfile.applyTo(session, LocalDateTime.now());
+        sessionLedgerReconciler.reconcile(session);
         saveSession(session);
 
             return new PaperTradingSyncResultDto(
@@ -910,7 +997,10 @@ public class PaperTradingService {
                     voided,
                     LocalDateTime.now(),
                     buildSessionDto(session, 20, 40)
-            );
+                );
+        }
+        } finally {
+            syncInProgress.set(false);
         }
     }
 
@@ -1414,6 +1504,7 @@ public class PaperTradingService {
         session.setRealizedPnl(round2(session.getRealizedPnl() + pnl));
         session.setCurrentBankroll(round2(session.getCurrentBankroll() + returned));
         session.setPeakBankroll(Math.max(session.getPeakBankroll(), session.getCurrentBankroll()));
+        provisionalScoreOutcomeTracker.resolve(bet);
         persistLearningSample(bet);
     }
 
@@ -1742,6 +1833,7 @@ public class PaperTradingService {
         observation.setMatchPhase(phase);
         observation.setScoreDetail(StringUtils.hasText(row.scoreDetail()) ? row.scoreDetail().trim() : null);
         observation.setObservedAt(observedAt == null ? LocalDateTime.now() : observedAt);
+        provisionalScoreOutcomeTracker.annotate(observation);
         trackedMatchObservationRepository.save(observation);
     }
 
@@ -3615,6 +3707,106 @@ public class PaperTradingService {
         return round2(stake);
     }
 
+    private com.ttl.tabletennis.prediction.staking.StakingDecision stakingDecision(
+            PaperTradeSession session,
+            RankedCandidate ranked,
+            List<com.ttl.tabletennis.prediction.staking.OpenPosition> openPositions,
+            List<com.ttl.tabletennis.prediction.staking.SettledStake> settledHistory) {
+        double unitSize = stakingUnitSize(session);
+        BetCandidate candidate = ranked.candidate();
+        LiveOddsRecommendationDto row = ranked.row();
+        LocalDate exposureDate = parseStartDateTime(row.startTimeIso())
+                .map(LocalDateTime::toLocalDate)
+                .orElse(LocalDate.now());
+        return stakingPolicy.decide(new com.ttl.tabletennis.prediction.staking.StakingRequest(
+                ranked.eventKey(),
+                row.player1Id(),
+                row.player2Id(),
+                candidate.sidePlayerId(),
+                candidate.modelProbability(),
+                candidate.decimalOdds(),
+                candidate.edge(),
+                Math.max(0.01, session.getCurrentBankroll() / unitSize),
+                exposureDate,
+                openPositions,
+                settledHistory
+        ));
+    }
+
+    private double stakingUnitSize(PaperTradeSession session) {
+        double capital = session == null
+                ? Math.max(100.0, defaultStartingBankroll)
+                : Math.max(100.0, session.getStartingBankroll());
+        return Math.max(1.0, capital * clamp(stakingUnitPct, 0.0025, 0.10));
+    }
+
+    private List<com.ttl.tabletennis.prediction.staking.OpenPosition> toPolicyOpenPositions(
+            List<PaperTradeBet> openBets,
+            PaperTradeSession session) {
+        if (openBets == null || openBets.isEmpty()) {
+            return List.of();
+        }
+        List<com.ttl.tabletennis.prediction.staking.OpenPosition> out = new ArrayList<>(openBets.size());
+        for (PaperTradeBet bet : openBets) {
+            if (bet != null) {
+                out.add(toPolicyOpenPosition(bet, session, Math.max(0.0, bet.getStake())));
+            }
+        }
+        return out;
+    }
+
+    private com.ttl.tabletennis.prediction.staking.OpenPosition toPolicyOpenPosition(
+            PaperTradeBet bet,
+            PaperTradeSession session,
+            double stakeDollars) {
+        double unitSize = stakingUnitSize(session);
+        LocalDate exposureDate = parseStartDateTime(bet.getStartTimeIso())
+                .map(LocalDateTime::toLocalDate)
+                .orElseGet(() -> bet.getPlacedAt() == null ? LocalDate.now() : bet.getPlacedAt().toLocalDate());
+        return new com.ttl.tabletennis.prediction.staking.OpenPosition(
+                safeText(bet.getEventKey(), ""),
+                bet.getPlayer1Id(),
+                bet.getPlayer2Id(),
+                bet.getSidePlayerId(),
+                Math.max(0.0, stakeDollars) / unitSize,
+                exposureDate
+        );
+    }
+
+    private List<com.ttl.tabletennis.prediction.staking.SettledStake> toPolicySettledHistory(
+            PaperTradeSession session) {
+        if (session == null || session.getId() == null) {
+            return List.of();
+        }
+        List<PaperTradeBet> settled = betRepository.findBySessionIdAndStatusInOrderBySettledAtAsc(
+                session.getId(),
+                List.of(
+                        PaperTradeBet.STATUS_WON,
+                        PaperTradeBet.STATUS_LOST,
+                        PaperTradeBet.STATUS_PUSHED,
+                        PaperTradeBet.STATUS_VOIDED
+                )
+        );
+        if (settled == null || settled.isEmpty()) {
+            return List.of();
+        }
+        double unitSize = stakingUnitSize(session);
+        int from = Math.max(0, settled.size() - 100);
+        List<com.ttl.tabletennis.prediction.staking.SettledStake> out =
+                new ArrayList<>(settled.size() - from);
+        for (int i = from; i < settled.size(); i++) {
+            PaperTradeBet bet = settled.get(i);
+            if (bet == null) {
+                continue;
+            }
+            out.add(new com.ttl.tabletennis.prediction.staking.SettledStake(
+                    Math.max(0.0, bet.getStake()) / unitSize,
+                    (bet.getProfitLoss() == null ? 0.0 : bet.getProfitLoss()) / unitSize
+            ));
+        }
+        return out;
+    }
+
     private double applyExposureCaps(double proposedStake,
                                      BetCandidate candidate,
                                      ExposureProfile exposureProfile,
@@ -3705,6 +3897,11 @@ public class PaperTradingService {
         sample.setSidePlayerId(candidate == null ? null : candidate.sidePlayerId());
         sample.setSideName(candidate == null ? row.suggestedSide() : candidate.sideName());
         sample.setTopTrigger(row.topTrigger());
+        sample.setFeatureContributions(serializeFeatureContributions(row));
+        sample.setOverallReliability(row.overallReliability());
+        sample.setRatingAgreement(row.ratingAgreement());
+        sample.setTriggerReliability(row.topTriggerReliability());
+        sample.setBaselineStability(row.suggestedSideBaselineStability());
         sample.setRecommended(row.recommended());
         sample.setFallbackPick(fallbackPick);
         sample.setSuggestedEdge(valueOrZero(row.suggestedEdge()));
@@ -3724,21 +3921,19 @@ public class PaperTradingService {
     // applyAdaptiveSnapshot promoted to AdaptiveProfile.applyTo(session, now)
     // — see com.ttl.tabletennis.service.papertrade.AdaptiveProfile.
 
-    private void persistLearningSample(PaperTradeBet bet) {
+    private boolean persistLearningSample(PaperTradeBet bet) {
         if (bet == null || bet.getId() == null || !StringUtils.hasText(bet.getStatus())) {
-            return;
+            return false;
         }
         String status = bet.getStatus().trim().toUpperCase(Locale.ROOT);
         if (!(PaperTradeBet.STATUS_WON.equals(status)
                 || PaperTradeBet.STATUS_LOST.equals(status)
                 || PaperTradeBet.STATUS_PUSHED.equals(status)
                 || PaperTradeBet.STATUS_VOIDED.equals(status))) {
-            return;
+            return false;
         }
-        if (learningSampleRepository.existsByBetId(bet.getId())) {
-            return;
-        }
-        PaperTradeLearningSample sample = new PaperTradeLearningSample();
+        Optional<PaperTradeLearningSample> existing = learningSampleRepository.findByBetId(bet.getId());
+        PaperTradeLearningSample sample = existing.orElseGet(PaperTradeLearningSample::new);
         sample.setBetId(bet.getId());
         sample.setSessionId(bet.getSessionId() == null ? -1L : bet.getSessionId());
         sample.setStatus(status);
@@ -3756,10 +3951,27 @@ public class PaperTradingService {
                 ? Math.max(0.0, bet.getConfidenceHigh() - bet.getConfidenceLow())
                 : 0.0);
         sample.setLastObservedPhase(bet.getLastObservedPhase());
+        sample.setPlacementPhase(StringUtils.hasText(bet.getPlacementPhase())
+                ? bet.getPlacementPhase().trim()
+                : (bet.isLiveAtPlacement() ? "LIVE" : "PREMATCH"));
+        sample.setEventOccurredAt(parseStartDateTime(bet.getStartTimeIso()).orElse(bet.getPlacedAt()));
+        sample.setSettlementSource(bet.getSettlementSource());
+        sample.setSettlementReason(bet.getSettlementReason());
+        LearningSampleQuality.Assessment quality = LearningSampleQuality.assess(bet);
+        sample.setSettlementConfidence(quality.confidence());
+        sample.setCalibrationEligible(quality.calibrationEligible());
+        sample.setPriceRegime(LearningSampleQuality.priceRegime(bet.getImpliedProbability()));
+        sample.setSideOrientation(Objects.equals(bet.getSidePlayerId(), bet.getPlayer1Id()) ? "P1"
+                : Objects.equals(bet.getSidePlayerId(), bet.getPlayer2Id()) ? "P2"
+                : "NA");
+        sample.setFeatureContributions(bet.getFeatureContributions());
         sample.setPlacedAt(bet.getPlacedAt());
         sample.setSettledAt(bet.getSettledAt() == null ? LocalDateTime.now() : bet.getSettledAt());
-        attachClosingLine(bet, sample);
+        if (sample.getClosingDecimalOdds() == null) {
+            attachClosingLine(bet, sample);
+        }
         learningSampleRepository.save(sample);
+        return existing.isEmpty();
     }
 
     private void attachClosingLine(PaperTradeBet bet, PaperTradeLearningSample sample) {
@@ -3781,13 +3993,14 @@ public class PaperTradingService {
         List<AdaptiveDecisionSample> out = new ArrayList<>(take);
         Set<Long> seenBetIds = new HashSet<>();
 
-        List<PaperTradeLearningSample> learningRows = learningSampleRepository.findByStatusInOrderBySettledAtDesc(
+        List<PaperTradeLearningSample> learningRows =
+                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
         if (learningRows.isEmpty()) {
             backfillLearningSamples(Math.max(500, take * 6));
-            learningRows = learningSampleRepository.findByStatusInOrderBySettledAtDesc(
+            learningRows = learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                     List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                     PageRequest.of(0, take)
             );
@@ -3810,7 +4023,8 @@ public class PaperTradingService {
                     row.getStake(),
                     row.getProfitLoss(),
                     row.getConfidenceWidth(),
-                    row.getSettledAt()
+                    row.getEventOccurredAt() == null ? row.getPlacedAt() : row.getEventOccurredAt(),
+                    row.getSettlementConfidence()
             ));
             if (out.size() >= take) {
                 return out;
@@ -3826,6 +4040,10 @@ public class PaperTradingService {
                 continue;
             }
             persistLearningSample(bet);
+            LearningSampleQuality.Assessment quality = LearningSampleQuality.assess(bet);
+            if (!quality.calibrationEligible()) {
+                continue;
+            }
             out.add(new AdaptiveDecisionSample(
                     bet.getId(),
                     normalizeTrigger(bet.getTopTrigger()),
@@ -3838,7 +4056,8 @@ public class PaperTradingService {
                     (bet.getConfidenceLow() != null && bet.getConfidenceHigh() != null)
                             ? Math.max(0.0, bet.getConfidenceHigh() - bet.getConfidenceLow())
                             : 0.0,
-                    bet.getSettledAt()
+                    parseStartDateTime(bet.getStartTimeIso()).orElse(bet.getPlacedAt()),
+                    quality.confidence()
             ));
             if (out.size() >= take) {
                 break;
@@ -3876,11 +4095,9 @@ public class PaperTradingService {
                 if (scanned > maxRows) {
                     break;
                 }
-                if (learningSampleRepository.existsByBetId(bet.getId())) {
-                    continue;
+                if (persistLearningSample(bet)) {
+                    inserted++;
                 }
-                persistLearningSample(bet);
-                inserted++;
             }
 
             if (rows.size() < pageSize || scanned >= maxRows) {
@@ -3905,6 +4122,29 @@ public class PaperTradingService {
             return OddsValueEngineService.STRATEGY_AGGRESSIVE;
         }
         return OddsValueEngineService.STRATEGY_CONSERVATIVE;
+    }
+
+    private String serializeFeatureContributions(LiveOddsRecommendationDto row) {
+        if (row == null || row.featureContributions() == null || row.featureContributions().isEmpty()) {
+            return null;
+        }
+        StringBuilder out = new StringBuilder();
+        for (com.ttl.tabletennis.dto.MatchupAnalysisDto.FeatureContributionDto contribution
+                : row.featureContributions()) {
+            if (contribution == null || !StringUtils.hasText(contribution.feature())) {
+                continue;
+            }
+            if (!out.isEmpty()) {
+                out.append('|');
+            }
+            out.append(contribution.feature().trim().replace("|", "/"))
+                    .append('=')
+                    .append(String.format(Locale.ROOT, "%.6f", contribution.contribution()));
+            if (out.length() >= 2350) {
+                break;
+            }
+        }
+        return out.isEmpty() ? null : out.toString();
     }
 
     // safeText moved to PaperTradingHelpers (2026-05-19).

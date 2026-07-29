@@ -99,6 +99,24 @@ public class TrackedMatchObservation {
     @Column(name = "score_detail", length = 180)
     private String scoreDetail;
 
+    @Column(name = "provisional_winner_player_id")
+    private Long provisionalWinnerPlayerId;
+
+    @Column(name = "provisional_outcome_method", length = 48)
+    private String provisionalOutcomeMethod;
+
+    @Column(name = "provisional_outcome_confidence")
+    private Double provisionalOutcomeConfidence;
+
+    @Column(name = "resolved_winner_player_id")
+    private Long resolvedWinnerPlayerId;
+
+    @Column(name = "provisional_correct")
+    private Boolean provisionalCorrect;
+
+    @Column(name = "provisional_resolved_at")
+    private LocalDateTime provisionalResolvedAt;
+
     @Column(name = "observed_at", nullable = false)
     private LocalDateTime observedAt;
 
@@ -326,6 +344,54 @@ public class TrackedMatchObservation {
 
     public void setScoreDetail(String scoreDetail) {
         this.scoreDetail = scoreDetail;
+    }
+
+    public Long getProvisionalWinnerPlayerId() {
+        return provisionalWinnerPlayerId;
+    }
+
+    public void setProvisionalWinnerPlayerId(Long provisionalWinnerPlayerId) {
+        this.provisionalWinnerPlayerId = provisionalWinnerPlayerId;
+    }
+
+    public String getProvisionalOutcomeMethod() {
+        return provisionalOutcomeMethod;
+    }
+
+    public void setProvisionalOutcomeMethod(String provisionalOutcomeMethod) {
+        this.provisionalOutcomeMethod = provisionalOutcomeMethod;
+    }
+
+    public Double getProvisionalOutcomeConfidence() {
+        return provisionalOutcomeConfidence;
+    }
+
+    public void setProvisionalOutcomeConfidence(Double provisionalOutcomeConfidence) {
+        this.provisionalOutcomeConfidence = provisionalOutcomeConfidence;
+    }
+
+    public Long getResolvedWinnerPlayerId() {
+        return resolvedWinnerPlayerId;
+    }
+
+    public void setResolvedWinnerPlayerId(Long resolvedWinnerPlayerId) {
+        this.resolvedWinnerPlayerId = resolvedWinnerPlayerId;
+    }
+
+    public Boolean getProvisionalCorrect() {
+        return provisionalCorrect;
+    }
+
+    public void setProvisionalCorrect(Boolean provisionalCorrect) {
+        this.provisionalCorrect = provisionalCorrect;
+    }
+
+    public LocalDateTime getProvisionalResolvedAt() {
+        return provisionalResolvedAt;
+    }
+
+    public void setProvisionalResolvedAt(LocalDateTime provisionalResolvedAt) {
+        this.provisionalResolvedAt = provisionalResolvedAt;
     }
 
     public LocalDateTime getObservedAt() {

@@ -24,6 +24,7 @@ import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.round4;
  * placement loop relies on.
  */
 public record AdaptiveProfile(int sampleSize,
+                              double effectiveSampleSize,
                               double reliability,
                               double edgeShift,
                               double modelGapShift,
@@ -39,7 +40,7 @@ public record AdaptiveProfile(int sampleSize,
 
     /** No-adaptation baseline; {@code stakeMultiplier = 1.0} keeps staking unchanged. */
     public static AdaptiveProfile neutral() {
-        return new AdaptiveProfile(0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, Map.of());
+        return new AdaptiveProfile(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, Map.of());
     }
 
     /**

@@ -19,12 +19,11 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Phase 06 item 7 — rolling 7-day CLV gauge.
  *
- * <p>Computes true closing-line CLV when a {@code closingDecimalOdds}
- * snapshot has been captured on the
- * {@link PaperTradeLearningSample}, and falls back to a
- * {@code rolling7DayPnL / rollingStake} proxy for samples missing the
- * closing snapshot. The gauge is published as
- * {@code ttl_staking_clv_7d}.
+ * <p>Computes true closing-line CLV only when a valid
+ * {@code closingDecimalOdds} snapshot has been captured on the
+ * {@link PaperTradeLearningSample}. Samples missing a close are excluded
+ * from the CLV value and represented by the coverage gauge. The gauge is
+ * published as {@code ttl_staking_clv_7d}.
  *
  * <p>True per-bet CLV is computed from implied probabilities:
  * {@code (impliedAtClose - impliedAtBet) / impliedAtBet}. Positive means
@@ -38,8 +37,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li>{@code ttl_staking_clv_7d_samples} — total settled samples in window.</li>
  *   <li>{@code ttl_staking_clv_7d_coverage} — fraction of those samples that
  *       had a closing-line snapshot attached. Reaches 1.0 once the §5 plumbing
- *       has accumulated enough history; reads &lt; 1.0 while older rows are
- *       still on the PnL/stake proxy.</li>
+ *       has accumulated enough history; reads &lt; 1.0 while rows without a
+ *       real closing snapshot remain uncovered.</li>
  * </ul>
  *
  * <p>The {@code CLVNegative7Day} alert keeps the same expression
@@ -74,7 +73,7 @@ public class StakingClvWatcher {
         this.clock = clock == null ? Clock.systemUTC() : clock;
         if (meterRegistry != null) {
             Gauge.builder(METRIC_CLV, clvGauge, ref -> ref.get() == null ? 0.0 : ref.get())
-                    .description("Rolling 7-day CLV — stake-weighted (impliedClose-impliedTaken)/impliedTaken when closing snapshot present, PnL/stake otherwise")
+                    .description("Rolling 7-day true CLV — stake-weighted (impliedClose-impliedTaken)/impliedTaken over rows with closing snapshots")
                     .register(meterRegistry);
             Gauge.builder(METRIC_SAMPLES, sampleGauge, ref -> ref.get() == null ? 0.0 : ref.get())
                     .description("Number of settled samples in the rolling 7-day window")
@@ -131,13 +130,12 @@ public class StakingClvWatcher {
         if (rows == null || rows.isEmpty()) {
             return ClvSnapshot.empty();
         }
-        double stakeSum = 0.0;
+        double totalEligibleStake = 0.0;
+        double closingStakeSum = 0.0;
         double pnlSum = 0.0;
         // Stake-weighted numerator for the published CLV metric.
         // For samples WITH a closing-line snapshot we use true CLV
         // (implied(close) - implied(taken)) / implied(taken).
-        // For samples WITHOUT one we fall back to per-bet PnL/stake so the
-        // metric still trends sensibly while §5 backfill is in flight.
         double clvNumerator = 0.0;
         int count = 0;
         int closingLineSamples = 0;
@@ -149,28 +147,29 @@ public class StakingClvWatcher {
             if (stake <= 0.0) {
                 continue;
             }
-            stakeSum += stake;
+            totalEligibleStake += stake;
             pnlSum += row.getProfitLoss();
-            double perBetClv = perBetClv(row);
-            clvNumerator += stake * perBetClv;
             if (hasClosingLine(row)) {
+                double perBetClv = perBetClv(row);
+                clvNumerator += stake * perBetClv;
+                closingStakeSum += stake;
                 closingLineSamples++;
             }
             count++;
         }
-        if (stakeSum <= 0.0 || count == 0) {
+        if (totalEligibleStake <= 0.0 || count == 0) {
             return ClvSnapshot.empty();
         }
-        double clv = clvNumerator / stakeSum;
+        double clv = closingStakeSum <= 0.0 ? 0.0 : clvNumerator / closingStakeSum;
         double coverageRatio = (double) closingLineSamples / count;
-        return new ClvSnapshot(clv, count, stakeSum, pnlSum, closingLineSamples, coverageRatio);
+        return new ClvSnapshot(clv, count, totalEligibleStake, pnlSum, closingLineSamples, coverageRatio);
     }
 
     /**
      * Per-bet CLV. Uses true (impliedClose − impliedTaken) / impliedTaken when
      * the closing-line snapshot is present and both prices are well-formed.
-     * Otherwise falls back to {@code profitLoss / stake} so older rows still
-     * contribute a sensible signal to the rolling gauge.
+     * Rows without a valid closing line are excluded from the CLV numerator
+     * and represented only through the separate coverage metric.
      */
     private static double perBetClv(PaperTradeLearningSample row) {
         Double closingDecimal = row.getClosingDecimalOdds();
@@ -183,13 +182,14 @@ public class StakingClvWatcher {
             double impliedAtClose = 1.0 / closingDecimal;
             return (impliedAtClose - impliedAtBet) / impliedAtBet;
         }
-        double stake = row.getStake();
-        return stake <= 0.0 ? 0.0 : row.getProfitLoss() / stake;
+        return 0.0;
     }
 
     private static boolean hasClosingLine(PaperTradeLearningSample row) {
         Double closing = row.getClosingDecimalOdds();
-        return closing != null && Double.isFinite(closing) && closing > 1.0;
+        double impliedAtBet = row.getImpliedProbability();
+        return closing != null && Double.isFinite(closing) && closing > 1.0
+                && Double.isFinite(impliedAtBet) && impliedAtBet > 0.0;
     }
 
     private void update(ClvSnapshot snapshot) {

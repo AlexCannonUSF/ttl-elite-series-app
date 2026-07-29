@@ -38,7 +38,7 @@ class MlQualityServiceTests {
                 new ModelTrainingReportDto.CalibrationBinDto(0.0, 0.5, 200, 0.30, 0.28),
                 new ModelTrainingReportDto.CalibrationBinDto(0.5, 1.0, 200, 0.75, 0.78)
         ));
-        when(repo.findBySettledAtAfter(any())).thenReturn(buildSamples(0.20, 0.25, 0.40, 0.55, 0.70, 0.85, 0.92));
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(buildSamples(0.20, 0.25, 0.40, 0.55, 0.70, 0.85, 0.92));
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(14, 5);
@@ -60,7 +60,7 @@ class MlQualityServiceTests {
         PredictionFacade facade = Mockito.mock(PredictionFacade.class);
         PaperTradeLearningSampleRepository repo = Mockito.mock(PaperTradeLearningSampleRepository.class);
         when(facade.latestTrainingReport()).thenReturn(null);
-        when(repo.findBySettledAtAfter(any())).thenReturn(List.of());
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(List.of());
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(7, 10);
@@ -154,7 +154,7 @@ class MlQualityServiceTests {
         PredictionFacade facade = Mockito.mock(PredictionFacade.class);
         PaperTradeLearningSampleRepository repo = Mockito.mock(PaperTradeLearningSampleRepository.class);
         when(facade.latestTrainingReport()).thenReturn(null);
-        when(repo.findBySettledAtAfter(any())).thenReturn(buildSamples(0.6, 0.7));
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(buildSamples(0.6, 0.7));
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(7, 5);
@@ -168,7 +168,7 @@ class MlQualityServiceTests {
         PredictionFacade facade = Mockito.mock(PredictionFacade.class);
         PaperTradeLearningSampleRepository repo = Mockito.mock(PaperTradeLearningSampleRepository.class);
         when(facade.latestTrainingReport()).thenThrow(new RuntimeException("boom"));
-        when(repo.findBySettledAtAfter(any())).thenReturn(List.of());
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(List.of());
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(7, 5);
@@ -234,7 +234,7 @@ class MlQualityServiceTests {
         for (int i = 0; i < 5; i++) {
             samples.add(sampleWithStatus(0.70, "VOIDED"));
         }
-        when(repo.findBySettledAtAfter(any())).thenReturn(samples);
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(samples);
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(14, 2);
@@ -259,7 +259,7 @@ class MlQualityServiceTests {
         samples.add(sampleWithStatus(0.55, "LOST"));
         samples.add(sampleWithStatus(0.50, "PUSHED"));
         samples.add(sampleWithStatus(0.50, "PUSH"));
-        when(repo.findBySettledAtAfter(any())).thenReturn(samples);
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(samples);
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(14, 2);
@@ -282,7 +282,7 @@ class MlQualityServiceTests {
                 sampleWithStatus(0.40, "OPEN"),    // shouldn't happen but should be filtered as not-resolved-WON anyway
                 sampleWithStatus(0.30, "LOST")
         );
-        when(repo.findBySettledAtAfter(any())).thenReturn(samples);
+        when(repo.findCalibrationEligibleAfter(any())).thenReturn(samples);
 
         MlQualityService service = new MlQualityService(facade, repo, fixedClock());
         MlQualityDto snapshot = service.snapshot(14, 3);

@@ -359,7 +359,7 @@ public class MlQualityService {
             return List.of();
         }
         try {
-            List<PaperTradeLearningSample> samples = learningSampleRepository.findBySettledAtAfter(cutoff);
+            List<PaperTradeLearningSample> samples = learningSampleRepository.findCalibrationEligibleAfter(cutoff);
             return samples == null ? List.of() : samples;
         } catch (RuntimeException e) {
             return List.of();

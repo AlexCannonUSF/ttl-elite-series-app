@@ -33,6 +33,8 @@ public interface PaperTradeBetRepository extends JpaRepository<PaperTradeBet, Lo
 
     List<PaperTradeBet> findBySessionIdOrderByPlacedAtDesc(Long sessionId, Pageable pageable);
 
+    List<PaperTradeBet> findBySessionIdOrderByPlacedAtAsc(Long sessionId);
+
     boolean existsBySessionIdAndDedupeKey(Long sessionId, String dedupeKey);
 
     boolean existsBySessionIdAndDedupeKeyAndStatus(Long sessionId, String dedupeKey, String status);

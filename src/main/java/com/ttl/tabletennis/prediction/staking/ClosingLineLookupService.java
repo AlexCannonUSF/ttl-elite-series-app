@@ -18,7 +18,7 @@ import java.util.Optional;
  * Resolves the closing-line snapshot for a settled paper-trade bet.
  *
  * <p>Bridges {@link PaperTradeBet} to {@link OddsSnapshotRepository}: derives
- * the bookmaker side ({@code "TOP"} / {@code "BOT"}) from the bet's
+ * the bookmaker side ({@code "P1"} / {@code "P2"}) from the bet's
  * {@code sidePlayerId} relative to {@code player1Id}, then queries snapshots
  * after the placement until shortly after the bet settled, preferring
  * {@code CLOSED} state, then {@code SUSPENDED}, then the latest-pre-close
@@ -26,14 +26,14 @@ import java.util.Optional;
  *
  * <p>Lookup is best-effort: returns {@link Optional#empty()} when the bet is
  * missing identifiers, when no snapshots exist in the window, or when the
- * snapshot's price is not finite. {@link StakingClvWatcher} treats absence as
- * "fall back to the PnL/stake proxy" so older rows continue to chart.
+ * snapshot's price is not finite. Missing closing prices remain missing;
+ * realized P&amp;L is never mislabeled as CLV.
  */
 @Service
 public class ClosingLineLookupService {
 
-    static final String SIDE_TOP = "TOP";
-    static final String SIDE_BOT = "BOT";
+    static final String SIDE_TOP = "P1";
+    static final String SIDE_BOT = "P2";
     private static final java.time.Duration LOOKUP_BUFFER = java.time.Duration.ofHours(6);
 
     private static final Logger log = LoggerFactory.getLogger(ClosingLineLookupService.class);

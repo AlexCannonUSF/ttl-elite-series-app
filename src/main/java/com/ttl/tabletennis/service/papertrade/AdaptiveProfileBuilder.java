@@ -52,6 +52,7 @@ public final class AdaptiveProfileBuilder {
                     0.0,
                     0.0,
                     0.0,
+                    0.0,
                     1.0,
                     0.0,
                     0.0,
@@ -69,15 +70,21 @@ public final class AdaptiveProfileBuilder {
         double stakeSum = 0.0;
         double pnlSum = 0.0;
         double weightSum = 0.0;
+        double squaredWeightSum = 0.0;
         double halfLifeDays = Math.max(2.0, config.learningHalfLifeDays());
         LocalDateTime resolvedNow = now == null ? LocalDateTime.now() : now;
         Map<String, TriggerAggregate> triggerAggregates = new HashMap<>();
         for (AdaptiveDecisionSample sample : recentDecisions) {
-            double w = recencyWeight(sample.settledAt(), resolvedNow, halfLifeDays);
+            double labelConfidence = clamp(sample.settlementConfidence(), 0.0, 1.0);
+            if (labelConfidence < 0.90) {
+                continue;
+            }
+            double w = recencyWeight(sample.eventOccurredAt(), resolvedNow, halfLifeDays) * labelConfidence;
             if (w <= 0.0) {
                 continue;
             }
             weightSum += w;
+            squaredWeightSum += w * w;
             if (PaperTradeBet.STATUS_WON.equals(sample.status())) {
                 weightedWins += w;
             }
@@ -94,6 +101,9 @@ public final class AdaptiveProfileBuilder {
         if (weightSum <= EPS) {
             return AdaptiveProfile.neutral();
         }
+        double effectiveSampleSize = squaredWeightSum <= EPS
+                ? 0.0
+                : (weightSum * weightSum) / squaredWeightSum;
 
         double observedWinRate = weightedWins / weightSum;
         double avgModelProbability = modelProbSum / weightSum;
@@ -104,21 +114,27 @@ public final class AdaptiveProfileBuilder {
         // Use effective weighted sample support instead of history window position so
         // adaptation responds to statistical significance, not just queue length.
         double reliabilitySupportTarget = Math.max(4.0, minDecisions * 2.5);
-        double reliability = clamp(weightSum / (weightSum + reliabilitySupportTarget), 0.0, 1.0);
+        double reliability = effectiveSampleSize < minDecisions
+                ? 0.0
+                : clamp(effectiveSampleSize / (effectiveSampleSize + reliabilitySupportTarget), 0.0, 1.0);
         double maxEdgeShift = clamp(config.maxEdgeShift(), 0.002, 0.05);
         double maxScoreShift = clamp(config.maxSelectionScoreShift(), 0.2, 3.0);
         double maxStakeDelta = clamp(config.maxStakeMultiplierDelta(), 0.02, 0.4);
 
-        double edgeShiftRaw = (calibrationError * 0.06) + ((-roiSignal) * 0.04);
-        double edgeShift = clamp(edgeShiftRaw * reliability, -(maxEdgeShift * 0.5), maxEdgeShift);
-        double modelGapShift = clamp(edgeShift * 0.9, -(maxEdgeShift * 0.5), maxEdgeShift);
-        double selectionScoreShift = clamp(edgeShift * 35.0, -(maxScoreShift * 0.5), maxScoreShift);
-        double probabilityShiftRaw = ((-calibrationError) * 0.35) + (roiSignal * 0.08);
-        double modelProbabilityShift = clamp(probabilityShiftRaw * reliability, -0.035, 0.035);
+        // Live evidence can tighten risk, but never reward a short winning
+        // streak by making production more aggressive. Any loosening must be
+        // promoted from an offline, out-of-sample calibration run.
+        double edgeShiftRaw = (Math.max(0.0, calibrationError) * 0.08)
+                + (Math.max(0.0, -roiSignal) * 0.04);
+        double edgeShift = clamp(edgeShiftRaw * reliability, 0.0, maxEdgeShift);
+        double modelGapShift = clamp(edgeShift * 0.9, 0.0, maxEdgeShift);
+        double selectionScoreShift = clamp(edgeShift * 35.0, 0.0, maxScoreShift);
+        double probabilityShiftRaw = -Math.max(0.0, calibrationError) * 0.35;
+        double modelProbabilityShift = clamp(probabilityShiftRaw * reliability, -0.035, 0.0);
 
         double normalizedShift = edgeShift / maxEdgeShift;
         double stakeMultiplier = 1.0 - (normalizedShift * (maxStakeDelta * 0.65));
-        stakeMultiplier = clamp(stakeMultiplier, 1.0 - maxStakeDelta, 1.0 + (maxStakeDelta * 0.4));
+        stakeMultiplier = clamp(stakeMultiplier, 1.0 - maxStakeDelta, 1.0);
 
         double confidenceWidthTightening = clamp(Math.max(0.0, edgeShift) * 1.8, 0.0, 0.10);
         double selectionPenalty = clamp(Math.max(0.0, edgeShift) * 24.0, 0.0, 1.2);
@@ -126,12 +142,16 @@ public final class AdaptiveProfileBuilder {
         Map<String, TriggerAdaptiveSignal> triggerSignals = new HashMap<>();
         for (Map.Entry<String, TriggerAggregate> entry : triggerAggregates.entrySet()) {
             TriggerAggregate aggregate = entry.getValue();
-            if (aggregate.decisions() < triggerMinDecisions || aggregate.weightSum() <= EPS || aggregate.stakeSum() <= EPS) {
+            double triggerEffectiveN = aggregate.effectiveSampleSize();
+            if (aggregate.decisions() < triggerMinDecisions
+                    || triggerEffectiveN < triggerMinDecisions
+                    || aggregate.weightSum() <= EPS
+                    || aggregate.stakeSum() <= EPS) {
                 continue;
             }
             double triggerSupportTarget = Math.max(3.0, triggerMinDecisions * 3.0);
             double triggerReliability = clamp(
-                    aggregate.weightSum() / (aggregate.weightSum() + triggerSupportTarget),
+                    triggerEffectiveN / (triggerEffectiveN + triggerSupportTarget),
                     0.0,
                     1.0
             ) * reliability;
@@ -140,28 +160,32 @@ public final class AdaptiveProfileBuilder {
             double triggerCalibrationError = triggerModelProb - triggerWinRate;
             double triggerRoi = aggregate.pnlSum() / aggregate.stakeSum();
             double triggerProbabilityShift = clamp(
-                    ((-triggerCalibrationError) * 0.45) + (triggerRoi * 0.12),
+                    -Math.max(0.0, triggerCalibrationError) * 0.45,
                     -0.025,
-                    0.025
+                    0.0
             ) * triggerReliability;
             double triggerModelGapShift = clamp(
-                    (triggerCalibrationError * 0.28) + ((-triggerRoi) * 0.10),
-                    -0.010,
+                    (Math.max(0.0, triggerCalibrationError) * 0.28)
+                            + (Math.max(0.0, -triggerRoi) * 0.10),
+                    0.0,
                     0.015
             ) * triggerReliability;
             double triggerSelectionPenalty = clamp(
-                    (triggerCalibrationError * 8.0) + ((-triggerRoi) * 4.0),
-                    -0.6,
+                    (Math.max(0.0, triggerCalibrationError) * 8.0)
+                            + (Math.max(0.0, -triggerRoi) * 4.0),
+                    0.0,
                     1.2
             ) * triggerReliability;
             double triggerEdgeShift = clamp(
-                    (triggerCalibrationError * 0.22) + ((-triggerRoi) * 0.10),
-                    -0.008,
+                    (Math.max(0.0, triggerCalibrationError) * 0.22)
+                            + (Math.max(0.0, -triggerRoi) * 0.10),
+                    0.0,
                     0.012
             ) * triggerReliability;
 
             triggerSignals.put(entry.getKey(), new TriggerAdaptiveSignal(
                     aggregate.decisions(),
+                    round4(triggerEffectiveN),
                     round4(triggerProbabilityShift),
                     round4(triggerModelGapShift),
                     round4(triggerSelectionPenalty),
@@ -171,6 +195,7 @@ public final class AdaptiveProfileBuilder {
 
         return new AdaptiveProfile(
                 decisions,
+                round4(effectiveSampleSize),
                 round4(reliability),
                 round4(edgeShift),
                 round4(modelGapShift),
@@ -191,11 +216,11 @@ public final class AdaptiveProfileBuilder {
      * and a Tuesday-morning settlement get the same weight. Returns 1.0 when
      * timestamps are missing — keeping legacy behaviour.
      */
-    static double recencyWeight(LocalDateTime settledAt, LocalDateTime now, double halfLifeDays) {
-        if (settledAt == null || now == null) {
+    static double recencyWeight(LocalDateTime eventOccurredAt, LocalDateTime now, double halfLifeDays) {
+        if (eventOccurredAt == null || now == null) {
             return 1.0;
         }
-        long days = Math.max(0L, ChronoUnit.DAYS.between(settledAt.toLocalDate(), now.toLocalDate()));
+        long days = Math.max(0L, ChronoUnit.DAYS.between(eventOccurredAt.toLocalDate(), now.toLocalDate()));
         double halfLife = Math.max(2.0, halfLifeDays);
         return Math.pow(0.5, days / halfLife);
     }

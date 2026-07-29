@@ -571,6 +571,8 @@ export interface PaperTradingSyncResultDto {
   betsVoided: number
   syncedAt: string
   session: PaperTradingSessionDto
+  status?: 'COMPLETED' | 'ALREADY_RUNNING' | string
+  message?: string | null
 }
 
 export interface TrackedMatchObservationDto {
