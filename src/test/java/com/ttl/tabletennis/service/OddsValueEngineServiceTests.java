@@ -340,6 +340,84 @@ class OddsValueEngineServiceTests {
         assertEquals("Legacy Alpha vs Legacy Beta", rows.get(0).eventName());
     }
 
+    @Test
+    void liveBoardKeepsLiveMatchesFirstAndOrdersEachGroupChronologically() {
+        MatchOdds upcomingLater = boardRow(
+                "Upcoming Later A",
+                "Upcoming Later B",
+                false,
+                "2026-07-29T14:00:00Z",
+                "",
+                "UPCOMING"
+        );
+        MatchOdds liveLater = boardRow(
+                "Live Later A",
+                "Live Later B",
+                true,
+                "2026-07-29T12:30:00Z",
+                "1-1 (5-4)",
+                "LIVE_MID"
+        );
+        MatchOdds upcomingSooner = boardRow(
+                "Upcoming Sooner A",
+                "Upcoming Sooner B",
+                false,
+                "2026-07-29T13:00:00Z",
+                "",
+                "UPCOMING"
+        );
+        MatchOdds liveEarlier = boardRow(
+                "Live Earlier A",
+                "Live Earlier B",
+                true,
+                "2026-07-29T12:00:00Z",
+                "2-1 (8-7)",
+                "LIVE_LATE"
+        );
+        when(hardRockOddsScraper.fetch()).thenReturn(List.of(
+                upcomingLater,
+                liveLater,
+                upcomingSooner,
+                liveEarlier
+        ));
+
+        List<LiveOddsRecommendationDto> rows = oddsValueEngineService.liveOddsRecommendations(
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                10,
+                true
+        );
+
+        assertEquals(List.of(
+                        "Live Earlier A vs Live Earlier B",
+                        "Live Later A vs Live Later B",
+                        "Upcoming Sooner A vs Upcoming Sooner B",
+                        "Upcoming Later A vs Upcoming Later B"
+                ),
+                rows.stream().map(LiveOddsRecommendationDto::eventName).toList());
+    }
+
+    private MatchOdds boardRow(String player1,
+                               String player2,
+                               boolean live,
+                               String startTimeIso,
+                               String score,
+                               String phase) {
+        return new MatchOdds(
+                player1,
+                player2,
+                1.90,
+                1.90,
+                player1 + " vs " + player2,
+                "TT Elite Series",
+                live,
+                startTimeIso,
+                "HARD_ROCK_TEST",
+                score,
+                phase
+        );
+    }
+
     private MatchupFeatureVectorDto reliabilityFeatureVector(Long player1Id, Long player2Id) {
         return new MatchupFeatureVectorDto(
                 player1Id,

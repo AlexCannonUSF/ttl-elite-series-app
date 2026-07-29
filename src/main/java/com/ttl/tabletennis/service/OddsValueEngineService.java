@@ -764,12 +764,14 @@ public class OddsValueEngineService {
         }
 
         out.sort(Comparator
-                .comparing(LiveOddsRecommendationDto::recommended).reversed()
-                .thenComparing(LiveOddsRecommendationDto::live).reversed()
+                .comparingInt((LiveOddsRecommendationDto row) -> row.live() ? 0 : 1)
+                .thenComparing(row -> chronologicalStartToken(row.startTimeIso()))
+                .thenComparingInt(row -> row.recommended() ? 0 : 1)
                 .thenComparing((a, b) -> Double.compare(
                         Math.abs(valueOrZero(b.suggestedEdge())),
                         Math.abs(valueOrZero(a.suggestedEdge()))
-                )));
+                ))
+                .thenComparing(row -> safeSortToken(row.eventName()), String.CASE_INSENSITIVE_ORDER));
 
         if (out.size() > take) {
             return out.subList(0, take);
@@ -886,14 +888,12 @@ public class OddsValueEngineService {
         }
 
         out.sort(Comparator
-                .comparing(LiveScoreSnapshotDto::live).reversed()
-                .thenComparing((a, b) -> Boolean.compare(
-                        StringUtils.hasText(b.liveScore()),
-                        StringUtils.hasText(a.liveScore())
-                ))
+                .comparingInt((LiveScoreSnapshotDto row) -> row.live() ? 0 : 1)
+                .thenComparing(row -> chronologicalStartToken(row.startTimeIso()))
+                .thenComparingInt(row -> StringUtils.hasText(row.liveScore()) ? 0 : 1)
                 .thenComparing(LiveScoreSnapshotDto::sourceConfidence, Comparator.reverseOrder())
                 .thenComparing(LiveScoreSnapshotDto::sourceAgeSeconds)
-                .thenComparing((a, b) -> safeSortToken(b.startTimeIso()).compareTo(safeSortToken(a.startTimeIso()))));
+                .thenComparing(row -> safeSortToken(row.eventName()), String.CASE_INSENSITIVE_ORDER));
 
         if (out.size() > take) {
             return out.subList(0, take);
@@ -1494,6 +1494,13 @@ public class OddsValueEngineService {
     private String safeSortToken(String value) {
         if (!StringUtils.hasText(value)) {
             return "";
+        }
+        return value.trim();
+    }
+
+    private String chronologicalStartToken(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "\uffff";
         }
         return value.trim();
     }
