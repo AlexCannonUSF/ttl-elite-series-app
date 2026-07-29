@@ -41,9 +41,23 @@ public class OddsSnapshotFactory {
         }
 
         String sourceId = normalizeSourceId(event == null || event.source() == null ? null : event.source().id());
+        // #125 — Prefer externalEventId (stable across prematch/live) over
+        // sourceFeedEventId. For HardRock specifically, externalEventId is
+        // the outer market id (numeric, present from prematch onward) and
+        // sourceFeedEventId is the inner matchState's sr:match: id (only
+        // appears once the score feed kicks in). Without this swap, the
+        // same physical match produced two different trackedEventId SHA-256s
+        // across the prematch→live transition — fragmenting every downstream
+        // identity-keyed lookup (OddsSnapshotRepository dedupe,
+        // SettlementEvidenceRecordRepository, SettlementAuditRecordRepository,
+        // SettlementShadowAuditService, mirror clients keying via
+        // OddsSnapshotFactory.trackedEventId).
+        //
+        // For other feeds (SofaScore, AIscore, BetsAPI, TtSeries) only
+        // externalEventId is populated, so the change is a no-op there.
         String trackedEventId = trackedEventId(
                 sourceId,
-                firstNonBlank(safeTrim(odds.getSourceFeedEventId()), safeTrim(odds.getExternalEventId()), matchKey(
+                firstNonBlank(safeTrim(odds.getExternalEventId()), safeTrim(odds.getSourceFeedEventId()), matchKey(
                         odds.getPlayerA(),
                         odds.getPlayerB(),
                         odds.getStartTimeIso(),

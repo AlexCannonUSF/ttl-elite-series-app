@@ -93,20 +93,22 @@ public class Glicko2RatingService {
         }
 
         ratingSnapshotRepository.deleteByRatingSystem(RATING_SYSTEM);
+        ratingSnapshotRepository.flush();
 
         int processedPeriods = 0;
         long snapshotsWritten = 0;
 
-        LocalDate periodStart = from;
         int daysPerPeriod = Math.max(1, periodDays);
+        List<Match> completedMatches = matchRepository.findCompletedMatchesBetween(from, to);
+        List<List<Match>> periods = partitionMatchesByPeriod(completedMatches, from, to, daysPerPeriod);
 
-        while (!periodStart.isAfter(to)) {
-            LocalDate periodEnd = periodStart.plusDays(daysPerPeriod - 1L);
+        for (int periodIndex = 0; periodIndex < periods.size(); periodIndex++) {
+            LocalDate periodEnd = from.plusDays(((long) periodIndex + 1L) * daysPerPeriod - 1L);
             if (periodEnd.isAfter(to)) {
                 periodEnd = to;
             }
 
-            List<Match> periodMatches = matchRepository.findCompletedMatchesBetween(periodStart, periodEnd);
+            List<Match> periodMatches = periods.get(periodIndex);
             Map<Long, List<Glicko2.OpponentResult>> outcomes = buildOutcomes(periodMatches, ratingByPlayer);
 
             List<RatingSnapshot> snapshots = new ArrayList<>(players.size());
@@ -133,7 +135,6 @@ public class Glicko2RatingService {
             ratingSnapshotRepository.saveAll(snapshots);
             snapshotsWritten += snapshots.size();
             processedPeriods++;
-            periodStart = periodEnd.plusDays(1L);
         }
 
         return new Glicko2RebuildDto(from, to, processedPeriods, players.size(), snapshotsWritten, tau);

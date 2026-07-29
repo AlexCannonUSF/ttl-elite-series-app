@@ -1,11 +1,12 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Clock3, Radio, RefreshCcw, ShieldAlert, TimerReset, Waves } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { OPS_FEEDS_REFRESH_EVENT } from '@/features/command-palette/CommandPalette'
 import { fetchOpsFeeds } from '@/features/ops-feeds/api'
 import type { FeedStatus, OpsFeedStatus, OpsFeedsResponse } from '@/features/ops-feeds/types'
 import { cn } from '@/lib/utils'
@@ -36,6 +37,7 @@ const statusTone: Record<FeedStatus, { pill: string; dot: string; label: string 
 }
 
 export function OpsFeedsRoute() {
+  const [searchParams] = useSearchParams()
   const [data, setData] = useState<OpsFeedsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -87,11 +89,18 @@ export function OpsFeedsRoute() {
     const interval = window.setInterval(() => {
       void loadFeeds(true)
     }, REFRESH_INTERVAL_MS)
+    const handlePaletteRefresh = () => {
+      void loadFeeds(true)
+    }
+    window.addEventListener(OPS_FEEDS_REFRESH_EVENT, handlePaletteRefresh)
 
     return () => {
       window.clearInterval(interval)
+      window.removeEventListener(OPS_FEEDS_REFRESH_EVENT, handlePaletteRefresh)
     }
   }, [loadFeeds])
+
+  const focusedSource = searchParams.get('source')
 
   const attentionFeeds = useMemo(() => {
     if (!data) {
@@ -100,6 +109,21 @@ export function OpsFeedsRoute() {
     return data.feeds.filter((feed) => feed.status !== 'HEALTHY').slice(0, 4)
   }, [data])
 
+  const orderedFeeds = useMemo(() => {
+    if (!data || !focusedSource) {
+      return data?.feeds ?? []
+    }
+    return [...data.feeds].sort((left, right) => {
+      if (left.sourceId === focusedSource) {
+        return -1
+      }
+      if (right.sourceId === focusedSource) {
+        return 1
+      }
+      return 0
+    })
+  }, [data, focusedSource])
+
   return (
     <V3Shell
       eyebrow="TTLElite Series 3.0"
@@ -107,8 +131,7 @@ export function OpsFeedsRoute() {
       description="Unified feed health for sportsbook, mirror, and confirmation sources. This page is the operational readout for latency, freshness, and queue pressure before settlement logic starts trusting a source."
       badges={
         <>
-          <Badge variant="accent">Phase 01</Badge>
-          <Badge>Live Health</Badge>
+          <Badge variant="accent">Feeds</Badge>
           <Badge>Auto Refresh 5s</Badge>
         </>
       }
@@ -251,8 +274,8 @@ export function OpsFeedsRoute() {
                 </tr>
               </thead>
               <tbody>
-                {data.feeds.map((feed) => (
-                  <FeedRow key={feed.sourceId} feed={feed} />
+                {orderedFeeds.map((feed) => (
+                  <FeedRow key={feed.sourceId} feed={feed} focused={feed.sourceId === focusedSource} />
                 ))}
               </tbody>
             </table>
@@ -291,9 +314,14 @@ function MetricTile({ label, value, icon: Icon }: MetricTileProps) {
   )
 }
 
-function FeedRow({ feed }: { feed: OpsFeedStatus }) {
+function FeedRow({ feed, focused }: { feed: OpsFeedStatus; focused: boolean }) {
   return (
-    <tr className="rounded-[24px] bg-[rgba(255,255,255,0.76)] shadow-[0_18px_48px_-40px_rgba(8,25,28,0.72)]">
+    <tr
+      className={cn(
+        'rounded-[24px] bg-[rgba(255,255,255,0.76)] shadow-[0_18px_48px_-40px_rgba(8,25,28,0.72)]',
+        focused && 'outline outline-2 outline-offset-2 outline-[var(--accent-soft)]',
+      )}
+    >
       <td className="rounded-l-[22px] px-3 py-4 align-top">
         <div className="space-y-2">
           <div>
@@ -358,7 +386,7 @@ function StatusPill({ status, liveTick }: { status: FeedStatus; liveTick: boolea
         tone.pill,
       )}
     >
-      <span className={cn('size-2 rounded-full', tone.dot, liveTick && 'animate-pulse')} />
+      <span aria-hidden="true" className={cn('size-2 rounded-full', tone.dot, liveTick && 'animate-pulse')} />
       {tone.label}
     </span>
   )
@@ -366,7 +394,7 @@ function StatusPill({ status, liveTick }: { status: FeedStatus; liveTick: boolea
 
 function InlineAlert({ children }: { children: ReactNode }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+    <div className="inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
       {children}
     </div>
   )

@@ -34,6 +34,45 @@ export type OpsFeedsResponse = {
   feeds: OpsFeedStatus[]
 }
 
+export type OpsIngestBus = {
+  mode: string
+  status: string
+  redisAvailable: boolean
+  activeBus: string
+  streamPrefix: string
+  detail: string
+}
+
+export type OpsIngestDlqSource = {
+  sourceId: string
+  trustTier: string
+  depth: number
+}
+
+export type OpsIngestDlq = {
+  totalDepth: number
+  sources: OpsIngestDlqSource[]
+}
+
+export type OpsIngestPartition = {
+  streamKey: string
+  family: string
+  status: string
+  streamLength: number
+  consumerGroups: number
+  pendingCount: number
+  lag: number | null
+  lastGeneratedId: string | null
+  detail: string
+}
+
+export type OpsIngestResponse = {
+  generatedAt: string
+  bus: OpsIngestBus
+  dlq: OpsIngestDlq
+  partitions: OpsIngestPartition[]
+}
+
 export type OpsStreamWorkerStatus = 'READY' | 'OFF' | string
 
 export type OpsStreamWorker = {

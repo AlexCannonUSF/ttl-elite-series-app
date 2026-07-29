@@ -236,3 +236,11 @@ node_modules/
 # Local runtime databases
 data/*.mv.db
 data/*.trace.db
+
+# Local runtime and generated training datasets
+data/
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

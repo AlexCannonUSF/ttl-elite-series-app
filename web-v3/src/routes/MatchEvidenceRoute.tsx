@@ -104,8 +104,7 @@ export function MatchEvidenceRoute() {
       description="This viewer renders the latest persisted Score Truth bundle, contradiction feed, and shadow decision history for one tracked match or bet."
       badges={
         <>
-          <Badge variant="accent">Phase 02</Badge>
-          <Badge>Evidence Viewer</Badge>
+          <Badge variant="accent">Evidence</Badge>
           <Badge>Auto Refresh 5s</Badge>
         </>
       }
@@ -383,7 +382,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
 
 function InlineAlert({ children }: { children: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div className="flex items-center gap-2 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800" role="alert">
       {children}
     </div>
   )

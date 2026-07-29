@@ -1,9 +1,7 @@
 package com.ttl.tabletennis.scrape;
 
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Component;
 
-@Component
 public class ApplicationEventIngestionBus implements IngestionBus {
 
     private final ApplicationEventPublisher applicationEventPublisher;

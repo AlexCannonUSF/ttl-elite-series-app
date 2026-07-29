@@ -106,8 +106,7 @@ export function OpsStreamsRoute() {
       description="Stream-CV worker readiness, route/template inventory, and VLM fallback pressure for operators watching the video-derived score path."
       badges={
         <>
-          <Badge variant="accent">Phase 03</Badge>
-          <Badge>Stream-CV</Badge>
+          <Badge variant="accent">Stream Workers</Badge>
           <Badge>Auto Refresh 5s</Badge>
         </>
       }
@@ -184,8 +183,7 @@ export function OpsStreamsRoute() {
             <Badge className="w-fit">VLM Usage</Badge>
             <CardTitle>Fallback pressure and metering state</CardTitle>
             <CardDescription>
-              This separates current operator force requests from paid VLM calls, which are intentionally not metered
-              until the Phase 04 VLM client lands.
+              Operator force requests separated from paid VLM calls; VLM call metering arrives when the upstream client is wired.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
@@ -357,7 +355,7 @@ function StatusPill({ status }: { status: string }) {
 
 function InlineAlert({ children }: { children: ReactNode }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+    <div className="inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
       {children}
     </div>
   )

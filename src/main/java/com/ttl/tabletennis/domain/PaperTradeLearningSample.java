@@ -82,6 +82,25 @@ public class PaperTradeLearningSample {
     @Column(name = "correlation_id", length = 64)
     private String correlationId;
 
+    /**
+     * Closing-line capture — Phase 06 / finish-checklist §5.
+     *
+     * <p>{@code closingDecimalOdds} is the market price for the bet's
+     * side at the moment the market closed (or was suspended) for this
+     * tracked event. {@code closingObservedAt} is the timestamp of the
+     * snapshot we picked. Both are nullable because (a) we backfilled
+     * the historical samples after settlement, so older rows may not
+     * have a closing snapshot in {@code odds_snapshot}, and (b) the
+     * source feed may not have observed a CLOSED state for some events.
+     * The {@link com.ttl.tabletennis.prediction.staking.StakingClvWatcher}
+     * gauge falls back to the PnL/stake proxy when either is null.
+     */
+    @Column(name = "closing_decimal_odds")
+    private Double closingDecimalOdds;
+
+    @Column(name = "closing_observed_at")
+    private LocalDateTime closingObservedAt;
+
     @PrePersist
     void prePersist() {
         if (status == null || status.isBlank()) {
@@ -261,5 +280,21 @@ public class PaperTradeLearningSample {
 
     public void setCorrelationId(String correlationId) {
         this.correlationId = correlationId;
+    }
+
+    public Double getClosingDecimalOdds() {
+        return closingDecimalOdds;
+    }
+
+    public void setClosingDecimalOdds(Double closingDecimalOdds) {
+        this.closingDecimalOdds = closingDecimalOdds;
+    }
+
+    public LocalDateTime getClosingObservedAt() {
+        return closingObservedAt;
+    }
+
+    public void setClosingObservedAt(LocalDateTime closingObservedAt) {
+        this.closingObservedAt = closingObservedAt;
     }
 }

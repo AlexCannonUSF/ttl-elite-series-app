@@ -24,6 +24,8 @@ It exists to pull settlement logic out of the giant live trading service and int
   - disagreements surfaced before we auto-settle
 - `CoverageState`
   - whether the bundle currently looks fully covered, partially covered, or dark
+- `SettlementReason.SCORE_BACKED_ONLY`
+  - Phase 06 primary-settlement guard for post-close bets that lack Stream-CV; score-backed closes hold open until Stream-CV or stronger confirmation arrives
 - `observation/*`
   - score-bearing observations from sportsbook, mirror, and Stream-CV sources
   - also includes T4 official/database observation adapters for contradiction analysis

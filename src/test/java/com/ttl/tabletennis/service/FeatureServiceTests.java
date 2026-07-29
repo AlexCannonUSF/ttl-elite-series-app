@@ -2,9 +2,13 @@ package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.Player;
+import com.ttl.tabletennis.domain.PlayerRatingTs2;
+import com.ttl.tabletennis.domain.PlayerRatingWl;
 import com.ttl.tabletennis.domain.RatingSnapshot;
 import com.ttl.tabletennis.dto.MatchupFeatureVectorDto;
 import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.PlayerRatingTs2Repository;
+import com.ttl.tabletennis.repository.PlayerRatingWlRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.repository.RatingSnapshotRepository;
 import com.ttl.tabletennis.util.MatchResultParser;
@@ -34,6 +38,12 @@ class FeatureServiceTests {
     @Autowired
     private RatingSnapshotRepository ratingSnapshotRepository;
 
+    @Autowired
+    private PlayerRatingTs2Repository playerRatingTs2Repository;
+
+    @Autowired
+    private PlayerRatingWlRepository playerRatingWlRepository;
+
     @Test
     void buildMatchupFeatureVectorProducesCoreSignals() {
         LocalDate asOf = LocalDate.now();
@@ -61,6 +71,9 @@ class FeatureServiceTests {
         assertTrue(vector.player2().recentForm() >= 0.0 && vector.player2().recentForm() <= 1.0);
         assertTrue(vector.player1().glickoVolatility() > 0.0);
         assertTrue(vector.player1().glickoRatingDeviation() > 0.0);
+        assertTrue(vector.player1().trueSkill2Mu() > 0.0);
+        assertTrue(vector.player1().trueSkill2Sigma() > 0.0);
+        assertTrue(vector.player1().wengLinUncertainty() > 0.0);
         assertTrue(vector.headToHeadReliability() >= 0.0 && vector.headToHeadReliability() <= 1.0);
         assertTrue(vector.player1().recentFormReliability() >= 0.0 && vector.player1().recentFormReliability() <= 1.0);
         assertTrue(vector.player1().ratingStability() >= 0.0 && vector.player1().ratingStability() <= 1.0);
@@ -74,6 +87,10 @@ class FeatureServiceTests {
         assertTrue(vector.player1Rating95PctInterval().low() < vector.player1Rating95PctInterval().high());
         assertTrue(vector.eloProbabilityPlayer1() >= 0.0 && vector.eloProbabilityPlayer1() <= 1.0);
         assertTrue(vector.glickoProbabilityPlayer1() >= 0.0 && vector.glickoProbabilityPlayer1() <= 1.0);
+        assertTrue(vector.trueSkill2ProbabilityPlayer1() >= 0.0 && vector.trueSkill2ProbabilityPlayer1() <= 1.0);
+        assertTrue(vector.wengLinProbabilityPlayer1() >= 0.0 && vector.wengLinProbabilityPlayer1() <= 1.0);
+        assertTrue(vector.raterEnsembleProbabilityPlayer1() >= 0.0 && vector.raterEnsembleProbabilityPlayer1() <= 1.0);
+        assertEquals(vector.raterEnsembleProbabilityPlayer1() - 0.5, vector.raterEnsembleDelta(), 0.0001);
     }
 
     @Test
@@ -151,7 +168,33 @@ class FeatureServiceTests {
         glicko.setRatingDeviation(glickoRd);
         glicko.setVolatility(glickoVolatility);
         glicko.setRatingSystem("GLICKO2");
-        return ratingSnapshotRepository.save(glicko);
+        RatingSnapshot saved = ratingSnapshotRepository.save(glicko);
+
+        PlayerRatingTs2 ts2 = new PlayerRatingTs2();
+        ts2.setPlayerId(player.getId());
+        ts2.setSnapshotDate(date);
+        ts2.setMu(25.0 + ((glickoRating - 1500.0) / 60.0));
+        ts2.setSigma(Math.max(1.0, glickoRd / 42.0));
+        ts2.setConservativeSkill(ts2.getMu() - (3.0 * ts2.getSigma()));
+        ts2.setMatchesSeen(12);
+        ts2.setWins(7);
+        ts2.setLosses(5);
+        ts2.setLastMatchDate(date);
+        playerRatingTs2Repository.save(ts2);
+
+        PlayerRatingWl wl = new PlayerRatingWl();
+        wl.setPlayerId(player.getId());
+        wl.setSnapshotDate(date);
+        wl.setRating((glickoRating - 1500.0) / 120.0);
+        wl.setUncertainty(Math.max(0.08, glickoRd / 180.0));
+        wl.setConservativeRating(wl.getRating() - (2.0 * wl.getUncertainty()));
+        wl.setMatchesSeen(12);
+        wl.setWins(7);
+        wl.setLosses(5);
+        wl.setLastMatchDate(date);
+        playerRatingWlRepository.save(wl);
+
+        return saved;
     }
 
     private void saveCompletedMatch(String externalId,

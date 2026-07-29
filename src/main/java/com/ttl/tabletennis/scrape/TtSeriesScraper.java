@@ -17,9 +17,12 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -50,8 +53,10 @@ public class TtSeriesScraper {
     private final PlayerIdentityService playerIdentityService;
     private final ScrapeRunRepository scrapeRunRepository;
     private final ScrapeErrorRepository scrapeErrorRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     private final AtomicBoolean scrapeRunning = new AtomicBoolean(false);
+    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicInteger lastSavedMatches = new AtomicInteger(0);
     private final AtomicReference<LocalDateTime> lastStartedAt = new AtomicReference<>();
     private final AtomicReference<LocalDateTime> lastFinishedAt = new AtomicReference<>();
@@ -125,14 +130,25 @@ public class TtSeriesScraper {
 
     private final DateTimeFormatter dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
+    @Autowired
     public TtSeriesScraper(MatchRepository matchRepository,
                            PlayerIdentityService playerIdentityService,
                            ScrapeRunRepository scrapeRunRepository,
-                           ScrapeErrorRepository scrapeErrorRepository) {
+                           ScrapeErrorRepository scrapeErrorRepository,
+                           ApplicationEventPublisher eventPublisher) {
         this.matchRepository = matchRepository;
         this.playerIdentityService = playerIdentityService;
         this.scrapeRunRepository = scrapeRunRepository;
         this.scrapeErrorRepository = scrapeErrorRepository;
+        this.eventPublisher = eventPublisher;
+    }
+
+    /** Back-compat constructor for tests that pre-date the event publisher. */
+    public TtSeriesScraper(MatchRepository matchRepository,
+                           PlayerIdentityService playerIdentityService,
+                           ScrapeRunRepository scrapeRunRepository,
+                           ScrapeErrorRepository scrapeErrorRepository) {
+        this(matchRepository, playerIdentityService, scrapeRunRepository, scrapeErrorRepository, null);
     }
 
     public void run() {
@@ -196,6 +212,212 @@ public class TtSeriesScraper {
             return 0;
         }
         return scrapeAndSaveMatchDetails(postUrls);
+    }
+
+    // ── Periodic official-results refresh ─────────────────────────────────
+    //
+    // The legacy settlement fallthrough closes bets by matching open bets
+    // against rows in `completed_matches`, which is populated by this
+    // scraper. Before this method existed, that table only got refreshed
+    // when (a) the user manually triggered a scrape or (b) a bet was in
+    // `trackedAfterClose` state. In practice that meant settlement could
+    // lag the actual match completion by hours — bets that finished off
+    // the live odds feed would sit OPEN until either the 240-min void
+    // timeout fired or someone happened to refresh the scraper.
+    //
+    // This @Scheduled method keeps the table warm with a single-page
+    // refresh every 15 min by default. It's gated by its own flag so the
+    // existing `scrape.auto` setting (which controls the heavy page-range
+    // crawl) is unaffected. An in-flight guard prevents pile-ups if the
+    // refresh ever runs slow.
+    private final AtomicBoolean officialResultsRefreshInFlight = new AtomicBoolean(false);
+    private final AtomicReference<LocalDateTime> officialResultsRefreshStartedAt = new AtomicReference<>();
+
+    @Value("${ttl.scrape.officialResultsRefresh.enabled:true}")
+    private boolean officialResultsRefreshScheduleEnabled;
+
+    @Value("${ttl.scrape.officialResultsRefresh.pages:1}")
+    private int officialResultsRefreshSchedulePages;
+
+    // Watchdog config (#112). Defaults: check every 5 min, force-stop scrapes
+    // stuck longer than 20 min, force-clear refresh flag stuck longer than 10 min.
+    @Value("${ttl.scrape.watchdog.enabled:true}")
+    private boolean scrapeWatchdogEnabled;
+
+    @Value("${ttl.scrape.watchdog.fixedDelayMs:300000}")
+    private long scrapeWatchdogFixedDelayMs;
+
+    @Value("${ttl.scrape.watchdog.thresholdMs:1200000}")
+    private long scrapeWatchdogThresholdMs;
+
+    @Value("${ttl.scrape.watchdog.refreshThresholdMs:600000}")
+    private long scrapeWatchdogRefreshThresholdMs;
+
+    @Scheduled(
+            initialDelayString = "${ttl.scrape.officialResultsRefresh.initialDelayMs:60000}",
+            fixedDelayString = "${ttl.scrape.officialResultsRefresh.fixedDelayMs:900000}")
+    public void scheduledOfficialResultsRefresh() {
+        if (!officialResultsRefreshScheduleEnabled) {
+            return;
+        }
+        if (!officialResultsRefreshInFlight.compareAndSet(false, true)) {
+            log.debug("[scrape-scheduler] previous official-results refresh still in flight; skipping");
+            return;
+        }
+        long startedAtNanos = System.nanoTime();
+        officialResultsRefreshStartedAt.set(LocalDateTime.now());
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            int pages = Math.max(1, Math.min(officialResultsRefreshSchedulePages, 3));
+            int saved = refreshRecentOfficialResults(pages);
+            log.info("[scrape-scheduler] official-results refresh saved={} pages={} elapsedMs={}",
+                    saved, pages, java.time.Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis());
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("[scrape-scheduler] official-results refresh interrupted");
+        } catch (Exception ex) {
+            // Best-effort: never let scheduler exceptions kill the next tick.
+            log.warn("[scrape-scheduler] official-results refresh failed: {}", ex.toString());
+        } finally {
+            officialResultsRefreshInFlight.set(false);
+            officialResultsRefreshStartedAt.set(null);
+        }
+    }
+
+    /**
+     * Watchdog for {@link #scrapeRunning} and {@link #officialResultsRefreshInFlight}.
+     *
+     * Discovered live (#112): on 2026-05-24 a PAGE_RANGE scrape hung mid-flight,
+     * leaving {@code scrapeRunning=true} for 37 minutes. Because the only existing
+     * watchdog ({@link ScrapeRunOrphanCleanup}) runs solely on
+     * {@code ApplicationReadyEvent}, no automatic recovery kicked in — every
+     * subsequent scrape attempt was rejected as "Scrape already running" and the
+     * live scoreboard went stale. Settlement starved as a result.
+     *
+     * This @Scheduled tick runs every {@code ttl.scrape.watchdog.fixedDelayMs}
+     * (default 5 min). If a scrape has been running longer than
+     * {@code ttl.scrape.watchdog.thresholdMs} (default 20 min), it first issues
+     * a cooperative {@link #requestStop()} — the in-flight Jsoup page will
+     * complete (it has a 20s timeout) and {@code markFinish()} clears the flag.
+     * If the flag is STILL set after one more full check cycle (i.e. the run
+     * has been stuck for {@code threshold + fixedDelay}, default 25 min), the
+     * watchdog force-resets {@code scrapeRunning} to {@code false}, drops the
+     * orphaned {@link ActiveRun}, and records a {@code WATCHDOG_FORCE_RESET}
+     * error so the operator sees what happened.
+     *
+     * Same treatment for {@code officialResultsRefreshInFlight} with a shorter
+     * threshold ({@code ttl.scrape.watchdog.refreshThresholdMs}, default 10 min)
+     * because that path only does single-page fetches and should never take
+     * more than ~30s in steady state.
+     */
+    @Scheduled(
+            initialDelayString = "${ttl.scrape.watchdog.initialDelayMs:120000}",
+            fixedDelayString = "${ttl.scrape.watchdog.fixedDelayMs:300000}")
+    public void scrapeStuckRunWatchdog() {
+        if (!scrapeWatchdogEnabled) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        checkStuckScrape(now);
+        checkStuckOfficialResultsRefresh(now);
+    }
+
+    private void checkStuckScrape(LocalDateTime now) {
+        if (!scrapeRunning.get()) {
+            return;
+        }
+        LocalDateTime startedAt = lastStartedAt.get();
+        if (startedAt == null) {
+            return;
+        }
+        long elapsedMs = java.time.Duration.between(startedAt, now).toMillis();
+        if (elapsedMs < scrapeWatchdogThresholdMs) {
+            return;
+        }
+        log.warn("[scrape-watchdog] scrape stuck for {}ms (mode={}, threshold={}ms) — requesting stop",
+                elapsedMs, lastMode.get(), scrapeWatchdogThresholdMs);
+        requestStop();
+
+        // If we're past the grace period (one full check cycle past the
+        // threshold), force-reset. The Jsoup fetch should have timed out at
+        // 20s and cooperative stop should have flushed by now.
+        if (elapsedMs >= scrapeWatchdogThresholdMs + scrapeWatchdogFixedDelayMs) {
+            forceResetScrapeRunning(elapsedMs, "WATCHDOG_TIMEOUT");
+        }
+    }
+
+    private void checkStuckOfficialResultsRefresh(LocalDateTime now) {
+        if (!officialResultsRefreshInFlight.get()) {
+            return;
+        }
+        LocalDateTime startedAt = officialResultsRefreshStartedAt.get();
+        if (startedAt == null) {
+            return;
+        }
+        long elapsedMs = java.time.Duration.between(startedAt, now).toMillis();
+        if (elapsedMs < scrapeWatchdogRefreshThresholdMs) {
+            return;
+        }
+        log.warn("[scrape-watchdog] official-results refresh stuck for {}ms (threshold={}ms) — force-clearing flag",
+                elapsedMs, scrapeWatchdogRefreshThresholdMs);
+        officialResultsRefreshInFlight.set(false);
+        officialResultsRefreshStartedAt.set(null);
+    }
+
+    private void forceResetScrapeRunning(long elapsedMs, String reason) {
+        boolean wasRunning = scrapeRunning.getAndSet(false);
+        if (!wasRunning) {
+            return;
+        }
+        log.error("[scrape-watchdog] force-resetting scrapeRunning after {}ms stuck (reason={})",
+                elapsedMs, reason);
+        ActiveRun stuck = activeRun.getAndSet(null);
+        lastFinishedAt.set(LocalDateTime.now());
+        String detail = reason + " after " + (elapsedMs / 1000L) + "s";
+        lastError.set(detail);
+        if (stuck != null) {
+            try {
+                addErrorRecord(new ScrapeErrorRecord(
+                        stuck.runId, LocalDateTime.now(), stuck.mode, detail,
+                        null, "watchdog", null));
+            } catch (Exception ex) {
+                log.warn("[scrape-watchdog] failed to persist force-reset error record: {}", ex.toString());
+            }
+        }
+        stopRequested.set(false);
+    }
+
+    /**
+     * Operator escape hatch (#112). Lets the user clear stuck flags without a
+     * JVM restart when even the cooperative stop fails to unstick the scrape.
+     * Returns a struct describing what was reset so the operator knows whether
+     * the call was a no-op (nothing stuck) or did real work.
+     */
+    public ScrapeForceResetResult forceResetForOperator() {
+        LocalDateTime now = LocalDateTime.now();
+        boolean wasRunning = scrapeRunning.get();
+        boolean wasRefreshInFlight = officialResultsRefreshInFlight.get();
+        long stuckScrapeMs = 0L;
+        long stuckRefreshMs = 0L;
+        if (wasRunning) {
+            LocalDateTime startedAt = lastStartedAt.get();
+            stuckScrapeMs = startedAt == null ? -1L
+                    : java.time.Duration.between(startedAt, now).toMillis();
+            forceResetScrapeRunning(stuckScrapeMs, "OPERATOR_FORCE_RESET");
+        }
+        if (wasRefreshInFlight) {
+            LocalDateTime startedAt = officialResultsRefreshStartedAt.get();
+            stuckRefreshMs = startedAt == null ? -1L
+                    : java.time.Duration.between(startedAt, now).toMillis();
+            officialResultsRefreshInFlight.set(false);
+            officialResultsRefreshStartedAt.set(null);
+        }
+        return new ScrapeForceResetResult(wasRunning, stuckScrapeMs, wasRefreshInFlight, stuckRefreshMs);
+    }
+
+    public record ScrapeForceResetResult(boolean scrapeRunningWasStuck,
+                                          long scrapeRunningStuckMs,
+                                          boolean officialRefreshWasStuck,
+                                          long officialRefreshStuckMs) {
     }
 
     public List<OfficialLedgerMatch> lookupOfficialMatchesForPair(String player1Name,
@@ -278,6 +500,12 @@ public class TtSeriesScraper {
         log.info("[scrape] begin pages {}..{} ({} pages). Expected ~= {} matches", fromPage, toPage, pages, staticExpected);
 
         for (int page = fromPage; page <= toPage; page++) {
+            if (stopRequested.get()) {
+                log.info("[scrape] stop requested; bailing after page {} ({} matches saved so far)",
+                        page - 1, currentSavedMatchCount());
+                tracker.finish("STOPPED");
+                return;
+            }
             String listUrl = buildListPageUrl(page);
             Document listDoc = fetch(listUrl, "page-range page=" + page);
 
@@ -297,6 +525,11 @@ public class TtSeriesScraper {
 
             int linkIdx = 0;
             for (String postUrl : postUrls) {
+                if (stopRequested.get()) {
+                    log.info("[scrape] stop requested mid-page {}; finishing in-flight post then bailing", page);
+                    tracker.finish("STOPPED");
+                    return;
+                }
                 linkIdx++;
                 String postId = externalIdFromUrl(postUrl);
                 String ctx = String.format("page %d/%d | post %d/%d | id=%s", (page - fromPage + 1), pages, linkIdx, foundLinks, postId);
@@ -307,6 +540,28 @@ public class TtSeriesScraper {
 
         tracker.finish("ALL PAGES DONE");
         log.info("[scrape] completed page range {}..{}", fromPage, toPage);
+    }
+
+    /**
+     * Cooperative stop: marks the in-flight scrape run for a clean bail-out
+     * at the next page boundary. The currently-running page finishes so no
+     * partial saves; subsequent pages are skipped. Returns true when a
+     * scrape was actually running and the flag was set.
+     */
+    public boolean requestStop() {
+        if (!scrapeRunning.get()) {
+            return false;
+        }
+        boolean firstRequest = !stopRequested.getAndSet(true);
+        if (firstRequest) {
+            log.info("[scrape] stop requested by operator; will bail at next page boundary");
+        }
+        return true;
+    }
+
+    private int currentSavedMatchCount() {
+        ActiveRun run = activeRun.get();
+        return run == null ? lastSavedMatches.get() : run.savedMatches.get();
     }
 
     public void scrapeSinglePost(String id) throws IOException {
@@ -480,8 +735,17 @@ public class TtSeriesScraper {
 
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
+                // tt-series.com sometimes serves a body with a stale
+                // `Content-Encoding: gzip` header but plain HTML bytes
+                // underneath. Jsoup honours the header, the GZIPInputStream
+                // chokes ("Not in GZIP format"), the request fails, and the
+                // scrape-error counter ticks up every cycle (~6/min observed).
+                // Asking the server for identity encoding sidesteps the
+                // bug entirely — the page is only ~30KB so the bandwidth
+                // cost is negligible.
                 return Jsoup.connect(url)
                         .userAgent("Mozilla/5.0 (compatible; TTLBot/1.0)")
+                        .header("Accept-Encoding", "identity")
                         .timeout((int) TimeUnit.SECONDS.toMillis(20))
                         .get();
             } catch (IOException e) {
@@ -1051,6 +1315,7 @@ public class TtSeriesScraper {
         if (!scrapeRunning.compareAndSet(false, true)) {
             return false;
         }
+        stopRequested.set(false);
         LocalDateTime now = LocalDateTime.now();
         int dbNext = scrapeRunRepository.findMaxRunNumber() + 1;
         int runId = runSequence.updateAndGet(current -> Math.max(current + 1, dbNext));
@@ -1175,6 +1440,25 @@ public class TtSeriesScraper {
                 persisted.setErrorMessage(record.error());
                 scrapeRunRepository.save(persisted);
             });
+        }
+
+        // Fire the scrape-complete event so listeners (e.g. the
+        // ratings auto-rebuild listener) can react. Only fire on a
+        // successful run that actually added match rows — there's
+        // nothing for ratings to learn from a zero-row scrape.
+        if (eventPublisher != null
+                && "SUCCESS".equalsIgnoreCase(status)
+                && record.savedMatches() > 0) {
+            try {
+                eventPublisher.publishEvent(new ScrapeCompletedEvent(
+                        record.runId(),
+                        record.mode(),
+                        record.savedMatches(),
+                        record.finishedAt()
+                ));
+            } catch (RuntimeException ex) {
+                log.warn("[scrape] event publish failed: {}", ex.getMessage());
+            }
         }
     }
 

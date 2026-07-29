@@ -215,12 +215,57 @@ public class BetSettlementPolicyCatalog {
                 "afterDarkMinutes"
         );
 
+        // #117 — Optional phase-aware overrides. YAML shape:
+        //   heuristic:
+        //     phase_after_dark_minutes:
+        //       LIVE_LATE: 90
+        //       LIVE_MID: 150
+        // Missing keys → fall back to {@code heuristicAfterDarkMinutes}.
+        // Missing whole map → use the defaults (which already supply
+        // sensible phase overrides via SettlementPolicy.defaults).
+        java.util.Map<com.ttl.tabletennis.settlement.observation.MatchPhase, Integer> phaseOverrides =
+                parsePhaseAfterDarkMinutes(heuristic, defaults.heuristic().phaseAfterDarkMinutes());
+
         return new SettlementPolicy(
                 new SettlementPolicy.Ambiguity(maxAllowedWithoutTiebreaker),
                 new SettlementPolicy.Settlement(minConfidenceToAutoSettle, contradictionBlockSeverity, requireSources),
                 new SettlementPolicy.StaleLiveRecovery(enterAfterMinutesDark, officialWindowMinutes, escalationOrder),
-                new SettlementPolicy.Heuristic(heuristicAllowed, heuristicAfterDarkMinutes)
+                new SettlementPolicy.Heuristic(heuristicAllowed, heuristicAfterDarkMinutes, phaseOverrides)
         );
+    }
+
+    private java.util.Map<com.ttl.tabletennis.settlement.observation.MatchPhase, Integer>
+            parsePhaseAfterDarkMinutes(Map<String, Object> heuristic,
+                                        java.util.Map<com.ttl.tabletennis.settlement.observation.MatchPhase, Integer> fallback) {
+        Object raw = value(heuristic, "phase_after_dark_minutes")
+                .or(() -> value(heuristic, "phaseAfterDarkMinutes"))
+                .orElse(null);
+        if (!(raw instanceof Map<?, ?> map)) {
+            return fallback;
+        }
+        java.util.Map<com.ttl.tabletennis.settlement.observation.MatchPhase, Integer> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) continue;
+            String phaseName = entry.getKey().toString().trim().toUpperCase(java.util.Locale.ROOT);
+            com.ttl.tabletennis.settlement.observation.MatchPhase phase;
+            try {
+                phase = com.ttl.tabletennis.settlement.observation.MatchPhase.valueOf(phaseName);
+            } catch (IllegalArgumentException ex) {
+                log.warn("[settlement-policy] unknown phase in phase_after_dark_minutes: {} (skipping)", phaseName);
+                continue;
+            }
+            try {
+                int mins = (entry.getValue() instanceof Number n) ? n.intValue() : Integer.parseInt(entry.getValue().toString().trim());
+                if (mins < 0) {
+                    log.warn("[settlement-policy] negative minutes for phase {} (skipping)", phaseName);
+                    continue;
+                }
+                out.put(phase, mins);
+            } catch (NumberFormatException ex) {
+                log.warn("[settlement-policy] non-numeric minutes for phase {} value={} (skipping)", phaseName, entry.getValue());
+            }
+        }
+        return out.isEmpty() ? fallback : out;
     }
 
     private Optional<Map<String, Object>> child(Map<String, Object> source, String... names) {

@@ -33,19 +33,19 @@ public class StartupBrowserLauncher {
     @Value("${app.openBrowserOnStartup:true}")
     private boolean openBrowserOnStartup;
 
-    @Value("${app.openBrowserPath:/}")
+    @Value("${app.openBrowserPath:/v3/}")
     private String openBrowserPath;
 
     @Value("${app.openBrowserDelayMs:1200}")
     private long openBrowserDelayMs;
 
-    @Value("${app.webUiUrl:http://localhost:5173}")
+    @Value("${app.webUiUrl:http://localhost:5174/v3/}")
     private String webUiUrl;
 
     @Value("${app.autoStartWebUiDevServer:true}")
     private boolean autoStartWebUiDevServer;
 
-    @Value("${app.webUiDir:./web}")
+    @Value("${app.webUiDir:./web-v3}")
     private String webUiDir;
 
     @Value("${app.webUiStartTimeoutMs:20000}")
@@ -149,7 +149,7 @@ public class StartupBrowserLauncher {
             return true;
         }
         String host = parseHost(webUiUrl, "127.0.0.1");
-        int port = parsePort(webUiUrl, 5173);
+        int port = parsePort(webUiUrl, 5174);
         String npmCommand = resolveNpmCommand();
 
         if (npmCommand == null) {

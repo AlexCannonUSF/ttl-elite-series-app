@@ -1,8 +1,10 @@
 package com.ttl.tabletennis.settlement;
 
 import com.ttl.tabletennis.scrape.SourceId;
+import com.ttl.tabletennis.settlement.observation.MatchPhase;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 public record SettlementPolicy(Ambiguity ambiguity,
@@ -18,6 +20,17 @@ public record SettlementPolicy(Ambiguity ambiguity,
     }
 
     public static SettlementPolicy defaults() {
+        // #117 — phase-aware void timeouts. LIVE_LATE matches that have lost
+        // their feed are almost certainly finished (a game-5 deuce rarely lasts
+        // 90 minutes), so we void them aggressively to reclaim stake. Earlier
+        // phases use the historical 240-min timeout to give pre-match and
+        // early-set matches room to resume after a feed hiccup.
+        Map<MatchPhase, Integer> phaseDefaults = Map.of(
+                MatchPhase.LIVE_LATE, 90,
+                MatchPhase.LIVE_MID, 150,
+                MatchPhase.LIVE_EARLY, 200,
+                MatchPhase.PREMATCH, 240
+        );
         return new SettlementPolicy(
                 new Ambiguity(0.7),
                 new Settlement(0.85, 0.5, 2),
@@ -28,7 +41,7 @@ public record SettlementPolicy(Ambiguity ambiguity,
                         SourceId.BETSAPI,
                         SourceId.STREAM_CV
                 )),
-                new Heuristic(true, 240)
+                new Heuristic(true, 240, phaseDefaults)
         );
     }
 
@@ -71,11 +84,43 @@ public record SettlementPolicy(Ambiguity ambiguity,
     }
 
     public record Heuristic(boolean allowed,
-                            int afterDarkMinutes) {
+                            int afterDarkMinutes,
+                            Map<MatchPhase, Integer> phaseAfterDarkMinutes) {
         public Heuristic {
             if (afterDarkMinutes < 0) {
                 throw new IllegalArgumentException("afterDarkMinutes must not be negative");
             }
+            phaseAfterDarkMinutes = phaseAfterDarkMinutes == null
+                    ? Map.of()
+                    : Map.copyOf(phaseAfterDarkMinutes);
+            for (Map.Entry<MatchPhase, Integer> entry : phaseAfterDarkMinutes.entrySet()) {
+                if (entry.getValue() == null || entry.getValue() < 0) {
+                    throw new IllegalArgumentException(
+                            "phaseAfterDarkMinutes value for " + entry.getKey() + " must be non-null and non-negative");
+                }
+            }
+        }
+
+        /**
+         * Back-compat constructor for callers that don't supply
+         * phase-specific overrides. Falls through to a fixed
+         * {@code afterDarkMinutes} for every phase.
+         */
+        public Heuristic(boolean allowed, int afterDarkMinutes) {
+            this(allowed, afterDarkMinutes, Map.of());
+        }
+
+        /**
+         * Returns the void timeout for the given match phase, falling back
+         * to {@link #afterDarkMinutes()} when no override is configured for
+         * the phase (or when {@code phase} is null).
+         */
+        public int afterDarkMinutesFor(MatchPhase phase) {
+            if (phase == null) {
+                return afterDarkMinutes;
+            }
+            Integer override = phaseAfterDarkMinutes.get(phase);
+            return override == null ? afterDarkMinutes : override;
         }
     }
 }

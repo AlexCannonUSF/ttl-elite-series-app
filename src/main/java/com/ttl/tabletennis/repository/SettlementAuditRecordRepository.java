@@ -24,4 +24,9 @@ public interface SettlementAuditRecordRepository extends JpaRepository<Settlemen
     List<SettlementAuditRecord> findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(Long betId,
                                                                                     Collection<String> decisions,
                                                                                     Pageable pageable);
+
+    /** #124 — Retention prune by decidedAt (multi-KB JSON per row, grows fastest). */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM SettlementAuditRecord s WHERE s.decidedAt < :cutoff")
+    int deleteByDecidedAtBefore(@org.springframework.data.repository.query.Param("cutoff") java.time.LocalDateTime cutoff);
 }

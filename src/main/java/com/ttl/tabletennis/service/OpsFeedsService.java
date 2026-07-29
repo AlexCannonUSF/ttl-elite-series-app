@@ -9,6 +9,7 @@ import com.ttl.tabletennis.repository.IngestDlqRepository;
 import com.ttl.tabletennis.scrape.FeedClient;
 import com.ttl.tabletennis.scrape.FeedHealth;
 import com.ttl.tabletennis.scrape.SourceId;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +35,18 @@ public class OpsFeedsService {
     private final FeedHealthService feedHealthService;
     private final FeedHealthSampleRepository feedHealthSampleRepository;
     private final IngestDlqRepository ingestDlqRepository;
+
+    /**
+     * #126 — How long the last-error string stays "fresh" enough to force a
+     * DEGRADED classification. Without this decay every feed that ever
+     * errored stays DEGRADED for the JVM's lifetime, producing the
+     * misleading "0/8 healthy" report operators saw in production even when
+     * the feed had been pulling cleanly for hours. After this window, a
+     * stale lastError still appears in the DTO but no longer drives the
+     * status classifier.
+     */
+    @Value("${ttl.feeds.errorDecayMinutes:15}")
+    private long errorDecayMinutes;
 
     public OpsFeedsService(List<FeedClient<?>> feedClients,
                            FeedHealthService feedHealthService,
@@ -151,14 +164,34 @@ public class OpsFeedsService {
                 || health.rollingSuccessRate5m() < DOWN_SUCCESS_RATE) {
             return "DOWN";
         }
+        // #126 — Decay stale lastError so a long-recovered feed can return
+        // to HEALTHY. Without this, every feed that ever errored stayed
+        // DEGRADED for the JVM's lifetime ("0/8 healthy" report).
+        boolean lastErrorIsFresh = hasText(health.lastError())
+                && isErrorRecent(health);
         if (dlqDepth > 0
                 || health.stalenessSeconds() > DEGRADED_STALENESS_SECONDS
                 || health.rollingSuccessRate5m() < DEGRADED_SUCCESS_RATE
                 || hasActiveBackoff(health.backoffState())
-                || hasText(health.lastError())) {
+                || lastErrorIsFresh) {
             return "DEGRADED";
         }
         return "HEALTHY";
+    }
+
+    /**
+     * True when the feed's lastFailure (if known) is within the configured
+     * error-decay window. If lastFailure is null, fall back to treating the
+     * error as fresh (preserves prior behaviour for clients that never set
+     * lastFailure timestamps).
+     */
+    private boolean isErrorRecent(FeedHealth health) {
+        if (health.lastFailure() == null) {
+            return true;
+        }
+        long ageSeconds = Math.max(0L,
+                Duration.between(health.lastFailure(), Instant.now()).toSeconds());
+        return ageSeconds <= Math.max(0L, errorDecayMinutes) * 60L;
     }
 
     private boolean hasActiveBackoff(String backoffState) {

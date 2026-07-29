@@ -50,6 +50,10 @@ public class SettlementAuditRecord {
     @Column(name = "payload_json", nullable = false, columnDefinition = "LONGTEXT")
     private String payloadJson;
 
+    @Lob
+    @Column(name = "evidence_refs", columnDefinition = "LONGTEXT")
+    private String evidenceRefs;
+
     @Column(name = "correlation_id", length = 64)
     private String correlationId;
 
@@ -146,5 +150,13 @@ public class SettlementAuditRecord {
 
     public void setCorrelationId(String correlationId) {
         this.correlationId = correlationId;
+    }
+
+    public String getEvidenceRefs() {
+        return evidenceRefs;
+    }
+
+    public void setEvidenceRefs(String evidenceRefs) {
+        this.evidenceRefs = evidenceRefs;
     }
 }

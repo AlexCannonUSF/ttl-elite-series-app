@@ -20,8 +20,8 @@ This repository now has three documentation lanes:
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/java/com/ttl/tabletennis`](src/main/java/com/ttl/tabletennis): backend application code
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/src/test/java`](src/test/java): backend regression and unit tests
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/resources`](src/main/resources): runtime configuration
-- [`/Users/alexcannon/Downloads/TTLEliteSeries/web`](web): React frontend
-- [`/Users/alexcannon/Downloads/TTLEliteSeries/web-v3`](web-v3): standalone 3.0 frontend workspace scaffold
+- [`/Users/alexcannon/Downloads/TTLEliteSeries/web-v3`](web-v3): canonical 3.0 React frontend
+- [`/Users/alexcannon/Downloads/TTLEliteSeries/web`](web): retired 2.0 MUI frontend retained for reference during Phase 07
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/ttl-predict-py`](ttl-predict-py): Phase 00 Python prediction-service skeleton
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/infra/monitoring`](infra/monitoring): Prometheus, Grafana, and monitoring provisioning for 3.0
 - [`/Users/alexcannon/Downloads/TTLEliteSeries/scripts`](scripts): release-gate and runtime smoke/watch scripts
@@ -38,7 +38,7 @@ If you know the type of work you are doing, start here:
 - Scraping and upstream connectors: [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/java/com/ttl/tabletennis/scrape`](src/main/java/com/ttl/tabletennis/scrape)
 - Ratings, features, and model training: [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/java/com/ttl/tabletennis/service/FeatureService.java`](src/main/java/com/ttl/tabletennis/service/FeatureService.java), [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/java/com/ttl/tabletennis/service/PredictionModelService.java`](src/main/java/com/ttl/tabletennis/service/PredictionModelService.java)
 - Backend API surface: [`/Users/alexcannon/Downloads/TTLEliteSeries/src/main/java/com/ttl/tabletennis/controller`](src/main/java/com/ttl/tabletennis/controller)
-- Frontend routing and product surfaces: [`/Users/alexcannon/Downloads/TTLEliteSeries/web/src/app/router.tsx`](web/src/app/router.tsx), [`/Users/alexcannon/Downloads/TTLEliteSeries/web/src/components/AppShell.tsx`](web/src/components/AppShell.tsx), [`/Users/alexcannon/Downloads/TTLEliteSeries/web/src/pages`](web/src/pages)
+- Frontend routing and product surfaces: [`/Users/alexcannon/Downloads/TTLEliteSeries/web-v3/src/app/router.tsx`](web-v3/src/app/router.tsx), [`/Users/alexcannon/Downloads/TTLEliteSeries/web-v3/src/components/layout/V3Shell.tsx`](web-v3/src/components/layout/V3Shell.tsx), [`/Users/alexcannon/Downloads/TTLEliteSeries/web-v3/src/routes`](web-v3/src/routes)
 
 ## Runbook
 
@@ -49,14 +49,6 @@ Backend:
 ```
 
 Frontend:
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-V3 frontend scaffold:
 
 ```bash
 cd web-v3

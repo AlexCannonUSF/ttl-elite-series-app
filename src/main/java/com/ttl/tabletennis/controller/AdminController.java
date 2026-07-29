@@ -11,6 +11,12 @@ import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
 import com.ttl.tabletennis.dto.RatingSnapshotDto;
 import com.ttl.tabletennis.dto.StatisticsBenchmarkDto;
+import com.ttl.tabletennis.dto.TrueSkill2MatchupDto;
+import com.ttl.tabletennis.dto.TrueSkill2RatingDto;
+import com.ttl.tabletennis.dto.TrueSkill2RebuildDto;
+import com.ttl.tabletennis.dto.WengLinMatchupDto;
+import com.ttl.tabletennis.dto.WengLinRatingDto;
+import com.ttl.tabletennis.dto.WengLinRebuildDto;
 import com.ttl.tabletennis.mapper.AliasMapper;
 import com.ttl.tabletennis.request.AliasUpsertRequest;
 import com.ttl.tabletennis.request.MergePlayersRequest;
@@ -24,6 +30,8 @@ import com.ttl.tabletennis.service.PlayerIdentityService;
 import com.ttl.tabletennis.service.RatingSnapshotService;
 import com.ttl.tabletennis.service.StatisticsBenchmarkService;
 import com.ttl.tabletennis.service.TtSeriesEloSyncService;
+import com.ttl.tabletennis.service.TrueSkill2Service;
+import com.ttl.tabletennis.service.WengLinService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,29 +55,49 @@ public class AdminController {
     private final StatisticsBenchmarkService statisticsBenchmarkService;
     private final MatchResultBackfillService matchResultBackfillService;
     private final Glicko2RatingService glicko2RatingService;
+    private final TrueSkill2Service trueSkill2Service;
+    private final WengLinService wengLinService;
     private final PredictionFacade predictionFacade;
     private final OddsValueEngineService oddsValueEngineService;
     private final PaperTradingService paperTradingService;
     private final TtSeriesEloSyncService ttSeriesEloSyncService;
+    private final com.ttl.tabletennis.prediction.staking.ClosingLineBackfillService closingLineBackfillService;
 
     public AdminController(PlayerIdentityService playerIdentityService,
                            RatingSnapshotService ratingSnapshotService,
                            StatisticsBenchmarkService statisticsBenchmarkService,
                            MatchResultBackfillService matchResultBackfillService,
                            Glicko2RatingService glicko2RatingService,
+                           TrueSkill2Service trueSkill2Service,
+                           WengLinService wengLinService,
                            PredictionFacade predictionFacade,
                            OddsValueEngineService oddsValueEngineService,
                            PaperTradingService paperTradingService,
-                           TtSeriesEloSyncService ttSeriesEloSyncService) {
+                           TtSeriesEloSyncService ttSeriesEloSyncService,
+                           com.ttl.tabletennis.prediction.staking.ClosingLineBackfillService closingLineBackfillService) {
         this.playerIdentityService = playerIdentityService;
         this.ratingSnapshotService = ratingSnapshotService;
         this.statisticsBenchmarkService = statisticsBenchmarkService;
         this.matchResultBackfillService = matchResultBackfillService;
         this.glicko2RatingService = glicko2RatingService;
+        this.trueSkill2Service = trueSkill2Service;
+        this.wengLinService = wengLinService;
         this.predictionFacade = predictionFacade;
         this.oddsValueEngineService = oddsValueEngineService;
         this.paperTradingService = paperTradingService;
         this.ttSeriesEloSyncService = ttSeriesEloSyncService;
+        this.closingLineBackfillService = closingLineBackfillService;
+    }
+
+    /**
+     * Finish-checklist §5 — fills closing-line snapshots on settled
+     * paper-trade samples that pre-date the capture wiring. Returns the
+     * scan / fill / skip counts so the caller can chain pages.
+     */
+    @PostMapping("/clv/backfill")
+    public com.ttl.tabletennis.prediction.staking.ClosingLineBackfillService.BackfillResult backfillClosingLines(
+            @RequestParam(name = "limit", defaultValue = "500") int limit) {
+        return closingLineBackfillService.backfill(limit);
     }
 
     @GetMapping("/aliases")
@@ -135,6 +163,44 @@ public class AdminController {
                                               @RequestParam(required = false) LocalDate toDate,
                                               @RequestParam(required = false, name = "tau") List<Double> tauCandidates) {
         return glicko2RatingService.tuneTau(fromDate, toDate, tauCandidates);
+    }
+
+    @PostMapping("/ratings/trueskill2/rebuild")
+    public TrueSkill2RebuildDto rebuildTrueSkill2(@RequestParam(required = false) LocalDate fromDate,
+                                                  @RequestParam(required = false) LocalDate toDate) {
+        return trueSkill2Service.rebuild(fromDate, toDate);
+    }
+
+    @GetMapping("/ratings/trueskill2/player/{playerId}")
+    public TrueSkill2RatingDto getTrueSkill2Rating(@PathVariable Long playerId,
+                                                   @RequestParam(required = false) LocalDate asOfDate) {
+        return trueSkill2Service.ratingForPlayer(playerId, asOfDate);
+    }
+
+    @GetMapping("/ratings/trueskill2/matchup")
+    public TrueSkill2MatchupDto getTrueSkill2Matchup(@RequestParam Long player1Id,
+                                                     @RequestParam Long player2Id,
+                                                     @RequestParam(required = false) LocalDate asOfDate) {
+        return trueSkill2Service.matchup(player1Id, player2Id, asOfDate);
+    }
+
+    @PostMapping("/ratings/wenglin/rebuild")
+    public WengLinRebuildDto rebuildWengLin(@RequestParam(required = false) LocalDate fromDate,
+                                            @RequestParam(required = false) LocalDate toDate) {
+        return wengLinService.rebuild(fromDate, toDate);
+    }
+
+    @GetMapping("/ratings/wenglin/player/{playerId}")
+    public WengLinRatingDto getWengLinRating(@PathVariable Long playerId,
+                                             @RequestParam(required = false) LocalDate asOfDate) {
+        return wengLinService.ratingForPlayer(playerId, asOfDate);
+    }
+
+    @GetMapping("/ratings/wenglin/matchup")
+    public WengLinMatchupDto getWengLinMatchup(@RequestParam Long player1Id,
+                                               @RequestParam Long player2Id,
+                                               @RequestParam(required = false) LocalDate asOfDate) {
+        return wengLinService.matchup(player1Id, player2Id, asOfDate);
     }
 
     @PostMapping("/models/train")

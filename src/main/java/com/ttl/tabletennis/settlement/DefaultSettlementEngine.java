@@ -3,12 +3,15 @@ package com.ttl.tabletennis.settlement;
 import com.ttl.tabletennis.scrape.SourceId;
 import com.ttl.tabletennis.settlement.observation.DatabaseObservation;
 import com.ttl.tabletennis.settlement.observation.LiveObservation;
+import com.ttl.tabletennis.settlement.observation.MatchPhase;
 import com.ttl.tabletennis.settlement.observation.Observation;
 import com.ttl.tabletennis.settlement.observation.OfficialObservation;
 import com.ttl.tabletennis.settlement.observation.ScoreState;
 import com.ttl.tabletennis.settlement.observation.StreamObservation;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -25,11 +28,24 @@ public class DefaultSettlementEngine implements SettlementEngine {
 
     private final AmbiguityScorer ambiguityScorer;
     private final ContradictionGuard contradictionGuard;
+    /**
+     * Wall-clock source for window-expiry checks. Injectable so tests can
+     * pin time to their fixture timestamps; production uses the system clock.
+     */
+    private final Clock clock;
 
+    @Autowired
     public DefaultSettlementEngine(AmbiguityScorer ambiguityScorer,
                                    ContradictionGuard contradictionGuard) {
+        this(ambiguityScorer, contradictionGuard, Clock.systemDefaultZone());
+    }
+
+    public DefaultSettlementEngine(AmbiguityScorer ambiguityScorer,
+                                   ContradictionGuard contradictionGuard,
+                                   Clock clock) {
         this.ambiguityScorer = ambiguityScorer;
         this.contradictionGuard = contradictionGuard;
+        this.clock = clock == null ? Clock.systemDefaultZone() : clock;
     }
 
     @Override
@@ -230,8 +246,7 @@ public class DefaultSettlementEngine implements SettlementEngine {
         if (evidence.coverageState() != CoverageState.DARK) {
             return false;
         }
-        long minutesSincePlacement = Duration.between(evidence.identityLock().placementTime(), evidence.bundleAsOf()).toMinutes();
-        return minutesSincePlacement >= policy.staleLiveRecovery().enterAfterMinutesDark();
+        return minutesSincePlacement(evidence) >= policy.staleLiveRecovery().enterAfterMinutesDark();
     }
 
     private List<SourceId> remainingEscalationSources(SettlementEvidence evidence, SettlementPolicy policy) {
@@ -242,8 +257,7 @@ public class DefaultSettlementEngine implements SettlementEngine {
     }
 
     private boolean officialWindowExpired(SettlementEvidence evidence, SettlementPolicy policy) {
-        long minutesSincePlacement = Duration.between(evidence.identityLock().placementTime(), evidence.bundleAsOf()).toMinutes();
-        return minutesSincePlacement >= policy.staleLiveRecovery().officialWindowMinutes();
+        return minutesSincePlacement(evidence) >= policy.staleLiveRecovery().officialWindowMinutes();
     }
 
     private boolean canUseHeuristic(ClaimAggregate bestClaim,
@@ -255,11 +269,55 @@ public class DefaultSettlementEngine implements SettlementEngine {
         if (bestClaim.outcome() == Outcome.NOT_FINISHED) {
             return false;
         }
-        long minutesSincePlacement = Duration.between(evidence.identityLock().placementTime(), evidence.bundleAsOf()).toMinutes();
-        return minutesSincePlacement >= policy.heuristic().afterDarkMinutes()
+        // #117 — phase-aware void timeout. Pulls the latest LiveObservation's
+        // matchPhase (LIVE_LATE, LIVE_MID, LIVE_EARLY, PREMATCH) and lets the
+        // policy pick a stage-appropriate threshold. Default policy voids
+        // LIVE_LATE bets at 90 min (a game-5 deuce rarely runs that long) and
+        // PREMATCH bets at 240 min (give a match still in pregame time to
+        // resume after a feed hiccup). Falls back to the legacy single
+        // afterDarkMinutes when the bet has no observable phase yet.
+        MatchPhase latestPhase = latestObservedPhase(evidence);
+        int effectiveTimeoutMin = policy.heuristic().afterDarkMinutesFor(latestPhase);
+        return minutesSincePlacement(evidence) >= effectiveTimeoutMin
                 && bestClaim.weightedConfidence() >= (SettlementReason.LAST_SCORE_HEURISTIC.requiredConfidence() == null
                 ? 0.0
                 : SettlementReason.LAST_SCORE_HEURISTIC.requiredConfidence());
+    }
+
+    /**
+     * Latest {@link MatchPhase} observed across the evidence bundle's
+     * {@code liveObservations}. Returns {@code null} when no live
+     * observations are present (the policy will then use the default
+     * fallback timeout).
+     */
+    private static MatchPhase latestObservedPhase(SettlementEvidence evidence) {
+        if (evidence.liveObservations() == null || evidence.liveObservations().isEmpty()) {
+            return null;
+        }
+        // liveObservations is sorted ascending by observedAt in the
+        // SettlementEvidence canonical constructor, so the last entry is the
+        // most recent.
+        return evidence.liveObservations().get(evidence.liveObservations().size() - 1).phase();
+    }
+
+    /**
+     * Returns minutes since the bet was placed, measured against the LATER of
+     * {@code bundleAsOf} (when the evidence bundle was assembled) and the
+     * current wall clock. The previous implementation used only {@code
+     * bundleAsOf} (i.e. the latest observation time), which meant a bet whose
+     * scoreboard feed went silent overnight could appear "young" forever and
+     * never trigger {@code officialWindowExpired} → infinite HoldOpen. Using
+     * wall-clock time fixes that without breaking the (rare) case where
+     * bundleAsOf is in the future relative to {@code now}.
+     */
+    private long minutesSincePlacement(SettlementEvidence evidence) {
+        Instant placement = evidence.identityLock().placementTime();
+        Instant referenceTime = evidence.bundleAsOf();
+        Instant now = clock.instant();
+        if (referenceTime == null || referenceTime.isBefore(now)) {
+            referenceTime = now;
+        }
+        return Duration.between(placement, referenceTime).toMinutes();
     }
 
     private int requiredSourcesFor(SettlementReason reason, SettlementPolicy policy) {

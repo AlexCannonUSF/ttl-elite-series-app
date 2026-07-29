@@ -117,8 +117,17 @@ Phase 04 should use this Phase 03 foundation to add durable stream infrastructur
 
 ## Post-Mortem Summary
 
-Phase 03 worked best where the authority boundaries stayed explicit: advisory evidence, settlement policy, review actions, and operator-facing metrics are now separate enough to reason about and test independently.
+### What went well
 
-The main scope pressure was VLM. The implementation deliberately stopped at the Force VLM hook so Phase 04 can add paid inference, budget control, and raw evidence retention as one coherent production feature.
+- Authority boundaries stayed explicit. Advisory evidence, settlement policy, review actions, and operator-facing metrics are separately testable, which made the audit story easy to write.
+- The manual-review queue + append-only audit table landed together, so every decision the engine emits has a place to be challenged before it can ever be promoted.
+- Stopping deliberately at the Force VLM hook kept Phase 03 a "thin authority" phase and prevented mixing budget logic into evidence logic.
 
-The next phase should preserve the same discipline: add durable infrastructure first, promote authority only after operational evidence exists, and keep every automated decision explainable to the review queue.
+### What surprised us
+
+- The VLM scope pressure was the main scope risk and got pushed to Phase 04 — paid inference, budget control, and raw retention belong together as one production feature, not bolted onto an advisory phase.
+- Settlement-policy hot-reload turned out to be cheap-but-load-bearing: once it existed, every reviewer wanted to use it.
+
+### One improvement to bake in
+
+- Promote authority only after operational evidence exists. The Phase 03 → 04 → 06 sequence proves this rhythm; every new automated decision needs an explainable trail to the review queue before it gets to act.

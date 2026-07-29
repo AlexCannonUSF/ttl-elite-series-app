@@ -74,55 +74,55 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done · `(BE)` backend · `(
 - **Exit**: 2 weeks of advisory operation with ≤0.2 % decisions overturned by operators; staleness recovery path exercised end-to-end; at least 5 distinct ROI templates in production.
 
 ## Phase 04 — Ingestion Bus + VLM Budget + Raw Store
-- `[ ] (INFRA)` Deploy Redis 7 in dev + staging; wire `RedisStreamsBus` implementing `IngestionBus`.
-- `[ ] (INFRA)` Deploy MinIO in dev + staging for raw payloads + CV audit buffer.
-- `[ ] (BE)` Move all feed adapters and `stream.frame` emissions from Spring events to Redis Streams behind `features.redis-streams=on`.
-- `[ ] (BE)` Write raw payload store writer: every ingested event persists its raw body to MinIO keyed by correlationId (Scraper Spec §5).
-- `[ ] (CV)` Wire Tier C VLM fallback (Gemini 2.0 Flash) via `VlmClient` adapter; include a `ClaudeHaikuVisionClient` adapter behind a switch.
-- `[ ] (CV)` `CostGovernor` with per-day, per-hour, per-worker caps; Prometheus `stream_vlm_*` metrics; alert `StreamVLMCostSpike`.
-- `[ ] (CV)` `cv-audit` MinIO bucket with 30-day lifecycle; evidence refs written into `settlement_audit.evidence_refs`.
-- `[ ] (ML)` First production LightGBM blender (Variant A) trained; walk-forward gates passed on 60-day slice; model card committed.
-- `[ ] (ML)` Platt + isotonic + split-conformal calibrators implemented and shipped as Java artefacts.
-- `[ ] (ML)` `ttl-predict-py` deploys blender and Markov endpoints; p99 latency budget 150 ms.
-- `[ ] (BE)` `PredictionFacade` routes 5 % of traffic to v3 pipeline in shadow mode; diffs logged to `prediction_diff_log`.
-- `[ ] (FE)` `/v3/ops/ingest` shows bus health, DLQ depth, partition lag.
-- `[ ] (DOC)` `phase-04.md`.
+- `[x] (INFRA)` Deploy Redis 7 in dev + staging; wire `RedisStreamsBus` implementing `IngestionBus`.
+- `[x] (INFRA)` Deploy MinIO in dev + staging for raw payloads + CV audit buffer.
+- `[x] (BE)` Move all feed adapters and `stream.frame` emissions from Spring events to Redis Streams behind `features.redis-streams=on`.
+- `[x] (BE)` Write raw payload store writer: every ingested event persists its raw body to MinIO keyed by correlationId (Scraper Spec §5).
+- `[x] (CV)` Wire Tier C VLM fallback (Gemini 2.0 Flash) via `VlmClient` adapter; include a `ClaudeHaikuVisionClient` adapter behind a switch.
+- `[x] (CV)` `CostGovernor` with per-day, per-hour, per-worker caps; Prometheus `stream_vlm_*` metrics; alert `StreamVLMCostSpike`.
+- `[x] (CV)` `cv-audit` MinIO bucket with 30-day lifecycle; evidence refs written into `settlement_audit.evidence_refs`.
+- `[x] (ML)` First production LightGBM blender (Variant A) trained; walk-forward gates passed on 60-day slice; model card committed.
+- `[x] (ML)` Platt + isotonic + split-conformal calibrators implemented and shipped as Java artefacts.
+- `[x] (ML)` `ttl-predict-py` deploys blender and Markov endpoints; p99 latency budget 150 ms.
+- `[x] (BE)` `PredictionFacade` routes 5 % of traffic to v3 pipeline in shadow mode; diffs logged to `prediction_diff_log`.
+- `[x] (FE)` `/v3/ops/ingest` shows bus health, DLQ depth, partition lag.
+- `[x] (DOC)` `phase-04.md`.
 - **Exit**: Redis Streams steady state for 7 days, zero data loss, zero DLQ growth > 24 h; VLM budget steady under cap; blender Variant A shadow showing neutral-or-positive CLV.
 
 ## Phase 05 — Prediction Stack Core + Markov Simulator
-- `[ ] (ML)` TrueSkill-2 ratings nightly job; `TrueSkill2Service` Java reader.
-- `[ ] (ML)` Weng-Lin ratings nightly job; `WengLinService` reader.
-- `[ ] (ML)` Ensemble rater combination (`rater.ensemble.delta`).
-- `[ ] (ML)` Markov simulator in Python microservice; JVM orchestrator `MarkovSimulator`.
-- `[ ] (ML)` Variant B blender (with devigged-market features) trained & shadowed.
-- `[ ] (BE)` `DeviggingService` with Shin + Power + Multiplicative; unit-test against fixtures.
-- `[ ] (BE)` `EdgeEngine` combining `Prediction` + devigged market → `Edge`.
-- `[ ] (BE)` `ConformalPredictor` implementing Mondrian split conformal in Java.
-- `[ ] (FE)` `/v3/match/:id` prediction panel with reliability curve + SHAP top-K contributions + conformal interval.
-- `[ ] (FE)` Reliability & drift dashboards under `/v3/ml/quality`.
-- `[ ] (DOC)` `phase-05.md`.
+- `[x] (ML)` TrueSkill-2 ratings nightly job; `TrueSkill2Service` Java reader.
+- `[x] (ML)` Weng-Lin ratings nightly job; `WengLinService` reader.
+- `[x] (ML)` Ensemble rater combination (`rater.ensemble.delta`).
+- `[x] (ML)` Markov simulator in Python microservice; JVM orchestrator `MarkovSimulator`.
+- `[x] (ML)` Variant B blender (with devigged-market features) trained & shadowed.
+- `[x] (BE)` `DeviggingService` with Shin + Power + Multiplicative; unit-test against fixtures.
+- `[x] (BE)` `EdgeEngine` combining `Prediction` + devigged market → `Edge`.
+- `[x] (BE)` `ConformalPredictor` implementing Mondrian split conformal in Java.
+- `[x] (FE)` `/v3/match/:id` prediction panel with reliability curve + SHAP top-K contributions + conformal interval.
+- `[x] (FE)` Reliability & drift dashboards under `/v3/ml/quality`.
+- `[x] (DOC)` `phase-05.md`.
 - **Exit**: PredictionFacade shadows 100 %; Variant A matches or beats production Brier & CLV over 7-day window.
 
 ## Phase 06 — Staking v3 + Settlement Promotion
-- `[ ] (BE)` `StakingPolicy` v3 with fractional Kelly + portfolio caps + correlation caps + drawdown stop.
-- `[ ] (BE)` `policy.yaml` loader with hot-reload + audit log; kill-switch endpoint for ops.
-- `[ ] (BE)` Promote `SettlementEngine` from advisory to **primary** — it now closes bets; 2.0 path remains as the cold-standby code, reachable only via feature flag rollback.
-- `[ ] (BE)` Stream-CV becomes **required** input for matches where `market_closed_before_end == true`; absence triggers `SCORE_BACKED_ONLY` policy.
-- `[ ] (FE)` Session ribbon with live P&L, CLV, exposure utilisation (per UI Redesign Spec §3 and §4).
-- `[ ] (FE)` Command palette (`⌘K`) with navigation, bet management, feed actions.
-- `[ ] (INFRA)` Alerts: `ExposureCapBreach`, `StakingPolicyHotReloadFailed`, `CLVNegative7Day`.
-- `[ ] (DOC)` `phase-06.md`.
+- `[x] (BE)` `StakingPolicy` v3 with fractional Kelly + portfolio caps + correlation caps + drawdown stop.
+- `[x] (BE)` `policy.yaml` loader with hot-reload + audit log; kill-switch endpoint for ops.
+- `[x] (BE)` Promote `SettlementEngine` from advisory to **primary** — it now closes bets; 2.0 path remains as the cold-standby code, reachable only via feature flag rollback.
+- `[x] (BE)` Stream-CV becomes **required** input for matches where `market_closed_before_end == true`; absence triggers `SCORE_BACKED_ONLY` policy.
+- `[x] (FE)` Session ribbon with live P&L, CLV, exposure utilisation (per UI Redesign Spec §3 and §4).
+- `[x] (FE)` Command palette (`⌘K`) with navigation, bet management, feed actions.
+- `[x] (INFRA)` Alerts: `ExposureCapBreach`, `StakingPolicyHotReloadFailed`, `CLVNegative7Day`.
+- `[x] (DOC)` `phase-06.md`.
 - **Exit**: 2 weeks of v3 settlement in production with zero Bug-A-style contradictions reaching users; staking v3 caps never breached; CLV ≥ 2.0 baseline with p<0.05.
 
 ## Phase 07 — UI Cutover
-- `[ ] (FE)` Port Live Board to v3 shell with FlashOnChange + TradingView Lightweight Charts for odds.
-- `[ ] (FE)` Port Match Detail view with tabs (Evidence, Prediction, History, Market).
-- `[ ] (FE)` Port Review queue, Ops Console, Feeds page to v3 shell.
-- `[ ] (FE)` Retire MUI v7 routes at `/` — `/v3/*` becomes the canonical root, `/` redirects.
-- `[ ] (FE)` A11y audit (WCAG 2.2 AA): keyboard nav, contrast, ARIA labels, reduced-motion.
-- `[ ] (FE)` Performance audit: LCP ≤ 2.0 s, TTI ≤ 1.5 s, initial JS ≤ 450 KB gz (per UI Redesign Spec §9).
-- `[ ] (INFRA)` CDN + long-term caching for v3 static bundles; stale-while-revalidate on the index HTML only.
-- `[ ] (DOC)` `phase-07.md`.
+- `[x] (FE)` Port Live Board to v3 shell with FlashOnChange + TradingView Lightweight Charts for odds.
+- `[x] (FE)` Port Match Detail view with tabs (Evidence, Prediction, History, Market).
+- `[x] (FE)` Port Review queue, Ops Console, Feeds page to v3 shell.
+- `[x] (FE)` Retire MUI v7 routes at `/` — `/v3/*` becomes the canonical root, `/` redirects.
+- `[x] (FE)` A11y audit (WCAG 2.2 AA): keyboard nav, contrast, ARIA labels, reduced-motion.
+- `[x] (FE)` Performance audit: LCP ≤ 2.0 s, TTI ≤ 1.5 s, initial JS ≤ 450 KB gz (per UI Redesign Spec §9).
+- `[x] (INFRA)` CDN + long-term caching for v3 static bundles; stale-while-revalidate on the index HTML only.
+- `[x] (DOC)` `phase-07.md`.
 - **Exit**: v3 UI is default; 2.0 UI removed; perf and a11y budgets met.
 
 ## Phase 08 — Tightening, Retirement, and v3.1 Prep

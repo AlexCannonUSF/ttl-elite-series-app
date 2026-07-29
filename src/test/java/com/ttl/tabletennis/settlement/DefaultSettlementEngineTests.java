@@ -6,9 +6,11 @@ import com.ttl.tabletennis.settlement.observation.MatchPhase;
 import com.ttl.tabletennis.settlement.observation.ScoreState;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,9 +19,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultSettlementEngineTests {
 
+    /**
+     * Pin the engine's wall-clock to a moment near the fixture timestamps so
+     * window-expiry checks (which now compare placement to the LATER of
+     * bundleAsOf and the engine's clock) behave as the legacy tests assume.
+     * Production uses {@link Clock#systemDefaultZone()}; tests use this
+     * fixed clock so we stay deterministic.
+     */
+    private static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-04-19T12:30:30Z"),
+            ZoneOffset.UTC);
+
     private final DefaultSettlementEngine engine = new DefaultSettlementEngine(
             new AmbiguityScorer(),
-            new ContradictionGuard()
+            new ContradictionGuard(),
+            FIXED_CLOCK
     );
 
     @Test
@@ -215,5 +229,113 @@ class DefaultSettlementEngineTests {
                 "booker-1",
                 "market-1"
         );
+    }
+
+    // --- #117 tests: phase-aware void timeout ---
+
+    private static SettlementEvidence evidenceWithPhase(MatchPhase phase,
+                                                          Instant placementTime,
+                                                          Instant bundleAsOf) {
+        return new SettlementEvidence(
+                42L,
+                new TrackedEventId("tracked-117"),
+                new IdentityLock(10L, 20L, placementTime, Duration.ofHours(8),
+                        "booker-117", "market-117"),
+                List.of(new LiveObservation(
+                        SourceId.HR_MKT,
+                        bundleAsOf,
+                        0.92,
+                        phase,
+                        new ScoreState(2, 1, 10, 5, ""),
+                        "raw-live",
+                        false,
+                        "booker-117",
+                        "market-117",
+                        false,
+                        false
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                CoverageState.PARTIAL,
+                List.of(),
+                0.0,
+                0.92,
+                bundleAsOf
+        );
+    }
+
+    @Test
+    void liveLatePhaseTriggersHeuristicAt90Min_butLiveEarlyDoesNot() {
+        // Tight fixed clock so minutesSincePlacement uses bundleAsOf
+        // (placement 12:00 → bundleAsOf 13:35 = 95 min elapsed).
+        Clock clock = Clock.fixed(Instant.parse("2026-04-19T13:35:00Z"), ZoneOffset.UTC);
+        DefaultSettlementEngine engineLocal = new DefaultSettlementEngine(
+                new AmbiguityScorer(), new ContradictionGuard(), clock);
+
+        Instant placement = Instant.parse("2026-04-19T12:00:00Z");
+        Instant bundleAsOf = Instant.parse("2026-04-19T13:35:00Z");
+
+        // LIVE_LATE at 95 min elapsed → heuristic fires (default LIVE_LATE
+        // threshold is 90 — this is the #117 unlock).
+        SettlementEvidence late = evidenceWithPhase(MatchPhase.LIVE_LATE, placement, bundleAsOf);
+        Decision lateDecision = engineLocal.decide(late, SettlementPolicy.defaults());
+        assertInstanceOf(Settle.class, lateDecision,
+                "LIVE_LATE phase: 95 min > 90-min threshold → heuristic settle");
+
+        // LIVE_EARLY at the same 95 min → does NOT fire heuristic (LIVE_EARLY
+        // threshold is 200), AND official window (180 min) hasn't expired
+        // either, so coverage-DARK escalation cannot fire (coverage is PARTIAL
+        // here from the live observation). Engine should HoldOpen.
+        SettlementEvidence early = evidenceWithPhase(MatchPhase.LIVE_EARLY, placement, bundleAsOf);
+        Decision earlyDecision = engineLocal.decide(early, SettlementPolicy.defaults());
+        assertInstanceOf(HoldOpen.class, earlyDecision,
+                "LIVE_EARLY phase: 95 min < 200-min phase threshold → hold open (no heuristic)");
+    }
+
+    @Test
+    void liveLatePhaseAt89MinHoldsOpen_thenSettlesAt91Min() {
+        // Boundary test: confirm the 90-min LIVE_LATE threshold gates correctly.
+        Instant placement = Instant.parse("2026-04-19T12:00:00Z");
+
+        // 89 min — just below the LIVE_LATE threshold.
+        Clock clock89 = Clock.fixed(Instant.parse("2026-04-19T13:29:00Z"), ZoneOffset.UTC);
+        DefaultSettlementEngine engine89 = new DefaultSettlementEngine(
+                new AmbiguityScorer(), new ContradictionGuard(), clock89);
+        SettlementEvidence ev89 = evidenceWithPhase(
+                MatchPhase.LIVE_LATE, placement, Instant.parse("2026-04-19T13:29:00Z"));
+        assertInstanceOf(HoldOpen.class, engine89.decide(ev89, SettlementPolicy.defaults()),
+                "LIVE_LATE at 89 min < 90 → hold open");
+
+        // 91 min — just above the threshold.
+        Clock clock91 = Clock.fixed(Instant.parse("2026-04-19T13:31:00Z"), ZoneOffset.UTC);
+        DefaultSettlementEngine engine91 = new DefaultSettlementEngine(
+                new AmbiguityScorer(), new ContradictionGuard(), clock91);
+        SettlementEvidence ev91 = evidenceWithPhase(
+                MatchPhase.LIVE_LATE, placement, Instant.parse("2026-04-19T13:31:00Z"));
+        assertInstanceOf(Settle.class, engine91.decide(ev91, SettlementPolicy.defaults()),
+                "LIVE_LATE at 91 min > 90 → heuristic settle");
+    }
+
+    @Test
+    void heuristicRecordBackCompatConstructorSetsEmptyPhaseMap() {
+        SettlementPolicy.Heuristic legacy = new SettlementPolicy.Heuristic(true, 300);
+        assertEquals(300, legacy.afterDarkMinutes());
+        assertTrue(legacy.phaseAfterDarkMinutes().isEmpty(),
+                "back-compat constructor leaves phase map empty");
+
+        // afterDarkMinutesFor(any phase) falls back to legacy threshold
+        assertEquals(300, legacy.afterDarkMinutesFor(MatchPhase.LIVE_LATE));
+        assertEquals(300, legacy.afterDarkMinutesFor(MatchPhase.PREMATCH));
+        assertEquals(300, legacy.afterDarkMinutesFor(null));
+    }
+
+    @Test
+    void heuristicRecordValidatesNegativePhaseMinutes() {
+        java.util.Map<MatchPhase, Integer> bad = new java.util.HashMap<>();
+        bad.put(MatchPhase.LIVE_LATE, -1);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new SettlementPolicy.Heuristic(true, 240, bad));
     }
 }

@@ -128,12 +128,14 @@ class PredictionModelServiceTests {
 
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto player1 =
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto(
-                        0.60, 0.58, 1540.0, 1580.0, 1590.0, 75.0, 0.05, 10.0, 10.0, 10.0,
+                        0.60, 0.58, 1540.0, 1580.0, 1590.0, 75.0, 0.05,
+                        26.5, 2.0, 0.6, 0.35, 10.0, 10.0, 10.0,
                         0.72, 0.70, 0.68, 0.86
                 );
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto player2 =
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto(
-                        0.40, 0.42, 1490.0, 1510.0, 1505.0, 82.0, 0.06, 10.0, 10.0, 10.0,
+                        0.40, 0.42, 1490.0, 1510.0, 1505.0, 82.0, 0.06,
+                        24.6, 2.3, -0.2, 0.42, 10.0, 10.0, 10.0,
                         0.70, 0.68, 0.66, 0.83
                 );
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.ReliabilitySummaryDto reliabilitySummary =
@@ -161,6 +163,10 @@ class PredictionModelServiceTests {
                 player2,
                 0.64,
                 0.66,
+                0.59,
+                0.57,
+                0.6185,
+                0.1185,
                 reliabilitySummary,
                 thinSignificanceSummary,
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.RatingIntervalDto(1440.0, 1740.0),
@@ -178,6 +184,10 @@ class PredictionModelServiceTests {
                 player2,
                 0.64,
                 0.66,
+                0.59,
+                0.57,
+                0.6185,
+                0.1185,
                 reliabilitySummary,
                 deepSignificanceSummary,
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.RatingIntervalDto(1440.0, 1740.0),

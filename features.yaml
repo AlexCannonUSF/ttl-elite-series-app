@@ -4,7 +4,7 @@ features:
   "features.canonicaliser":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
+    state: "on"
     description: "Enables PlayerCanonicaliser inside feed adapters and alias resolution paths."
     allowed_states:
       - "off"
@@ -23,7 +23,7 @@ features:
   "features.score-truth":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
+    state: "primary"
     description: "Controls Score Truth Engine rollout from shadow to advisory to primary settlement."
     allowed_states:
       - "off"
@@ -34,7 +34,7 @@ features:
   "features.predict-v3":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
+    state: "shadow"
     description: "Routes prediction traffic into the 3.0 prediction stack and Python microservice."
     allowed_states:
       - "off"
@@ -44,7 +44,7 @@ features:
   "features.ui-shell-v3":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
+    state: "on"
     description: "Mounts the 3.0 web shell and controls route-level cutover to the v3 workspace."
     allowed_states:
       - "off"
@@ -54,8 +54,8 @@ features:
   "features.redis-streams":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
-    description: "Switches ingestion events from in-process Spring events to Redis Streams."
+    state: "shadow"
+    description: "Switches ingestion events from in-process Spring events to Redis Streams. Set to off when Docker/Redis is not running locally — flip back to shadow when Redis is up to resume the dual-write soak."
     allowed_states:
       - "off"
       - "shadow"
@@ -64,7 +64,7 @@ features:
   "features.stake-policy-v3":
     owner: "Alex"
     expires_on: "2026-07-15"
-    state: "off"
+    state: "on"
     description: "Enables the 3.0 staking policy and portfolio-cap enforcement path."
     allowed_states:
       - "off"

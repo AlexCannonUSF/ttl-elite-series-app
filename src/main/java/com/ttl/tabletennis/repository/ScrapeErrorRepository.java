@@ -3,9 +3,11 @@ package com.ttl.tabletennis.repository;
 import com.ttl.tabletennis.domain.ScrapeError;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface ScrapeErrorRepository extends JpaRepository<ScrapeError, Long> {
@@ -16,4 +18,9 @@ public interface ScrapeErrorRepository extends JpaRepository<ScrapeError, Long> 
            ORDER BY e.occurredAt DESC, e.id DESC
            """)
     List<ScrapeError> findRecent(@Param("runNumber") Integer runNumber, Pageable pageable);
+
+    /** #124 — Retention prune by occurredAt. */
+    @Modifying
+    @Query("DELETE FROM ScrapeError e WHERE e.occurredAt < :cutoff")
+    int deleteByOccurredAtBefore(@Param("cutoff") LocalDateTime cutoff);
 }

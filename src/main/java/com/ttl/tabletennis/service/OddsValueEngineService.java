@@ -18,6 +18,8 @@ import com.ttl.tabletennis.util.NameUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +44,59 @@ public class OddsValueEngineService {
 
     public static final String STRATEGY_CONSERVATIVE = "CONSERVATIVE";
     public static final String STRATEGY_AGGRESSIVE = "AGGRESSIVE";
+
+    /** Cached scrape result + the timestamp it was captured. Used by
+     *  {@link #liveOddsRecommendations(String, String, int, boolean)} so the
+     *  live board doesn't synchronously hit the upstream HTTP scraper on
+     *  every page load. TTL is governed by {@link #LIVE_SCRAPE_CACHE_TTL_MS}.
+     *  Stale-while-revalidate: if the cache exists but is older than the TTL,
+     *  the request still serves the stale rows immediately and triggers a
+     *  background refresh — so the board stays responsive even when Hard Rock
+     *  is slow / rate-limiting / down. */
+    private static final long LIVE_SCRAPE_CACHE_TTL_MS = 5_000L;
+    /** Hard cap on how long the first request will block waiting for the
+     *  initial scrape. Beyond this we return an empty list and let the
+     *  scrape finish in the background. */
+    private static final long LIVE_SCRAPE_FIRST_HIT_BUDGET_MS = 4_000L;
+    /** Result-level cache (post predict) — much heavier than the scrape, so a
+     *  longer TTL is fine. Live odds shift on second-by-second timescales, but
+     *  a 10s cache is still well below "feels stale" for the UI and saves us
+     *  re-running per-row prediction on every poll. */
+    private static final long LIVE_RECS_CACHE_TTL_MS = 10_000L;
+    /** First-paint budget for the full recommendation pipeline. Beyond this
+     *  the request returns whatever is already in cache (possibly empty) and
+     *  the background task continues to fill the cache for the next paint. */
+    private static final long LIVE_RECS_FIRST_HIT_BUDGET_MS = 4_000L;
+    /** Lite-row cache TTL — used as the cold-cache fallback before the full
+     *  prediction-enriched compute finishes. Lite rows have odds + player
+     *  identities but no predictions, so they're cheap (~ms) to recompute. */
+    private static final long LIVE_LITE_CACHE_TTL_MS = 5_000L;
+    private final java.util.concurrent.atomic.AtomicReference<CachedScrape> cachedScrape =
+            new java.util.concurrent.atomic.AtomicReference<>(null);
+    private final java.util.concurrent.atomic.AtomicBoolean scrapeInflight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.ExecutorService scrapeRefreshExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "odds-engine-scrape-refresh");
+                t.setDaemon(true);
+                return t;
+            });
+    private final java.util.concurrent.ConcurrentMap<RecsKey, CachedRecs> cachedRecs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentMap<RecsKey, CachedRecs> cachedLiteRecs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentMap<RecsKey, java.util.concurrent.Future<?>> recsInflight =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService recsRefreshExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "odds-engine-recs-refresh");
+                t.setDaemon(true);
+                return t;
+            });
+
+    private record CachedScrape(List<MatchOdds> rows, long capturedAtMillis) { }
+    private record RecsKey(String strategy, String modelSelector, int take, boolean includeUnresolved) { }
+    private record CachedRecs(List<LiveOddsRecommendationDto> rows, long capturedAtMillis) { }
 
     private final PredictionFacade predictionFacade;
     private final PlayerIdentityService playerIdentityService;
@@ -74,6 +129,53 @@ public class OddsValueEngineService {
         this.hardRockOddsScraper = hardRockOddsScraper;
         this.oddsQuoteRepository = oddsQuoteRepository;
         this.valueOpportunityRepository = valueOpportunityRepository;
+    }
+
+    /**
+     * Eagerly warm the live-board prediction cache when the application is
+     * ready. Without this, the first user request after boot only sees lite
+     * rows (player names + odds) while the full predict-per-row compute runs
+     * in the background. With it, the per-matchup {@link PredictionFacade}
+     * cache populates during boot so the user's first paint already shows
+     * model probabilities and edges.
+     *
+     * <p>Runs on the existing background executor so we never block startup.
+     * Idempotent — re-firing is a cache hit if predictions are already warm.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void warmLiveBoardOnStartup() {
+        recsRefreshExecutor.submit(() -> {
+            try {
+                // Slight delay so the boot-time scrape finishes first; this
+                // gives the warmup a populated MatchOdds list.
+                try {
+                    Thread.sleep(2_000L);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                String strategy = STRATEGY_CONSERVATIVE;
+                String modelSelector = StringUtils.hasText(defaultModelFamily) ? defaultModelFamily : "ENSEMBLE";
+                int take = 250;
+                boolean includeUnresolved = true;
+                double threshold = strategyThreshold(strategy);
+                RecsKey key = new RecsKey(strategy, modelSelector, take, includeUnresolved);
+                long startMs = System.currentTimeMillis();
+                log.info("[odds-engine] warmup begin — strategy={} model={} take={} includeUnresolved={}",
+                        strategy, modelSelector, take, includeUnresolved);
+                List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
+                        strategy, modelSelector, take, includeUnresolved, threshold, /* liteMode */ false);
+                cachedRecs.put(key, new CachedRecs(
+                        fresh == null ? List.of() : List.copyOf(fresh),
+                        System.currentTimeMillis()));
+                long elapsedMs = System.currentTimeMillis() - startMs;
+                log.info("[odds-engine] warmup complete — rows={} elapsedMs={}",
+                        fresh == null ? 0 : fresh.size(), elapsedMs);
+            } catch (RuntimeException ex) {
+                log.warn("[odds-engine] warmup failed (cache will fill from request traffic instead): {}",
+                        ex.toString());
+            }
+        });
     }
 
     @Transactional
@@ -235,7 +337,6 @@ public class OddsValueEngineService {
         return out;
     }
 
-    @Transactional(readOnly = true)
     public List<LiveOddsRecommendationDto> liveOddsRecommendations(String strategyRaw,
                                                                    String modelSelectorRaw,
                                                                    int limit,
@@ -245,9 +346,111 @@ public class OddsValueEngineService {
         String modelSelector = StringUtils.hasText(modelSelectorRaw)
                 ? modelSelectorRaw.trim()
                 : defaultModelFamily;
-        double threshold = strategyThreshold(strategy);
+        RecsKey key = new RecsKey(strategy, modelSelector, take, includeUnresolved);
 
-        List<MatchOdds> fetched = hardRockOddsScraper.fetch();
+        long now = System.currentTimeMillis();
+        // ── Tier 1: full predictions, cached for LIVE_RECS_CACHE_TTL_MS. ──
+        CachedRecs current = cachedRecs.get(key);
+        if (current != null && (now - current.capturedAtMillis()) < LIVE_RECS_CACHE_TTL_MS) {
+            return current.rows();
+        }
+        // Either stale or missing — kick off a background full recompute.
+        java.util.concurrent.Future<?> refresh = triggerRecsBackgroundRefresh(key);
+        if (current != null) {
+            // Stale-while-revalidate: serve previous full rows immediately.
+            return current.rows();
+        }
+        // ── Tier 2: lite rows. If we have a fresh lite cache entry, serve
+        //   it instantly while the background full compute continues. This
+        //   is the path almost all polls take once the lite cache is warm. ──
+        CachedRecs lite = cachedLiteRecs.get(key);
+        if (lite != null && (now - lite.capturedAtMillis()) < LIVE_LITE_CACHE_TTL_MS) {
+            return lite.rows();
+        }
+        // ── First paint only (lite cache never populated). Wait briefly for
+        //   the full compute (cheap in tests with mocked deps and once the
+        //   page cache is warm in prod). Subsequent expired-lite calls skip
+        //   this wait — they just recompute lite directly. ──
+        if (refresh != null && lite == null) {
+            try {
+                refresh.get(LIVE_RECS_FIRST_HIT_BUDGET_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                CachedRecs justComputed = cachedRecs.get(key);
+                if (justComputed != null) {
+                    return justComputed.rows();
+                }
+            } catch (java.util.concurrent.TimeoutException ex) {
+                log.info("[odds-engine] first-hit recs compute exceeded {} ms budget; falling back to lite rows while compute continues",
+                        LIVE_RECS_FIRST_HIT_BUDGET_MS);
+            } catch (java.util.concurrent.ExecutionException | InterruptedException ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                log.warn("[odds-engine] first-hit recs compute failed: {}", ex.toString());
+            }
+        }
+        try {
+            double threshold = strategyThreshold(strategy);
+            List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
+                    strategy, modelSelector, take, includeUnresolved, threshold, /* liteMode */ true);
+            CachedRecs cached = new CachedRecs(
+                    fresh == null ? List.of() : List.copyOf(fresh),
+                    System.currentTimeMillis());
+            cachedLiteRecs.put(key, cached);
+            return cached.rows();
+        } catch (RuntimeException ex) {
+            log.warn("[odds-engine] synchronous lite compute failed: {}", ex.toString());
+            return lite == null ? List.of() : lite.rows();
+        }
+    }
+
+    /**
+     * Submit a single per-key recommendation refresh task. If one is already
+     * in flight for this key, return that future so the caller can piggyback
+     * on it. Background tasks run on a dedicated daemon thread pool — they
+     * deliberately do NOT share a Spring transaction with the caller, but
+     * each child service (FeatureService, PredictionModelService, etc.) is
+     * itself {@code @Transactional(readOnly = true)} at class level so the
+     * downstream reads still run in their own short transactions.
+     */
+    private java.util.concurrent.Future<?> triggerRecsBackgroundRefresh(RecsKey key) {
+        return recsInflight.compute(key, (k, existing) -> {
+            if (existing != null && !existing.isDone()) {
+                return existing;
+            }
+            return recsRefreshExecutor.submit(() -> {
+                try {
+                    double threshold = strategyThreshold(k.strategy());
+                    List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
+                            k.strategy(),
+                            k.modelSelector(),
+                            k.take(),
+                            k.includeUnresolved(),
+                            threshold,
+                            /* liteMode */ false);
+                    cachedRecs.put(k, new CachedRecs(
+                            fresh == null ? List.of() : List.copyOf(fresh),
+                            System.currentTimeMillis()));
+                    log.info("[odds-engine] full recs compute finished for {}; rows={}",
+                            k, fresh == null ? 0 : fresh.size());
+                } catch (RuntimeException ex) {
+                    log.warn("[odds-engine] background recs refresh failed for {}: {}", k, ex.toString());
+                }
+            });
+        });
+    }
+
+    /**
+     * Heavy computation extracted from {@link #liveOddsRecommendations} so it
+     * can be invoked from a background thread without dragging the caller's
+     * (potentially nonexistent) Spring transaction along.
+     */
+    private List<LiveOddsRecommendationDto> computeLiveOddsRecommendations(String strategy,
+                                                                            String modelSelector,
+                                                                            int take,
+                                                                            boolean includeUnresolved,
+                                                                            double threshold,
+                                                                            boolean liteMode) {
+        List<MatchOdds> fetched = fetchWithCache();
         List<LiveOddsRecommendationDto> out = new ArrayList<>();
         LocalDateTime snapshotTime = LocalDateTime.now();
 
@@ -354,6 +557,57 @@ public class OddsValueEngineService {
                         p2.getName(),
                         odds.getStartTimeIso()
                 );
+                if (liteMode) {
+                    // Fast path: skip predict() entirely. Row carries player IDs,
+                    // odds, and implied probabilities — enough for the UI to
+                    // render the board. The background full-prediction compute
+                    // will replace this row on the next poll.
+                    out.add(new LiveOddsRecommendationDto(
+                            source,
+                            strategy,
+                            modelSelector,
+                            eventName,
+                            competitionName,
+                            odds.isLive(),
+                            odds.getStartTimeIso(),
+                            odds.getLiveScore(),
+                            StringUtils.hasText(odds.getMatchPhase()) ? odds.getMatchPhase() : (odds.isLive() ? "LIVE" : "UPCOMING"),
+                            p1.getId(),
+                            p1.getName(),
+                            p2.getId(),
+                            p2.getName(),
+                            odds.getOddsA(),
+                            odds.getOddsB(),
+                            decimalToAmerican(odds.getOddsA()),
+                            decimalToAmerican(odds.getOddsB()),
+                            implied1,
+                            implied2,
+                            null, null,           // modelProbabilityPlayer1/2
+                            null, null,           // edgePlayer1/2
+                            null, null,           // modelFairAmericanOddsPlayer1/2
+                            null,                 // suggestedSide
+                            null,                 // suggestedEdge
+                            null,                 // suggestedFairAmericanOdds
+                            null, null,           // confidenceLow/High
+                            false,                // recommended
+                            "PENDING",            // grade
+                            "Loading model predictions…",
+                            null, null,           // topTrigger, topTriggerContribution
+                            null, null, null, null, // overallReliability, ratingAgreement, topTriggerReliability, baselineStability
+                            matchupKey,
+                            null,                 // suggestedDedupeKey
+                            odds.getSourceType(),
+                            odds.getSourceConfidence(),
+                            odds.getExternalEventId(),
+                            odds.isDisplayed(),
+                            odds.isResulted(),
+                            odds.isMatchCompleted(),
+                            odds.getSourceFeedCode(),
+                            odds.getSourceFeedEventId(),
+                            odds.getScoreDetail()
+                    ));
+                    continue;
+                }
                 PredictionModelService.PredictionSnapshot prediction = predictionFacade.predict(
                         p1.getId(),
                         p2.getId(),
@@ -687,6 +941,92 @@ public class OddsValueEngineService {
         opp.setCreatedAt(createdAt);
         valueOpportunityRepository.save(opp);
         return 1;
+    }
+
+    /**
+     * Returns the latest cached {@link MatchOdds} scrape, ALWAYS without
+     * blocking. Behaviour:
+     * <ul>
+     *   <li>Cache fresh ({@code &lt; LIVE_SCRAPE_CACHE_TTL_MS}) → returns immediately.</li>
+     *   <li>Cache stale → returns the stale rows and triggers a single
+     *       background refresh (stale-while-revalidate).</li>
+     *   <li>Cache miss → returns an empty list and triggers a background
+     *       refresh. The first board paint may be empty for a moment; the
+     *       next refresh tick fills it. Critically, the request never hangs.</li>
+     * </ul>
+     * <p>The original code synchronously called {@code hardRockOddsScraper.fetch()}
+     * on every request — when the upstream feed slowed down, the live board
+     * surface 500'd at 30 s. This cache turns a "30 s 500" failure into a
+     * "first paint shows nothing, second paint shows data" UX.
+     */
+    private List<MatchOdds> fetchWithCache() {
+        CachedScrape current = cachedScrape.get();
+        if (current != null
+                && (System.currentTimeMillis() - current.capturedAtMillis()) < LIVE_SCRAPE_CACHE_TTL_MS) {
+            return current.rows();
+        }
+        // Cache stale or empty — start (or piggyback on) a background refresh.
+        java.util.concurrent.Future<?> refresh = triggerBackgroundRefresh();
+        if (current != null) {
+            // Stale-while-revalidate: serve the previous rows immediately.
+            return current.rows();
+        }
+        // Cache miss (first request after boot or after a clear). Wait up to
+        // LIVE_SCRAPE_FIRST_HIT_BUDGET_MS for the refresh; if the upstream
+        // scraper is slow, return [] and let the background task fill the
+        // cache for the next request.
+        if (refresh != null) {
+            try {
+                refresh.get(LIVE_SCRAPE_FIRST_HIT_BUDGET_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException ex) {
+                log.info("[odds-engine] first-hit scrape exceeded {} ms budget; serving empty rows while refresh continues",
+                        LIVE_SCRAPE_FIRST_HIT_BUDGET_MS);
+            } catch (java.util.concurrent.ExecutionException | InterruptedException ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                log.warn("[odds-engine] first-hit scrape failed: {}", ex.toString());
+            }
+        }
+        CachedScrape afterWait = cachedScrape.get();
+        return afterWait == null ? List.of() : afterWait.rows();
+    }
+
+    /**
+     * Package-private hook for tests: drop the cached scrape so the next
+     * {@link #liveOddsRecommendations} call goes through the (mocked) scraper.
+     * Production code must not call this — it'd defeat the cache's purpose.
+     */
+    void clearScrapeCacheForTest() {
+        cachedScrape.set(null);
+        scrapeInflight.set(false);
+        cachedRecs.clear();
+        cachedLiteRecs.clear();
+        recsInflight.clear();
+    }
+
+    /**
+     * Submit a single refresh task to the daemon executor (idempotent — if
+     * one is already in flight, returns null and lets the existing one
+     * proceed). Returned Future lets the calling thread optionally wait up
+     * to a budgeted timeout for the result.
+     */
+    private java.util.concurrent.Future<?> triggerBackgroundRefresh() {
+        if (!scrapeInflight.compareAndSet(false, true)) {
+            return null;
+        }
+        return scrapeRefreshExecutor.submit(() -> {
+            try {
+                List<MatchOdds> fresh = hardRockOddsScraper.fetch();
+                cachedScrape.set(new CachedScrape(
+                        fresh == null ? List.of() : List.copyOf(fresh),
+                        System.currentTimeMillis()));
+            } catch (RuntimeException ex) {
+                log.warn("[odds-engine] background scrape refresh failed; keeping stale cache: {}", ex.toString());
+            } finally {
+                scrapeInflight.set(false);
+            }
+        });
     }
 
     private String normalizeStrategy(String strategyRaw) {

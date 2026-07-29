@@ -6,9 +6,14 @@ import com.ttl.tabletennis.dto.DuplicatePlayerCandidateDto;
 import com.ttl.tabletennis.exception.ResourceNotFoundException;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.PlayerAliasRepository;
+import com.ttl.tabletennis.repository.PlayerRatingTs2Repository;
+import com.ttl.tabletennis.repository.PlayerRatingWlRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
+import com.ttl.tabletennis.repository.RatingSnapshotRepository;
 import com.ttl.tabletennis.util.NameUtils;
 import org.apache.commons.text.similarity.LevenshteinDistance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,19 +27,45 @@ import java.util.Optional;
 @Transactional(readOnly = true)
 public class PlayerIdentityService {
 
+    private static final Logger log = LoggerFactory.getLogger(PlayerIdentityService.class);
+
     private final PlayerRepository playerRepository;
     private final PlayerAliasRepository playerAliasRepository;
     private final MatchRepository matchRepository;
     private final PlayerCanonicaliser playerCanonicaliser;
+    private final RatingSnapshotRepository ratingSnapshotRepository;
+    private final PlayerRatingTs2Repository playerRatingTs2Repository;
+    private final PlayerRatingWlRepository playerRatingWlRepository;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public PlayerIdentityService(PlayerRepository playerRepository,
                                  PlayerAliasRepository playerAliasRepository,
                                  MatchRepository matchRepository,
-                                 PlayerCanonicaliser playerCanonicaliser) {
+                                 PlayerCanonicaliser playerCanonicaliser,
+                                 RatingSnapshotRepository ratingSnapshotRepository,
+                                 PlayerRatingTs2Repository playerRatingTs2Repository,
+                                 PlayerRatingWlRepository playerRatingWlRepository) {
         this.playerRepository = playerRepository;
         this.playerAliasRepository = playerAliasRepository;
         this.matchRepository = matchRepository;
         this.playerCanonicaliser = playerCanonicaliser;
+        this.ratingSnapshotRepository = ratingSnapshotRepository;
+        this.playerRatingTs2Repository = playerRatingTs2Repository;
+        this.playerRatingWlRepository = playerRatingWlRepository;
+    }
+
+    /**
+     * Back-compat constructor for existing unit tests that don't exercise
+     * the merge cascade. mergePlayers() calls on instances constructed via
+     * this path will throw NullPointerException when they reach the rating-
+     * snapshot cascade; only used in tests that mock around it.
+     */
+    public PlayerIdentityService(PlayerRepository playerRepository,
+                                 PlayerAliasRepository playerAliasRepository,
+                                 MatchRepository matchRepository,
+                                 PlayerCanonicaliser playerCanonicaliser) {
+        this(playerRepository, playerAliasRepository, matchRepository, playerCanonicaliser,
+                null, null, null);
     }
 
     @Transactional
@@ -76,7 +107,30 @@ public class PlayerIdentityService {
         if (canonicalised.acceptedMatch().isPresent()) {
             return Optional.of(canonicalised.acceptedMatch().get().player());
         }
+        // Fallback for feeds that send names "Last First" instead of
+        // "First Last". Caught live with "Schaniel Krzysztof" where the
+        // canonical record was "Krzysztof Schaniel" (player id 97). Only
+        // attempted when the raw name is exactly two whitespace-separated
+        // tokens so we don't accidentally re-match middle names or suffixes
+        // for longer inputs. The swap is only used to LOOK UP an existing
+        // canonical record — it cannot create a new one — so the worst
+        // case is the same null we already returned before.
+        Optional<Player> swapped = tryReversedTwoTokenLookup(rawName);
+        if (swapped.isPresent()) {
+            return swapped;
+        }
         return findByInitialLastName(rawName);
+    }
+
+    private Optional<Player> tryReversedTwoTokenLookup(String rawName) {
+        if (rawName == null) return Optional.empty();
+        String trimmed = rawName.trim();
+        if (trimmed.isEmpty()) return Optional.empty();
+        String[] tokens = trimmed.split("\\s+");
+        if (tokens.length != 2) return Optional.empty();
+        String reversed = tokens[1] + " " + tokens[0];
+        PlayerCanonicaliser.CanonicalisationResult result = playerCanonicaliser.canonicalise(reversed);
+        return result.acceptedMatch().map(m -> m.player());
     }
 
     public List<PlayerAlias> listAliases(Long playerId) {
@@ -179,7 +233,41 @@ public class PlayerIdentityService {
         }
 
         ensureAlias(target, source.getName());
-        playerRepository.delete(source);
+
+        // Production caught a class of duplicate-player records that share
+        // every match/alias relationship but each have their own rating-
+        // snapshot history (computed independently while they were treated
+        // as separate identities). Those rating rows have NOT NULL FK
+        // constraints to player.id, so the original delete(source) used to
+        // throw {@link DataIntegrityViolationException} and roll back the
+        // whole merge.
+        //
+        // Source's rating snapshots are stale once we redirect its match
+        // history to target — target already has its own (correct) ratings,
+        // so we drop source's tombstone snapshots. Same for ts2 and wl.
+        // Decision-sample / paper-trade-bet rows referencing source as a
+        // SIDE remain untouched (we don't want to silently rewrite bet
+        // identities); the SettlementFacade tolerates orphan player ids.
+        if (ratingSnapshotRepository != null) {
+            ratingSnapshotRepository.deleteByPlayerId(sourcePlayerId);
+        }
+        if (playerRatingTs2Repository != null) {
+            playerRatingTs2Repository.deleteByPlayerId(sourcePlayerId);
+        }
+        if (playerRatingWlRepository != null) {
+            playerRatingWlRepository.deleteByPlayerId(sourcePlayerId);
+        }
+
+        try {
+            playerRepository.delete(source);
+        } catch (org.springframework.dao.DataIntegrityViolationException constraintEx) {
+            // Some legacy FK we don't know about is still pointing here.
+            // Don't fail the merge — the source player record becomes an
+            // orphan tombstone but all functional lookups now route through
+            // target via the alias chain.
+            log.warn("[merge] could not delete orphan player id={} after merge into {}: {}",
+                    sourcePlayerId, targetPlayerId, constraintEx.getMessage());
+        }
         return impactedMatches;
     }
 

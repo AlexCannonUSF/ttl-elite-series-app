@@ -1,0 +1,55 @@
+# systemd unit for ttl-predict-py (Linux staging/prod).
+#
+# Install:
+#   sudo cp scripts/supervisors/ttl-predict-py.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ttl-predict-py
+#
+# Verify:
+#   systemctl status ttl-predict-py
+#   journalctl -u ttl-predict-py -f
+#
+# Uninstall:
+#   sudo systemctl disable --now ttl-predict-py
+#   sudo rm /etc/systemd/system/ttl-predict-py.service
+#   sudo systemctl daemon-reload
+#
+# Edit User, WorkingDirectory, and the uvicorn path to match your install
+# before enabling. The Restart=on-failure + StartLimit settings ensure the
+# process restarts on transient crashes but bails out if it crashes 5
+# times in 60s (likely a config error, no point burning the CPU).
+
+[Unit]
+Description=TTL Elite Series — Python prediction service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ttl
+Group=ttl
+WorkingDirectory=/opt/ttl/ttl-predict-py
+ExecStart=/opt/ttl/ttl-predict-py/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001
+Environment=PYTHONUNBUFFERED=1
+Environment=TTL_PREDICT_PY_LOG_LEVEL=INFO
+
+# Restart policy
+Restart=on-failure
+RestartSec=2
+
+# Crash-loop protection: stop trying after 5 restarts in 60s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+# Resource hygiene
+LimitNOFILE=65536
+
+# Hardening (optional but recommended for prod)
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/ttl /tmp
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

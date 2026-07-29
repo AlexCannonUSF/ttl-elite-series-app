@@ -25,4 +25,12 @@ public interface ScrapeRunRepository extends JpaRepository<ScrapeRun, Long> {
     List<ScrapeRun> findRecent(@Param("status") String status,
                                @Param("mode") String mode,
                                Pageable pageable);
+
+    /**
+     * Used by {@code ScrapeRunOrphanCleanup} to find rows whose JVM died
+     * mid-run (status stuck in {@code RUNNING}). The derived query is
+     * case-sensitive — callers should pass the exact value
+     * {@link ScrapeRun} stores (uppercase {@code RUNNING}).
+     */
+    List<ScrapeRun> findByStatus(String status);
 }

@@ -1,0 +1,12 @@
+{
+  "alpha": 0.1,
+  "fallback_quantile": 0.6280827579908121,
+  "groups": {
+    "5|false|false": {
+      "n": 3339,
+      "quantile": 0.6280827579908121
+    }
+  },
+  "type": "mondrian-split-conformal",
+  "version": "v3.0.0"
+}

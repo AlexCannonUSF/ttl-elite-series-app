@@ -3341,6 +3341,111 @@ class PaperTradingServiceTests {
         assertTrue(fifth.session().currentBankroll() >= fifth.session().startingBankroll() - 0.01);
     }
 
+    /**
+     * #130 end-to-end: a bet whose live feed dies at a DECISIVE state ("2-0"
+     * sets) is settled WON from confidence rather than voided. This is the
+     * common Session-65 failure mode — Hard Rock drops the event before the
+     * terminal "3-X" and tt-series hasn't posted the block result yet. Per
+     * the chosen policy we call the decisive last-state instead of refunding.
+     */
+    @Test
+    void confidenceSettlesDecisiveLastStateInsteadOfVoiding() {
+        Player alpha = playerRepository.save(new Player("Conf", "Winner"));
+        Player beta = playerRepository.save(new Player("Conf", "Loser"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-conf-1", "sr:match:conf-1",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-conf-1",
+                "Prematch placement");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+        assertEquals(1, paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30).betsPlaced());
+
+        // Live observation: alpha leads 2-0 in sets (decisive, not yet final).
+        LiveOddsRecommendationDto live2to0 = recommendationWithIdentity(
+                alpha, beta, startIso, true, "2-0", "LIVE_LATE",
+                "evt-conf-1", "sr:match:conf-1",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-conf-1",
+                "Decisive 2-0 set lead");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(live2to0));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals("2-0", bet.getLastObservedScore());
+
+        // Feed dies; match goes stale (presumed finished). Backdate start past
+        // the void threshold and last-observation past the confidence stale gate.
+        bet.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        bet.setLastObservedAt(LocalDateTime.now().minusMinutes(40));
+        bet.setMissingBoardCount(12);
+        paperTradeBetRepository.save(bet);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto sweep = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet settled = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_WON, settled.getStatus(),
+                "decisive 2-0 last state must settle WON, not void");
+        assertEquals(0, sweep.betsVoided(), "must NOT void a decisive state");
+        assertTrue(settled.getSettlementReason() != null
+                        && settled.getSettlementReason().contains("CONFIDENCE"),
+                "settlement reason should record the confidence path");
+    }
+
+    /**
+     * #130 end-to-end: an AMBIGUOUS live state ("2-2 (9-8)") that has gone
+     * dark is HELD (not voided) while under the hard cap, giving the
+     * official-results recovery time to settle it W/L. Confirms we no longer
+     * void settleable-but-pending bets at the short timeout.
+     */
+    @Test
+    void ambiguousLiveStateHeldNotVoidedUnderHardCap() {
+        Player alpha = playerRepository.save(new Player("Amb", "Alpha"));
+        Player beta = playerRepository.save(new Player("Amb", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-amb-1", "sr:match:amb-1",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-amb-1",
+                "Prematch placement");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+        assertEquals(1, paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30).betsPlaced());
+
+        LiveOddsRecommendationDto liveTied = recommendationWithIdentity(
+                alpha, beta, startIso, true, "2-2 (9-8)", "LIVE_LATE",
+                "evt-amb-1", "sr:match:amb-1",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-amb-1",
+                "Ambiguous game-5 deuce");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(liveTied));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals("2-2 (9-8)", bet.getLastObservedScore());
+
+        // Dark + past normal void threshold (200 min) but UNDER the 6h hard cap.
+        bet.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        bet.setLastObservedAt(LocalDateTime.now().minusMinutes(40));
+        bet.setMissingBoardCount(12);
+        paperTradeBetRepository.save(bet);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto sweep = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(0, sweep.betsVoided(), "ambiguous bet must HOLD for official results, not void at 200 min");
+        assertEquals(1, sweep.session().openBets(), "bet stays open awaiting official result");
+        assertEquals(PaperTradeBet.STATUS_OPEN, paperTradeBetRepository.findAll().get(0).getStatus());
+    }
+
     @Test
     void resetWithClearHistoryPreservesLearningSamplesForFutureAdaptiveUse() {
         Player alpha = playerRepository.save(new Player("Learn", "Alpha"));
@@ -3562,7 +3667,14 @@ class PaperTradingServiceTests {
                 .filter(b -> PaperTradeBet.STATUS_OPEN.equals(b.getStatus()))
                 .findFirst()
                 .orElseThrow();
-        open.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        // #123 — Backdate to 170 min (was 200 min). With the new phase-aware
+        // void timeout (LIVE_LATE → scoreGrace 90, was 240), the effective
+        // threshold for a LIVE_LATE bet with score context is max(180, 60+90)
+        // = 180 min. The original 200-min backdate would now correctly trigger
+        // a void — exactly the behaviour #123 was built to enable. 170 min
+        // keeps the bet inside the live-context grace window so the assertion
+        // (live context protects from default timeout) still holds.
+        open.setStartTimeIso(LocalDateTime.now().minusMinutes(170).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
         open.setLastObservedScore("2-2 (3-3)");
         open.setLastObservedPhase("LIVE_LATE");
         open.setLastObservedAt(LocalDateTime.now().minusMinutes(20));
@@ -5050,6 +5162,78 @@ class PaperTradingServiceTests {
         assertNull(open.getLastObservedScore());
         assertTrue(open.getIdentityDriftCount() >= 1);
         assertEquals(PaperTradeBet.STATUS_OPEN, open.getStatus());
+    }
+
+    /**
+     * #114 end-to-end proof: the exact production failure mode from Session 65.
+     *
+     * <p>A bet is locked prematch under one feed identity (HardRock outer
+     * event id {@code evt-AAA} + BETRADAR_UF inner id {@code sr:match:AAA}).
+     * The match then completes and the terminal "3-1" set score arrives
+     * under a DIFFERENT feed identity ({@code evt-BBB} / {@code sr:match:BBB})
+     * — the cross-feed drift Hard Rock produces when its inner matchState
+     * block re-keys mid-match. Same two players, same start time.
+     *
+     * <p>Before #114, {@code rowMatchesLockedIdentity} rejected the "3-1"
+     * observation as identity drift (both ids disagree), the bet never saw
+     * a terminal score, and it sat OPEN until the void timeout — settlement
+     * starvation. After #114 the player-pair + start-time fallback accepts
+     * the observation, {@code lastObservedScore} becomes "3-1", and the bet
+     * settles WON on the next sweep.
+     */
+    @Test
+    void crossFeedTerminalScoreSettlesBetAfterIdentityDriftFix() {
+        Player alpha = playerRepository.save(new Player("CrossFeed", "Winner"));
+        Player beta = playerRepository.save(new Player("CrossFeed", "Loser"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        // Prematch placement locks identity to feed-ID-A.
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-AAA", "sr:match:AAA",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-AAA",
+                "Prematch placement locks feed-ID-A");
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+
+        PaperTradeBet locked = paperTradeBetRepository.findAll().get(0);
+        assertTrue(locked.isIdentityLocked());
+        assertEquals("sr:match:AAA", locked.getLockedSourceFeedEventId());
+
+        // Terminal "3-1" arrives under feed-ID-B — different external + feed
+        // ids, identical players + start time (the cross-feed drift case).
+        LiveOddsRecommendationDto terminalCrossFeed = recommendationWithIdentity(
+                alpha, beta, startIso, true, "3-1", "LIVE_LATE",
+                "evt-BBB", "sr:match:BBB",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-BBB",
+                "Terminal score under drifted feed-ID-B");
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(terminalCrossFeed));
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet afterObs = paperTradeBetRepository.findAll().get(0);
+        // The crux: #114's fallback accepted the cross-feed observation.
+        assertEquals("3-1", afterObs.getLastObservedScore(),
+                "#114 fallback must let the cross-feed terminal score through (was rejected as drift pre-fix)");
+        assertEquals(0, afterObs.getIdentityDriftCount(),
+                "cross-feed terminal score is NOT drift — same players + time");
+
+        // Event disappears; sweep settles from the last observed "3-1".
+        backdateAllOpenBetStartTimes(180);
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto third = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(1, third.betsSettled(), "bet must settle now that it has a terminal score");
+        PaperTradeBet settled = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_WON, settled.getStatus(),
+                "alpha won 3-1 and the bet was on alpha");
     }
 
     @Test

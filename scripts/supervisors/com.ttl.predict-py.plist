@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd plist for ttl-predict-py (macOS dev/staging).
+
+  Install:
+    cp scripts/supervisors/com.ttl.predict-py.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.ttl.predict-py.plist
+
+  Verify:
+    launchctl list | grep com.ttl.predict-py
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.ttl.predict-py.plist
+    rm ~/Library/LaunchAgents/com.ttl.predict-py.plist
+
+  Edit WorkingDirectory and the uvicorn path to match your install before
+  loading. The plist sets RunAtLoad + KeepAlive so the process restarts on
+  exit + survives OS reboot.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ttl.predict-py</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/REPLACE_ME/TTLEliteSeries/ttl-predict-py</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/REPLACE_ME/TTLEliteSeries/ttl-predict-py/.venv/bin/uvicorn</string>
+        <string>app.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8001</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- Bail if the process is restarting too fast — likely a config error. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ttl-predict-py.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ttl-predict-py.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>TTL_PREDICT_PY_LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+</dict>
+</plist>

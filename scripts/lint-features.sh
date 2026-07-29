@@ -3,7 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FEATURES_FILE="${ROOT_DIR}/features.yaml"
+# Allow callers to point at an alternate features.yaml. Used by tests in
+# tests/scripts/test_lint_features.py and by anyone running release_gate.sh
+# against a deploy preview's catalogue.
+FEATURES_FILE="${FEATURES_FILE_OVERRIDE:-${ROOT_DIR}/features.yaml}"
 MODE="${1:-}"
 
 python3 - "$FEATURES_FILE" "$MODE" <<'PY'
@@ -107,6 +110,7 @@ def main() -> int:
         return 1
 
     errors: list[str] = []
+    upcoming: list[str] = []
 
     missing_flags = sorted(REQUIRED_FLAGS.difference(features.keys()))
     extra_flags = sorted(set(features.keys()).difference(REQUIRED_FLAGS))
@@ -115,6 +119,7 @@ def main() -> int:
         errors.append("Missing required flags: " + ", ".join(missing_flags))
 
     today = dt.date.today()
+    warning_window = dt.timedelta(days=30)
 
     for flag in sorted(REQUIRED_FLAGS.intersection(features.keys())):
         payload = features[flag]
@@ -147,12 +152,20 @@ def main() -> int:
 
         if expires_on < today:
             errors.append(f"{flag}: expires_on {expires_on.isoformat()} is in the past")
+        elif expires_on - today <= warning_window:
+            days_left = (expires_on - today).days
+            upcoming.append(
+                f"{flag}: expires in {days_left} day(s) on {expires_on.isoformat()} — renew or remove soon"
+            )
 
         if mode == "--enforce-expiry" and expires_on <= today:
             errors.append(f"{flag}: expired flag must be renewed or removed before release")
 
     if extra_flags:
         print("Note: additional non-gated flags present: " + ", ".join(extra_flags))
+
+    for warning in upcoming:
+        print(f"warning: {warning}")
 
     if errors:
         print("Feature flag lint failed:", file=sys.stderr)

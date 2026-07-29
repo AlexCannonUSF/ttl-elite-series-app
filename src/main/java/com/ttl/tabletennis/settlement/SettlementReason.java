@@ -14,6 +14,7 @@ public enum SettlementReason {
     STREAM_CV_CONSENSUS(EnumSet.of(TrustTier.T3_STREAM_CV), 0.80, true),
     LAST_SCORE_HEURISTIC(EnumSet.of(TrustTier.T1_SPORTSBOOK, TrustTier.T2_MIRROR), 0.50, false),
     STALE_ESCALATION_RECOVERED(EnumSet.allOf(TrustTier.class), null, true),
+    SCORE_BACKED_ONLY(EnumSet.of(TrustTier.T1_SPORTSBOOK, TrustTier.T2_MIRROR), null, false),
     VOIDED_NO_EVIDENCE(EnumSet.noneOf(TrustTier.class), null, false),
     VOIDED_AMBIGUOUS_UNRESOLVED(EnumSet.noneOf(TrustTier.class), null, false),
     MANUAL_REVIEW_AWAITING(EnumSet.noneOf(TrustTier.class), null, false);

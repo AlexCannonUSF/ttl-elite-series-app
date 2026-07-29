@@ -1,10 +1,17 @@
 package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.analytics.Glicko2;
+import com.ttl.tabletennis.analytics.RaterEnsemble;
+import com.ttl.tabletennis.analytics.TrueSkill2;
+import com.ttl.tabletennis.analytics.WengLin;
 import com.ttl.tabletennis.domain.Match;
+import com.ttl.tabletennis.domain.PlayerRatingTs2;
+import com.ttl.tabletennis.domain.PlayerRatingWl;
 import com.ttl.tabletennis.domain.RatingSnapshot;
 import com.ttl.tabletennis.dto.MatchupFeatureVectorDto;
 import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.PlayerRatingTs2Repository;
+import com.ttl.tabletennis.repository.PlayerRatingWlRepository;
 import com.ttl.tabletennis.repository.RatingSnapshotRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
@@ -28,6 +35,9 @@ public class FeatureService {
 
     private final MatchRepository matchRepository;
     private final RatingSnapshotRepository ratingSnapshotRepository;
+    private final PlayerRatingTs2Repository playerRatingTs2Repository;
+    private final PlayerRatingWlRepository playerRatingWlRepository;
+    private final SnapshotIndexCache snapshotIndexCache;
 
     private final Map<PlayerCacheKey, CacheEntry<PlayerFeature>> playerFeatureCache = new ConcurrentHashMap<>();
     private final Map<H2hCacheKey, CacheEntry<H2hFeature>> h2hCache = new ConcurrentHashMap<>();
@@ -68,10 +78,49 @@ public class FeatureService {
     @Value("${ttl.glicko2.defaultVolatility:0.06}")
     private double defaultVolatility;
 
+    @Value("${ttl.trueskill2.defaultMu:25.0}")
+    private double defaultTrueSkill2Mu;
+
+    @Value("${ttl.trueskill2.defaultSigma:8.3333333333}")
+    private double defaultTrueSkill2Sigma;
+
+    @Value("${ttl.trueskill2.beta:4.1666666667}")
+    private double trueSkill2Beta;
+
+    @Value("${ttl.trueskill2.dynamicFactor:0.0833333333}")
+    private double trueSkill2DynamicFactor;
+
+    @Value("${ttl.trueskill2.sigmaFloor:0.75}")
+    private double trueSkill2SigmaFloor;
+
+    @Value("${ttl.wenglin.defaultRating:0.0}")
+    private double defaultWengLinRating;
+
+    @Value("${ttl.wenglin.defaultUncertainty:1.0}")
+    private double defaultWengLinUncertainty;
+
+    @Value("${ttl.wenglin.beta:1.0}")
+    private double wengLinBeta;
+
+    @Value("${ttl.wenglin.dynamicFactor:0.015}")
+    private double wengLinDynamicFactor;
+
+    @Value("${ttl.wenglin.uncertaintyFloor:0.05}")
+    private double wengLinUncertaintyFloor;
+
+    @Value("${ttl.wenglin.learningRate:1.0}")
+    private double wengLinLearningRate;
+
     public FeatureService(MatchRepository matchRepository,
-                          RatingSnapshotRepository ratingSnapshotRepository) {
+                          RatingSnapshotRepository ratingSnapshotRepository,
+                          PlayerRatingTs2Repository playerRatingTs2Repository,
+                          PlayerRatingWlRepository playerRatingWlRepository,
+                          SnapshotIndexCache snapshotIndexCache) {
         this.matchRepository = matchRepository;
         this.ratingSnapshotRepository = ratingSnapshotRepository;
+        this.playerRatingTs2Repository = playerRatingTs2Repository;
+        this.playerRatingWlRepository = playerRatingWlRepository;
+        this.snapshotIndexCache = snapshotIndexCache;
     }
 
     public MatchupFeatureVectorDto buildMatchupFeatureVector(Long player1Id, Long player2Id, LocalDate asOfDate) {
@@ -98,6 +147,14 @@ public class FeatureService {
 
         double eloProbabilityP1 = eloProbability(p1.eloRating(), p2.eloRating());
         double glickoProbabilityP1 = glickoProbability(p1.glickoRating(), p1.glickoRd(), p2.glickoRating(), p2.glickoRd());
+        double trueSkill2ProbabilityP1 = trueSkill2Probability(p1.trueSkill2Mu(), p1.trueSkill2Sigma(), p2.trueSkill2Mu(), p2.trueSkill2Sigma());
+        double wengLinProbabilityP1 = wengLinProbability(p1.wengLinRating(), p1.wengLinUncertainty(), p2.wengLinRating(), p2.wengLinUncertainty());
+        double raterEnsembleProbabilityP1 = RaterEnsemble.probability(
+                glickoProbabilityP1,
+                trueSkill2ProbabilityP1,
+                wengLinProbabilityP1
+        );
+        double raterEnsembleDelta = raterEnsembleProbabilityP1 - 0.5;
         MatchupFeatureVectorDto.ReliabilitySummaryDto reliabilitySummary = new MatchupFeatureVectorDto.ReliabilitySummaryDto(
                 overallReliability(
                         h2hReliability,
@@ -110,7 +167,7 @@ public class FeatureService {
                         p1RatingStability,
                         p2RatingStability
                 ),
-                ratingAgreement(eloProbabilityP1, glickoProbabilityP1),
+                ratingAgreement(eloProbabilityP1, glickoProbabilityP1, trueSkill2ProbabilityP1, wengLinProbabilityP1),
                 p1RatingStability,
                 p2RatingStability
         );
@@ -143,6 +200,10 @@ public class FeatureService {
                         p1.glickoRating(),
                         p1.glickoRd(),
                         p1.glickoVolatility(),
+                        p1.trueSkill2Mu(),
+                        p1.trueSkill2Sigma(),
+                        p1.wengLinRating(),
+                        p1.wengLinUncertainty(),
                         p1.recentFormSampleWeight(),
                         p1.opponentAdjustedSampleWeight(),
                         p1.scheduleStrengthSampleWeight(),
@@ -159,6 +220,10 @@ public class FeatureService {
                         p2.glickoRating(),
                         p2.glickoRd(),
                         p2.glickoVolatility(),
+                        p2.trueSkill2Mu(),
+                        p2.trueSkill2Sigma(),
+                        p2.wengLinRating(),
+                        p2.wengLinUncertainty(),
                         p2.recentFormSampleWeight(),
                         p2.opponentAdjustedSampleWeight(),
                         p2.scheduleStrengthSampleWeight(),
@@ -169,6 +234,10 @@ public class FeatureService {
                 ),
                 eloProbabilityP1,
                 glickoProbabilityP1,
+                trueSkill2ProbabilityP1,
+                wengLinProbabilityP1,
+                raterEnsembleProbabilityP1,
+                raterEnsembleDelta,
                 reliabilitySummary,
                 significanceSummary,
                 intervalFromRd(p1.glickoRating(), p1.glickoRd()),
@@ -201,6 +270,10 @@ public class FeatureService {
                 playerRatings.glickoRating(),
                 playerRatings.glickoRd(),
                 playerRatings.glickoVolatility(),
+                playerRatings.trueSkill2Mu(),
+                playerRatings.trueSkill2Sigma(),
+                playerRatings.wengLinRating(),
+                playerRatings.wengLinUncertainty(),
                 recentForm.weightSum(),
                 opponentAdjustedForm.weightSum(),
                 scheduleStrength.weightSum()
@@ -329,9 +402,50 @@ public class FeatureService {
 
     private SnapshotBundle resolveSnapshotBundle(Long playerId, LocalDate asOf) {
         if (playerId == null) {
-            return new SnapshotBundle(defaultRating, defaultRating, defaultRd, defaultVolatility);
+            return defaultSnapshotBundle(defaultRating);
         }
 
+        // Fast path: hit the bulk-loaded in-memory index if it's warmed.
+        if (snapshotIndexCache != null && snapshotIndexCache.isWarmed()) {
+            SnapshotIndexCache.RatingRow elo = snapshotIndexCache
+                    .findTopRating(playerId, SYSTEM_ELO, asOf).orElse(null);
+            SnapshotIndexCache.RatingRow glicko = snapshotIndexCache
+                    .findTopRating(playerId, SYSTEM_GLICKO2, asOf).orElse(null);
+            SnapshotIndexCache.Ts2Row ts2 = snapshotIndexCache
+                    .findTopTs2(playerId, asOf).orElse(null);
+            SnapshotIndexCache.WlRow wl = snapshotIndexCache
+                    .findTopWl(playerId, asOf).orElse(null);
+
+            Double eloR = elo == null ? null : elo.rating();
+            if (glicko == null) {
+                double fallback = eloR == null ? defaultRating : eloR;
+                return new SnapshotBundle(
+                        fallback,
+                        fallback,
+                        defaultRd,
+                        defaultVolatility,
+                        ts2 == null ? defaultTrueSkill2Mu : ts2.mu(),
+                        ts2 == null ? defaultTrueSkill2Sigma : ts2.sigma(),
+                        wl == null ? defaultWengLinRating : wl.rating(),
+                        wl == null ? defaultWengLinUncertainty : wl.uncertainty()
+                );
+            }
+            double effectiveElo = eloR == null ? glicko.rating() : eloR;
+            return new SnapshotBundle(
+                    effectiveElo,
+                    glicko.rating(),
+                    glicko.ratingDeviation() == null ? defaultRd : glicko.ratingDeviation(),
+                    glicko.volatility() == null ? defaultVolatility : glicko.volatility(),
+                    ts2 == null ? defaultTrueSkill2Mu : ts2.mu(),
+                    ts2 == null ? defaultTrueSkill2Sigma : ts2.sigma(),
+                    wl == null ? defaultWengLinRating : wl.rating(),
+                    wl == null ? defaultWengLinUncertainty : wl.uncertainty()
+            );
+        }
+
+        // Slow path: fall back to repository queries (used by tests, by code
+        // paths invoked before ApplicationReadyEvent, or if the cache was
+        // disabled via configuration).
         RatingSnapshot eloSnapshot = ratingSnapshotRepository
                 .findTopByPlayerIdAndRatingSystemAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(playerId, SYSTEM_ELO, asOf)
                 .orElse(null);
@@ -340,10 +454,27 @@ public class FeatureService {
                 .findTopByPlayerIdAndRatingSystemAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(playerId, SYSTEM_GLICKO2, asOf)
                 .orElse(null);
 
+        PlayerRatingTs2 trueSkill2 = playerRatingTs2Repository
+                .findTopByPlayerIdAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(playerId, asOf)
+                .orElse(null);
+
+        PlayerRatingWl wengLin = playerRatingWlRepository
+                .findTopByPlayerIdAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(playerId, asOf)
+                .orElse(null);
+
         Double elo = eloSnapshot == null ? null : eloSnapshot.getRating();
         if (glicko == null) {
             double fallback = elo == null ? defaultRating : elo;
-            return new SnapshotBundle(fallback, fallback, defaultRd, defaultVolatility);
+            return new SnapshotBundle(
+                    fallback,
+                    fallback,
+                    defaultRd,
+                    defaultVolatility,
+                    trueSkill2 == null ? defaultTrueSkill2Mu : trueSkill2.getMu(),
+                    trueSkill2 == null ? defaultTrueSkill2Sigma : trueSkill2.getSigma(),
+                    wengLin == null ? defaultWengLinRating : wengLin.getRating(),
+                    wengLin == null ? defaultWengLinUncertainty : wengLin.getUncertainty()
+            );
         }
 
         double effectiveElo = elo == null ? glicko.getRating() : elo;
@@ -351,7 +482,24 @@ public class FeatureService {
                 effectiveElo,
                 glicko.getRating(),
                 glicko.getRatingDeviation() == null ? defaultRd : glicko.getRatingDeviation(),
-                glicko.getVolatility() == null ? defaultVolatility : glicko.getVolatility()
+                glicko.getVolatility() == null ? defaultVolatility : glicko.getVolatility(),
+                trueSkill2 == null ? defaultTrueSkill2Mu : trueSkill2.getMu(),
+                trueSkill2 == null ? defaultTrueSkill2Sigma : trueSkill2.getSigma(),
+                wengLin == null ? defaultWengLinRating : wengLin.getRating(),
+                wengLin == null ? defaultWengLinUncertainty : wengLin.getUncertainty()
+        );
+    }
+
+    private SnapshotBundle defaultSnapshotBundle(double fallbackRating) {
+        return new SnapshotBundle(
+                fallbackRating,
+                fallbackRating,
+                defaultRd,
+                defaultVolatility,
+                defaultTrueSkill2Mu,
+                defaultTrueSkill2Sigma,
+                defaultWengLinRating,
+                defaultWengLinUncertainty
         );
     }
 
@@ -383,6 +531,33 @@ public class FeatureService {
 
     private double glickoProbability(double ratingA, double rdA, double ratingB, double rdB) {
         return Glicko2.expectedScore(ratingA, rdA, ratingB, rdB);
+    }
+
+    private double trueSkill2Probability(double muA, double sigmaA, double muB, double sigmaB) {
+        return TrueSkill2.winProbability(
+                new TrueSkill2.Rating(muA, Math.max(trueSkill2SigmaFloor, sigmaA)),
+                new TrueSkill2.Rating(muB, Math.max(trueSkill2SigmaFloor, sigmaB)),
+                new TrueSkill2.Parameters(
+                        trueSkill2Beta,
+                        Math.max(0.0, trueSkill2DynamicFactor),
+                        trueSkill2SigmaFloor,
+                        Math.max(defaultTrueSkill2Sigma, trueSkill2SigmaFloor)
+                )
+        );
+    }
+
+    private double wengLinProbability(double ratingA, double uncertaintyA, double ratingB, double uncertaintyB) {
+        return WengLin.winProbability(
+                new WengLin.Rating(ratingA, Math.max(wengLinUncertaintyFloor, uncertaintyA)),
+                new WengLin.Rating(ratingB, Math.max(wengLinUncertaintyFloor, uncertaintyB)),
+                new WengLin.Parameters(
+                        wengLinBeta,
+                        Math.max(0.0, wengLinDynamicFactor),
+                        wengLinUncertaintyFloor,
+                        Math.max(defaultWengLinUncertainty, wengLinUncertaintyFloor),
+                        wengLinLearningRate
+                )
+        );
     }
 
     private double clamp01(double value) {
@@ -418,8 +593,19 @@ public class FeatureService {
         return clamp01(1.0 - normalized);
     }
 
-    private double ratingAgreement(double eloProbability, double glickoProbability) {
-        double gap = Math.abs(eloProbability - glickoProbability);
+    private double ratingAgreement(double eloProbability,
+                                   double glickoProbability,
+                                   double trueSkill2Probability,
+                                   double wengLinProbability) {
+        double max = Math.max(
+                Math.max(eloProbability, glickoProbability),
+                Math.max(trueSkill2Probability, wengLinProbability)
+        );
+        double min = Math.min(
+                Math.min(eloProbability, glickoProbability),
+                Math.min(trueSkill2Probability, wengLinProbability)
+        );
+        double gap = max - min;
         return clamp01(1.0 - (gap / 0.25));
     }
 
@@ -538,7 +724,14 @@ public class FeatureService {
     private record H2hFeature(double player1WinRate, double player2WinRate, double weightSum) {
     }
 
-    private record SnapshotBundle(double eloRating, double glickoRating, double glickoRd, double glickoVolatility) {
+    private record SnapshotBundle(double eloRating,
+                                  double glickoRating,
+                                  double glickoRd,
+                                  double glickoVolatility,
+                                  double trueSkill2Mu,
+                                  double trueSkill2Sigma,
+                                  double wengLinRating,
+                                  double wengLinUncertainty) {
     }
 
     private record PlayerFeature(double recentForm,
@@ -548,6 +741,10 @@ public class FeatureService {
                                  double glickoRating,
                                  double glickoRd,
                                  double glickoVolatility,
+                                 double trueSkill2Mu,
+                                 double trueSkill2Sigma,
+                                 double wengLinRating,
+                                 double wengLinUncertainty,
                                  double recentFormSampleWeight,
                                  double opponentAdjustedSampleWeight,
                                  double scheduleStrengthSampleWeight) {

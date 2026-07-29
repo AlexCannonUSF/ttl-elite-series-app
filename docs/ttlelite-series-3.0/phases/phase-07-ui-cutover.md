@@ -18,6 +18,13 @@ Move every page from the 2.0 MUI/React shell to the v3 shadcn/ui + Tailwind v4 s
 6. Performance report (Lighthouse) attached to the phase ticket.
 7. CDN + long-term caching configured for the v3 bundles.
 
+## Implementation notes
+- 2026-05-19: Live Board is now available at `/v3/live-board` with the v3 shell, live session ribbon, FlashOnChange odds/edge cells, strategy controls, local rolling odds history, and TradingView Lightweight Charts for the selected matchup.
+- 2026-05-19: Match Detail is now consolidated at `/v3/matches/:id/:tab` with Evidence, Prediction, History, and Market tabs. Existing `/v3/matches/:id/evidence` and `/v3/matches/:id/prediction` URLs now land in the same tabbed shell, while live-board rows open the detail route directly.
+- 2026-05-19: Ops Console is now available at `/v3/ops`, composing the already-promoted Review Queue, Ops Feeds, Ops Ingest, Stream Workers, and Settlement Diffs routes into one v3 control-room snapshot.
+- 2026-05-19: `/` now redirects to `/v3/`, backend static resources no longer mount the retired `web/dist` MUI SPA as the root fallback, and the startup/browser defaults point at `web-v3` on port 5174.
+- 2026-05-19: A11y audit is reproducible via `./scripts/ui-a11y.sh`. The v3 shell now has a skip link, visible focus rings, darker AA-safe muted text, command-palette dialog/listbox semantics, keyboard-selectable live-board rows, reduced-motion CSS, and axe-core reports with zero WCAG violations in standard and reduced-motion modes.
+
 ## Work breakdown
 - Each page is ported one at a time to v3 and enabled with `features.ui-shell-v3` per-route. We keep the 2.0 route behind a dev-only flag during the soak.
 - Keyboard map audited against UI Redesign Spec §5; every shortcut has a test.

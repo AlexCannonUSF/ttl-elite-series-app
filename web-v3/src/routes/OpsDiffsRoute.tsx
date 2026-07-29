@@ -118,8 +118,7 @@ export function OpsDiffsRoute() {
       description="Shadow-mode settlement replay for every attempted bet. This is where we inspect stalls, contradictions, and decision mismatches before Score Truth promotion."
       badges={
         <>
-          <Badge variant="accent">Phase 02</Badge>
-          <Badge>Shadow Replay</Badge>
+          <Badge variant="accent">Settlement Diffs</Badge>
           <Badge>Auto Refresh 5s</Badge>
         </>
       }
@@ -223,12 +222,13 @@ export function OpsDiffsRoute() {
                 Move between contradictions, ambiguity-heavy rows, and all disagreements without losing the current page context.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div aria-label="Settlement diff focus filter" className="flex flex-wrap gap-2" role="group">
               {focusOptions.map((option) => {
                 const active = selectedFocus === option.value
                 return (
                   <button
                     key={option.value}
+                    aria-pressed={active}
                     type="button"
                     onClick={() => updateParams(option.value, 0)}
                     className={cn(
@@ -324,7 +324,7 @@ function DiffCard({ row }: { row: OpsSettlementDiffRow }) {
       <div className="mt-3 flex items-center justify-between gap-3">
         <p className="text-sm text-[var(--ink-muted)]">{formatDateTime(row.decidedAt)}</p>
         <Button variant="ghost" size="sm" asChild>
-          <Link to={`/matches/${row.betId}/evidence`}>Open Evidence</Link>
+          <Link to={`/matches/${row.betId}/evidence`}>Open Detail</Link>
         </Button>
       </div>
     </div>
@@ -347,7 +347,7 @@ function DiffRow({ row }: { row: OpsSettlementDiffRow }) {
         <div className="flex flex-col gap-2">
           <span>{formatDateTime(row.decidedAt)}</span>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={`/matches/${row.betId}/evidence`}>Open Evidence</Link>
+            <Link to={`/matches/${row.betId}/evidence`}>Open Detail</Link>
           </Button>
         </div>
       </td>
@@ -392,7 +392,7 @@ function MetricTile({
 
 function InlineAlert({ children }: { children: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div className="flex items-center gap-2 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800" role="alert">
       {children}
     </div>
   )

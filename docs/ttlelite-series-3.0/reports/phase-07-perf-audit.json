@@ -1,0 +1,48 @@
+{
+  "generatedAt": "2026-05-19T17:33:36.631Z",
+  "budgets": {
+    "initialJsGzKb": 450,
+    "lcpMs": 2000,
+    "ttiMs": 1500
+  },
+  "bundle": {
+    "indexHtmlBytes": 563,
+    "indexHtmlGzBytes": 352,
+    "initialJsGzBytes": 202271,
+    "initialCssGzBytes": 7967,
+    "jsAssets": [
+      {
+        "href": "/v3/assets/index-C7HJU_QH.js",
+        "file": "assets/index-C7HJU_QH.js",
+        "bytes": 678857,
+        "gzBytes": 202271
+      }
+    ],
+    "cssAssets": [
+      {
+        "href": "/v3/assets/index-DZy59P6l.css",
+        "file": "assets/index-DZy59P6l.css",
+        "bytes": 38964,
+        "gzBytes": 7967
+      }
+    ],
+    "allAssets": [
+      {
+        "file": "index-C7HJU_QH.js",
+        "bytes": 678857,
+        "gzBytes": 202271
+      },
+      {
+        "file": "index-DZy59P6l.css",
+        "bytes": 38964,
+        "gzBytes": 7967
+      },
+      {
+        "file": "index.html",
+        "bytes": 563,
+        "gzBytes": 352
+      }
+    ]
+  },
+  "runtime": null
+}

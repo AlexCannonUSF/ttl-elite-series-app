@@ -30,6 +30,7 @@ public record PaperTradingSessionDto(Long sessionId,
                                      AdaptiveMetricsDto adaptiveMetrics,
                                      DecisionTelemetryDto decisionTelemetry,
                                      ExposureMetricsDto exposureMetrics,
+                                     ClvMetricsDto clvMetrics,
                                      List<PaperTradeBetDto> openBetsList,
                                      List<PaperTradeBetDto> recentBets,
                                      List<TriggerInsightDto> topTriggers,
@@ -90,6 +91,15 @@ public record PaperTradingSessionDto(Long sessionId,
                                      double mostExposedTriggerCap,
                                      double mostExposedTriggerCapUsagePct,
                                      int triggerNearCapCount) {
+    }
+
+    public record ClvMetricsDto(int betsInWindow,
+                                int betsWithClosingSnapshot,
+                                double coverageRatio,
+                                double avgClvPct,
+                                double avgPlacedImpliedPct,
+                                double avgClosingImpliedPct,
+                                LocalDateTime lastClosingSnapshotAt) {
     }
 
     public record EquityPointDto(LocalDateTime at,

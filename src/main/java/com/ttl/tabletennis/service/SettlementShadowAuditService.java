@@ -2,6 +2,7 @@ package com.ttl.tabletennis.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ttl.tabletennis.cv.CvAuditEvidenceStore;
 import com.ttl.tabletennis.domain.PaperTradeBet;
 import com.ttl.tabletennis.domain.SettlementAuditRecord;
 import com.ttl.tabletennis.domain.SettlementContradictionRecord;
@@ -17,6 +18,7 @@ import com.ttl.tabletennis.settlement.ManualReview;
 import com.ttl.tabletennis.settlement.Settle;
 import com.ttl.tabletennis.settlement.SettlementEvidence;
 import com.ttl.tabletennis.settlement.VoidDecision;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -25,6 +27,7 @@ import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class SettlementShadowAuditService {
@@ -39,20 +42,37 @@ public class SettlementShadowAuditService {
     private final SettlementContradictionRecordRepository settlementContradictionRecordRepository;
     private final SettlementAuditRecordRepository settlementAuditRecordRepository;
     private final ObjectMapper objectMapper;
+    private final Optional<CvAuditEvidenceStore> cvAuditEvidenceStore;
+
+    @Autowired
+    public SettlementShadowAuditService(SettlementEvidenceRecordRepository settlementEvidenceRecordRepository,
+                                        SettlementContradictionRecordRepository settlementContradictionRecordRepository,
+                                        SettlementAuditRecordRepository settlementAuditRecordRepository,
+                                        ObjectMapper objectMapper,
+                                        Optional<CvAuditEvidenceStore> cvAuditEvidenceStore) {
+        this.settlementEvidenceRecordRepository = settlementEvidenceRecordRepository;
+        this.settlementContradictionRecordRepository = settlementContradictionRecordRepository;
+        this.settlementAuditRecordRepository = settlementAuditRecordRepository;
+        this.objectMapper = objectMapper;
+        this.cvAuditEvidenceStore = cvAuditEvidenceStore == null ? Optional.empty() : cvAuditEvidenceStore;
+    }
 
     public SettlementShadowAuditService(SettlementEvidenceRecordRepository settlementEvidenceRecordRepository,
                                         SettlementContradictionRecordRepository settlementContradictionRecordRepository,
                                         SettlementAuditRecordRepository settlementAuditRecordRepository,
                                         ObjectMapper objectMapper) {
-        this.settlementEvidenceRecordRepository = settlementEvidenceRecordRepository;
-        this.settlementContradictionRecordRepository = settlementContradictionRecordRepository;
-        this.settlementAuditRecordRepository = settlementAuditRecordRepository;
-        this.objectMapper = objectMapper;
+        this(settlementEvidenceRecordRepository,
+                settlementContradictionRecordRepository,
+                settlementAuditRecordRepository,
+                objectMapper,
+                Optional.empty());
     }
 
     public void recordAttempt(PaperTradeBet bet, SettlementEvidence evidence, Decision decision) {
         SettlementEvidenceRecord evidenceRecord = findOrCreateEvidenceRecord(evidence);
-        recordAudit(bet, evidence, decision, evidenceRecord.getId(), serializeDecisionPayload(bet, evidence, decision));
+        String evidenceRefs = collectCvAuditEvidenceRefs(evidence);
+        recordAudit(bet, evidence, decision, evidenceRecord.getId(),
+                serializeDecisionPayload(bet, evidence, decision), evidenceRefs);
     }
 
     public void recordNoEvidenceAttempt(PaperTradeBet bet, String reason) {
@@ -120,7 +140,8 @@ public class SettlementShadowAuditService {
                              SettlementEvidence evidence,
                              Decision decision,
                              Long evidenceId,
-                             String payloadJson) {
+                             String payloadJson,
+                             String evidenceRefs) {
         SettlementAuditRecord auditRecord = new SettlementAuditRecord();
         auditRecord.setBetId(bet.getId());
         auditRecord.setTrackedEventId(resolveTrackedEventId(bet, evidence));
@@ -130,7 +151,24 @@ public class SettlementShadowAuditService {
         auditRecord.setEvidenceId(evidenceId);
         auditRecord.setDecidedAt(toLocalDateTime(evidence.bundleAsOf()));
         auditRecord.setPayloadJson(payloadJson);
+        auditRecord.setEvidenceRefs(evidenceRefs);
         settlementAuditRecordRepository.save(auditRecord);
+    }
+
+    String collectCvAuditEvidenceRefs(SettlementEvidence evidence) {
+        if (cvAuditEvidenceStore.isEmpty() || evidence == null || evidence.contradictions().isEmpty()) {
+            return null;
+        }
+        CvAuditEvidenceStore store = cvAuditEvidenceStore.get();
+        if (!store.isEnabled()) {
+            return null;
+        }
+        String matchId = evidence.trackedEventId() == null ? null : evidence.trackedEventId().value();
+        if (matchId == null || matchId.isBlank()) {
+            return null;
+        }
+        List<String> refs = store.uploadForContradiction(matchId, evidence.bundleAsOf());
+        return store.serializeRefs(refs).orElse(null);
     }
 
     private String serializeDecisionPayload(PaperTradeBet bet,

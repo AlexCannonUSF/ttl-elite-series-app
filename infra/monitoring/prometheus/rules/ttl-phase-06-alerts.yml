@@ -1,0 +1,32 @@
+groups:
+  - name: ttl-phase-06-staking
+    rules:
+      - alert: StakingPolicyHotReloadFailed
+        expr: increase(ttl_staking_policy_reloads_total{status="RELOAD_FAILED"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          phase: "3.0-p06"
+        annotations:
+          summary: "v3 staking policy hot-reload failed"
+          description: "StakingPolicyCatalog rejected an attempted policy.yaml reload in the last 5m (validation, parse, or audit-row failure). The previous policy is still in force; inspect the catalog audit table and the application log for the rejected revision before retrying."
+
+      - alert: ExposureCapBreach
+        expr: increase(ttl_staking_exposure_cap_breach_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          phase: "3.0-p06"
+        annotations:
+          summary: "Staking exposure cap was breached"
+          description: "StakingPolicy rejected at least one stake in the last 15m because portfolio, per-event, or per-player caps were exhausted. Inspect ttl_staking_exposure_cap_breach_total by cap label to identify which limit is binding; this usually means open exposure has accumulated faster than settlements close it."
+
+      - alert: CLVNegative7Day
+        expr: ttl_staking_clv_7d < 0
+        for: 1h
+        labels:
+          severity: warning
+          phase: "3.0-p06"
+        annotations:
+          summary: "Rolling 7-day CLV proxy is negative"
+          description: "StakingClvWatcher reports a negative 7-day net-PnL/stake ratio for more than an hour, indicating the v3 staking layer is bleeding versus closing prices on a rolling window. Investigate edge calibration, price drift, and recent policy changes before the drawdown trigger fires."

@@ -11,6 +11,7 @@ import com.ttl.tabletennis.repository.OddsQuoteRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.repository.ValueOpportunityRepository;
 import com.ttl.tabletennis.scrape.HardRockOddsScraper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -62,6 +63,15 @@ class OddsValueEngineServiceTests {
 
     @MockBean
     private HardRockOddsScraper hardRockOddsScraper;
+
+    @BeforeEach
+    void clearScrapeCacheBetweenTests() {
+        // The OddsValueEngineService bean is a singleton in @SpringBootTest, so its
+        // internal 5s scrape cache leaks across @Test methods (each test sets a
+        // different mock return). Reset it before every test so each test's
+        // when(hardRockOddsScraper.fetch()) hook is actually exercised.
+        oddsValueEngineService.clearScrapeCacheForTest();
+    }
 
     @Test
     void refreshFromQuotesPersistsValueOpportunitiesWithModelVersion() {
@@ -347,6 +357,10 @@ class OddsValueEngineServiceTests {
                         1601,
                         62,
                         0.05,
+                        26.7,
+                        2.1,
+                        0.74,
+                        0.34,
                         0.63,
                         0.61,
                         0.52,
@@ -363,6 +377,10 @@ class OddsValueEngineServiceTests {
                         1498,
                         74,
                         0.06,
+                        24.8,
+                        2.4,
+                        -0.22,
+                        0.41,
                         0.59,
                         0.56,
                         0.49,
@@ -373,6 +391,10 @@ class OddsValueEngineServiceTests {
                 ),
                 0.64,
                 0.61,
+                0.59,
+                0.57,
+                0.594,
+                0.094,
                 new MatchupFeatureVectorDto.ReliabilitySummaryDto(0.69, 0.81, 0.79, 0.72),
                 new MatchupFeatureVectorDto.SignificanceSummaryDto(
                         0.63,

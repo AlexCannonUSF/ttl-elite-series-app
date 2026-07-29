@@ -8,11 +8,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class SettlementFacade {
@@ -24,44 +26,107 @@ public class SettlementFacade {
     private final PaperTradeBetRepository betRepository;
     private final SettlementDiffLogService settlementDiffLogService;
     private final ScoreTruthAdvisoryService scoreTruthAdvisoryService;
+    private final Optional<ScoreTruthPrimaryService> scoreTruthPrimaryService;
     private final boolean shadowDiffEnabled;
 
+    @Autowired
     public SettlementFacade(@Lazy PaperTradingService paperTradingService,
                             MeterRegistry meterRegistry,
                             PaperTradeBetRepository betRepository,
                             SettlementDiffLogService settlementDiffLogService,
                             ScoreTruthAdvisoryService scoreTruthAdvisoryService,
+                            Optional<ScoreTruthPrimaryService> scoreTruthPrimaryService,
                             @Value("${ttl.shadowDiff.enabled:true}") boolean shadowDiffEnabled) {
         this.paperTradingService = paperTradingService;
         this.meterRegistry = meterRegistry;
         this.betRepository = betRepository;
         this.settlementDiffLogService = settlementDiffLogService;
         this.scoreTruthAdvisoryService = scoreTruthAdvisoryService;
+        this.scoreTruthPrimaryService = scoreTruthPrimaryService == null ? Optional.empty() : scoreTruthPrimaryService;
         this.shadowDiffEnabled = shadowDiffEnabled;
+    }
+
+    public SettlementFacade(@Lazy PaperTradingService paperTradingService,
+                            MeterRegistry meterRegistry,
+                            PaperTradeBetRepository betRepository,
+                            SettlementDiffLogService settlementDiffLogService,
+                            ScoreTruthAdvisoryService scoreTruthAdvisoryService,
+                            boolean shadowDiffEnabled) {
+        this(paperTradingService, meterRegistry, betRepository, settlementDiffLogService,
+                scoreTruthAdvisoryService, Optional.empty(), shadowDiffEnabled);
     }
 
     public PaperTradingService.SettlementStats settleOpenBets(PaperTradeSession session,
                                                               List<LiveOddsRecommendationDto> rows) {
         List<PaperTradeBet> trackedOpenBets = loadTrackedOpenBets(session);
+        boolean primary = scoreTruthPrimaryService.isPresent() && scoreTruthPrimaryService.get().active();
+
         if (meterRegistry == null) {
-            PaperTradingService.SettlementStats result = paperTradingService.settleOpenBetsLegacy(session, rows);
+            PaperTradingService.SettlementStats result = invokeSettlement(session, rows, trackedOpenBets, primary);
             recordIdentityDiffs(trackedOpenBets);
-            recordScoreTruthAdvisories(trackedOpenBets);
+            if (!primary) {
+                recordScoreTruthAdvisories(trackedOpenBets);
+            }
             recordScoreTruthDiffs(trackedOpenBets);
             return result;
         }
 
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
-            PaperTradingService.SettlementStats result = paperTradingService.settleOpenBetsLegacy(session, rows);
+            PaperTradingService.SettlementStats result = invokeSettlement(session, rows, trackedOpenBets, primary);
             recordIdentityDiffs(trackedOpenBets);
-            recordScoreTruthAdvisories(trackedOpenBets);
+            if (!primary) {
+                recordScoreTruthAdvisories(trackedOpenBets);
+            }
             recordScoreTruthDiffs(trackedOpenBets);
             return result;
         } finally {
-            meterRegistry.counter("ttl.facade.calls", "facade", "settlement", "operation", "settleOpenBets").increment();
+            String mode = primary ? "primary" : "legacy";
+            meterRegistry.counter("ttl.facade.calls", "facade", "settlement", "operation", "settleOpenBets", "mode", mode).increment();
             sample.stop(meterRegistry.timer("ttl.facade.duration", "facade", "settlement", "operation", "settleOpenBets"));
         }
+    }
+
+    private PaperTradingService.SettlementStats invokeSettlement(PaperTradeSession session,
+                                                                  List<LiveOddsRecommendationDto> rows,
+                                                                  List<PaperTradeBet> trackedOpenBets,
+                                                                  boolean primary) {
+        if (primary) {
+            ScoreTruthPrimaryService.ClosureStats closure = scoreTruthPrimaryService.get().closeOpenBets(trackedOpenBets);
+            log.info("[score-truth-primary] closed session={} settled={} voided={} held={} reviewed={} skipped={}",
+                    session == null ? null : session.getId(),
+                    closure.settled(), closure.voided(), closure.held(), closure.reviewed(), closure.skipped());
+            // Legacy fallthrough: bets that v3 couldn't close (held/reviewed/skipped)
+            // get a second pass through the heuristic-based legacy closer, which
+            // reads bet.lastObservedScore + the current odds row directly via
+            // ScoreWinnerResolver. Without this, a bet whose match completed
+            // off-feed (no completion signal in observations, no targeted
+            // confirmation source) sits OPEN indefinitely — exactly the "all
+            // night with no settlements" failure mode we hit in production.
+            //
+            // Safe to compose: settleOpenBetsLegacy re-queries STATUS_OPEN bets
+            // from the database, so bets v3 already settled/voided are
+            // automatically excluded.
+            PaperTradingService.SettlementStats legacyExtra = PaperTradingService.SettlementStats.empty();
+            int unclosed = closure.held() + closure.reviewed() + closure.skipped();
+            if (unclosed > 0) {
+                try {
+                    legacyExtra = paperTradingService.settleOpenBetsLegacy(session, rows);
+                    log.info("[settlement-fallthrough] legacy fallthrough ran on {} unclosed v3 bets: settled={} voided={}",
+                            unclosed, legacyExtra.settled(), legacyExtra.voided());
+                } catch (RuntimeException ex) {
+                    log.warn("[settlement-fallthrough] legacy fallthrough failed; keeping bets open", ex);
+                }
+                if (meterRegistry != null) {
+                    meterRegistry.counter("ttl.settlement.fallthrough.settled").increment(legacyExtra.settled());
+                    meterRegistry.counter("ttl.settlement.fallthrough.voided").increment(legacyExtra.voided());
+                }
+            }
+            return new PaperTradingService.SettlementStats(
+                    closure.settled() + legacyExtra.settled(),
+                    closure.voided() + legacyExtra.voided());
+        }
+        return paperTradingService.settleOpenBetsLegacy(session, rows);
     }
 
     private List<PaperTradeBet> loadTrackedOpenBets(PaperTradeSession session) {

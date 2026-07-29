@@ -31,6 +31,44 @@ This package is the backend-side scaffold for the 3.0 Stream-CV path.
   - includes a 200-frame clip-manifest smoke test CLI for new `roi.json` templates
 - `StreamFrameEventFactory`
   - builds `stream.frame` ingestion events from consensus-backed score payloads
+- `StreamFrameIngestionEmitter`
+  - Phase 04: publishes those `stream.frame` events through `IngestionBus`, so they
+    route to Redis Streams when `features.redis-streams` is `shadow` or `on` and
+    fall back to Spring application events otherwise
+- `VlmClient` / `GeminiFlashVisionClient` / `ClaudeHaikuVisionClient` / `DisabledVlmClient`
+  - Phase 04 Tier C scoreboard reader. `VlmClient` is the adapter interface;
+    Gemini 2.0 Flash is the primary engine and Claude Haiku 4.5 is the
+    contingency swap. The active engine is selected by
+    `ttl.streamCv.vlm.engine` (`disabled` | `gemini-flash` | `claude-haiku`).
+    Without an API key for the selected engine the configuration logs and
+    falls back to `DisabledVlmClient`. Responses are validated against the
+    Stream-CV §8.1 JSON schema by `VlmResponseParser`. Cost estimates use
+    published per-million-token pricing constants.
+- `CvAuditFrameBuffer` / `CvAuditEvidenceUploader` / `CvAuditEvidenceStore`
+  - Phase 04 item 7 contradiction evidence pipeline. The Stream-CV worker
+    pushes JPEG frames into `CvAuditFrameBuffer` (rolling per-match, default
+    10-frame cap). On a `ContradictionGuard` event the
+    `SettlementShadowAuditService.recordAttempt` path asks
+    `CvAuditEvidenceStore.uploadForContradiction(matchId, bundleAsOf)` for the
+    refs, and serializes them into `settlement_audit.evidence_refs`.
+    `MinioCvAuditEvidenceUploader` writes each frame to
+    `s3://ttl-cv-audit/<matchId>/<utcMinute>/<seq>.jpg`; the bucket's 30-day
+    lifecycle (provisioned in `infra/minio/compose.*.yaml`) auto-purges old
+    evidence. Toggle with `ttl.cv-audit.enabled`. Default is off; when off, a
+    `NoopCvAuditEvidenceUploader` is wired and `evidence_refs` remains null.
+- `CostGovernor` / `GovernedVlmCaller` / `VlmCallRecorder` / `StreamVlmMetrics`
+  - Phase 04 item 6. `CostGovernor` enforces the §8.2 budget: per-worker
+    150 calls/hour (rolling), global daily soft cap 2 500, global daily hard
+    cap 4 000 (flips to exhausted until UTC rollover). `GovernedVlmCaller` is
+    the entry point workers call: it asks the governor for a reservation,
+    delegates to the chosen `VlmClient`, then routes the result back through
+    the governor and `VlmCallRecorder` (which persists `stream_vlm_call` rows
+    when a `StreamVlmCallRepository` is wired). `StreamVlmMetrics` exposes
+    `stream_vlm_calls_total{model,reason}`, `stream_vlm_cost_usd_total{model}`,
+    `stream_vlm_tokens_total{model,kind}`, `stream_vlm_latency`,
+    `stream_vlm_governor_blocks_total{reason}`, `stream_vlm_daily_calls{model}`,
+    and `stream_vlm_daily_cost_usd_estimate{model}`. Caps and the global
+    enable flag are controlled by `ttl.streamCv.vlm.governor.*` properties.
 
 The canonical rollout switch is `features.stream-cv` in `/Users/alexcannon/Downloads/TTLEliteSeries/features.yaml`.
 The flag remains `off` by default, so these classes do not spawn live workers unless the rollout state is moved to `shadow` or `on`.

@@ -24,6 +24,7 @@ docker compose -f /Users/alexcannon/Downloads/TTLEliteSeries/infra/monitoring/co
 - `ttl-health`
 - `ttl-facade`
 - `ttl-ingest-placeholder`
+- `ttl-3.0-promotion-soak` — §11 production-soak gates (`ttl_soak11_gate_*`), Phase 06 staking metrics (`ttl_staking_clv_7d`, kill-switch, policy reloads by status), v3 primary closures by outcome, settlement diff disagreements + contradictions. Auto-discovered from `infra/monitoring/grafana/dashboards/` at the 30 s provisioning tick.
 
 `ttl-facade` includes the Phase 00 shadow-diff counters:
 
@@ -39,8 +40,16 @@ Prometheus also loads Score Truth alert rules from `prometheus/rules/`:
 - `ManualReviewQueueDepthHigh`
 - `PendingEvidenceTtlExpiriesHigh`
 
+Phase 06 staking alerts (from `prometheus/rules/ttl-phase-06-alerts.yml`):
+
+- `StakingPolicyHotReloadFailed`
+- `ExposureCapBreach`
+- `CLVNegative7Day`
+
 ## Notes
 
 - The backend exports Prometheus metrics from `/actuator/prometheus`.
 - The Python service is intentionally a stub in this phase: `/v1/health` and `/metrics` only.
+- Phase 04 Redis Streams runtime lives in `/Users/alexcannon/Downloads/TTLEliteSeries/infra/redis`.
+- Phase 04 MinIO raw store + CV audit runtime lives in `/Users/alexcannon/Downloads/TTLEliteSeries/infra/minio`.
 - The stack is dev-focused and should not be treated as a production deployment template.

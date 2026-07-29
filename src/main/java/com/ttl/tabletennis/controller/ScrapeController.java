@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.controller;
 
+import com.ttl.tabletennis.scrape.ScrapeRunOrphanCleanup;
 import com.ttl.tabletennis.scrape.TtSeriesScraper;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -12,9 +13,23 @@ import java.util.List;
 public class ScrapeController {
 
     private final TtSeriesScraper scraper;
+    private final ScrapeRunOrphanCleanup orphanCleanup;
 
-    public ScrapeController(TtSeriesScraper scraper) {
+    public ScrapeController(TtSeriesScraper scraper, ScrapeRunOrphanCleanup orphanCleanup) {
         this.scraper = scraper;
+        this.orphanCleanup = orphanCleanup;
+    }
+
+    /**
+     * Manually flip any {@code scrape_run} rows stuck in {@code RUNNING}
+     * to {@code FAILED} with reason {@code JVM_RESTART}. Idempotent; safe
+     * to call any time. The same cleanup also runs once on
+     * {@code ApplicationReadyEvent}, so this endpoint is for ops who want
+     * to clear a stuck row without bouncing the backend.
+     */
+    @PostMapping("/finalize-orphans")
+    public ResponseEntity<ScrapeRunOrphanCleanup.CleanupResult> finalizeOrphans() {
+        return ResponseEntity.ok(orphanCleanup.finalizeOrphans());
     }
 
     /** Uses current properties (e.g., -Dttl.onlyId=####). */
@@ -44,6 +59,33 @@ public class ScrapeController {
     @GetMapping("/status")
     public ResponseEntity<TtSeriesScraper.ScrapeStatus> status() {
         return ResponseEntity.ok(scraper.status());
+    }
+
+    /**
+     * Cooperative stop: the in-flight page completes (no partial saves),
+     * subsequent pages are skipped. The run is finalised with status
+     * SUCCESS and the saved-match counter reflects what made it to disk.
+     */
+    @PostMapping("/stop")
+    public ResponseEntity<String> stop() {
+        boolean wasRunning = scraper.requestStop();
+        if (!wasRunning) {
+            return ResponseEntity.ok("No scrape is running.");
+        }
+        return ResponseEntity.ok("Stop requested. The in-flight page will complete, then the run will end.");
+    }
+
+    /**
+     * Operator escape hatch (#112). Force-clear the {@code scrapeRunning} and
+     * {@code officialResultsRefreshInFlight} flags without a JVM restart for
+     * cases where {@link #stop()} fails to unstick the scrape (e.g. a Jsoup
+     * fetch that's blocked past its 20s timeout, a deadlock, or a stalled
+     * underlying network call). The periodic watchdog also calls this path
+     * automatically once a run has been stuck longer than the threshold.
+     */
+    @PostMapping("/force-reset")
+    public ResponseEntity<TtSeriesScraper.ScrapeForceResetResult> forceReset() {
+        return ResponseEntity.ok(scraper.forceResetForOperator());
     }
 
     @GetMapping("/runs")

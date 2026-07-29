@@ -1,6 +1,7 @@
 package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.domain.Match;
+import com.ttl.tabletennis.domain.OddsSnapshot;
 import com.ttl.tabletennis.domain.PaperTradeBet;
 import com.ttl.tabletennis.domain.PaperTradeDecisionSample;
 import com.ttl.tabletennis.domain.PaperTradeLearningSample;
@@ -15,6 +16,7 @@ import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
 import com.ttl.tabletennis.dto.TrackedMatchObservationDto;
 import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.OddsSnapshotRepository;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
 import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeLearningSampleRepository;
@@ -32,6 +34,38 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+
+import com.ttl.tabletennis.service.papertrade.AdaptiveDecisionSample;
+import com.ttl.tabletennis.service.papertrade.AdaptiveProfile;
+import com.ttl.tabletennis.service.papertrade.ExposureProfile;
+import com.ttl.tabletennis.service.papertrade.RowLookup;
+import com.ttl.tabletennis.service.papertrade.ScorePair;
+import com.ttl.tabletennis.service.papertrade.TriggerAdaptiveSignal;
+import com.ttl.tabletennis.service.papertrade.TriggerAggregate;
+
+import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.lockBetIdentityIfEligible;
+import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.markIdentityDriftAttempt;
+import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.observationMatchesLockedIdentity;
+import static com.ttl.tabletennis.service.papertrade.BetIdentityLockManager.rowMatchesLockedIdentity;
+import static com.ttl.tabletennis.service.papertrade.BetLockedIdentity.effectiveExternalEventId;
+import static com.ttl.tabletennis.service.papertrade.BetLockedIdentity.effectiveLockedStartTimeIso;
+import static com.ttl.tabletennis.service.papertrade.BetLockedIdentity.effectiveSourceFeedEventId;
+import static com.ttl.tabletennis.service.papertrade.ObservationClassifier.OBSERVATION_SOURCE_MARKET_BOARD;
+import static com.ttl.tabletennis.service.papertrade.ObservationClassifier.OBSERVATION_SOURCE_SCORE_FEED;
+import static com.ttl.tabletennis.service.papertrade.ObservationClassifier.hasExplicitCompletionSignal;
+import static com.ttl.tabletennis.service.papertrade.ObservationClassifier.inferObservationSourceKind;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.EPS;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.clamp;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.isFinishedPhase;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.isLateLikePhase;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.normalizeKey;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.normalizeTrigger;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.parseStartDateTime;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.startBucket;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.round2;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.round4;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.safeText;
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.valueOrZero;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -60,12 +94,12 @@ import java.util.regex.Pattern;
 public class PaperTradingService {
 
     private static final Logger log = LoggerFactory.getLogger(PaperTradingService.class);
-    private static final double EPS = 1e-9;
-    private static final Pattern SCORE_PAIR_PATTERN = Pattern.compile("(\\d{1,2})\\s*[-:]\\s*(\\d{1,2})");
-    private static final Pattern SOURCE_EVENT_ID_PATTERN =
-            Pattern.compile("\\|event=([A-Za-z0-9:_-]+)", Pattern.CASE_INSENSITIVE);
-    private static final String OBSERVATION_SOURCE_MARKET_BOARD = "MARKET_BOARD";
-    private static final String OBSERVATION_SOURCE_SCORE_FEED = "SCORE_FEED";
+    // EPS / clamp / round2 / round4 / valueOrZero / safeText / normalizeTrigger
+    // moved to PaperTradingHelpers (import-static at the top of this file)
+    // as part of the §4 decomposition (2026-05-19).
+    // SCORE_PAIR_PATTERN moved to ScoreNormalizer / ScorePair as needed.
+    // SOURCE_EVENT_ID_PATTERN moved to MatchKeyBuilder.
+    // OBSERVATION_SOURCE_* constants moved to ObservationClassifier (import-static above).
     private static final String SETTLEMENT_SOURCE_DECISIVE_LIVE_SCORE = "DECISIVE_LIVE_SCORE";
     private static final String SETTLEMENT_SOURCE_OFFICIAL_RESULT = "OFFICIAL_RESULT";
     private static final String SETTLEMENT_SOURCE_DATABASE_RESULT = "DATABASE_RESULT";
@@ -78,12 +112,23 @@ public class PaperTradingService {
     private final SettlementFacade settlementFacade;
     private final PaperTradeSessionRepository sessionRepository;
     private final PaperTradeBetRepository betRepository;
+    private final OddsSnapshotRepository oddsSnapshotRepository;
     private final PaperTradeDecisionSampleRepository decisionSampleRepository;
     private final PaperTradeLearningSampleRepository learningSampleRepository;
     private final MatchRepository matchRepository;
     private final TrackedMatchObservationRepository trackedMatchObservationRepository;
     private final TtSeriesScraper ttSeriesScraper;
     private final PaperTradingShadowService paperTradingShadowService;
+    private final com.ttl.tabletennis.prediction.staking.ClosingLineLookupService closingLineLookupService;
+    private final com.ttl.tabletennis.service.papertrade.MatchTimelineQueryService matchTimelineQueryService;
+    private final com.ttl.tabletennis.service.papertrade.CompletedMatchLogQueryService completedMatchLogQueryService;
+    private final com.ttl.tabletennis.service.papertrade.ClvMetricsBuilder clvMetricsBuilder;
+    private final com.ttl.tabletennis.service.papertrade.DecisionTelemetryBuilder decisionTelemetryBuilder;
+    private final com.ttl.tabletennis.service.papertrade.IntegrityService integrityService;
+    private final com.ttl.tabletennis.service.papertrade.SessionLifecycleService sessionLifecycleService;
+    private final com.ttl.tabletennis.service.papertrade.SessionSnapshotService sessionSnapshotService;
+    private final com.ttl.tabletennis.service.papertrade.SessionResetService sessionResetService;
+    private final com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver scoreWinnerResolver;
 
     @Value("${ttl.paper.startingBankroll:1000.0}")
     private double defaultStartingBankroll;
@@ -214,6 +259,41 @@ public class PaperTradingService {
     @Value("${ttl.paper.trackedAfterCloseGraceMinutes:30}")
     private int trackedAfterCloseGraceMinutes;
 
+    /**
+     * #123 — Phase-aware score-grace minutes used by
+     * {@link #shouldVoidMissingBoardBet}. Mirrors the defaults from
+     * {@link com.ttl.tabletennis.settlement.SettlementPolicy.Heuristic#phaseAfterDarkMinutes}
+     * but lives on the legacy void path because v3 VoidDecision is deferred
+     * to legacy ({@link com.ttl.tabletennis.service.SettlementFacade}
+     * L139-151). Without these overrides every actual void in production
+     * waits the legacy 240-min hardcode regardless of match phase, which is
+     * exactly what session 65 demonstrated (6 voids at 240+ min when they
+     * could have voided at 90 min in LIVE_LATE).
+     */
+    @Value("${ttl.paper.voidTimeout.lateLikeScoreGraceMin:90}")
+    private int voidTimeoutLateLikeScoreGraceMin;
+
+    @Value("${ttl.paper.voidTimeout.midScoreGraceMin:150}")
+    private int voidTimeoutMidScoreGraceMin;
+
+    @Value("${ttl.paper.voidTimeout.earlyScoreGraceMin:200}")
+    private int voidTimeoutEarlyScoreGraceMin;
+
+    @Value("${ttl.paper.voidTimeout.prematchScoreGraceMin:240}")
+    private int voidTimeoutPrematchScoreGraceMin;
+
+    /**
+     * #130 — Hard void cap. Ambiguous bets (no decisive last-state, no
+     * official result yet) are HELD past the normal phase-aware timeout so
+     * the tt-series official-results recovery has time to settle them W/L
+     * (results post per-tournament-block, 1-3h after the block finishes).
+     * Only after this cap from match start do we give up and void. Default
+     * 6h covers even the night-tournament posting lag.
+     */
+    @Value("${ttl.paper.voidTimeout.hardCapMinutes:360}")
+    private int voidHardCapMinutes;
+
+
     @Value("${ttl.paper.nearFinishFallbackEnabled:true}")
     private boolean nearFinishFallbackEnabled;
 
@@ -271,26 +351,58 @@ public class PaperTradingService {
     @Value("${ttl.paper.adaptive.incrementalBackfillLimit:600}")
     private int adaptiveIncrementalBackfillLimit;
 
+    /**
+     * #119 — Stale-observation threshold for the time-based
+     * {@code trackedAfterClose} fallback. When a bet's last observation is
+     * older than this and the phase is LIVE_LATE-like, we treat the match
+     * as closed so {@code StaleLiveRecoveryService} can pick it up.
+     * Default 20 minutes — game-5 deuce rarely runs that long.
+     */
+    @Value("${ttl.paper.trackedAfterClose.staleMinutes:20}")
+    private long trackedAfterCloseStaleMinutes;
+
     public PaperTradingService(OddsValueEngineService oddsValueEngineService,
                                SettlementFacade settlementFacade,
                                PaperTradeSessionRepository sessionRepository,
                                PaperTradeBetRepository betRepository,
+                               OddsSnapshotRepository oddsSnapshotRepository,
                                PaperTradeDecisionSampleRepository decisionSampleRepository,
                                PaperTradeLearningSampleRepository learningSampleRepository,
                                MatchRepository matchRepository,
                                TrackedMatchObservationRepository trackedMatchObservationRepository,
                                TtSeriesScraper ttSeriesScraper,
-                               PaperTradingShadowService paperTradingShadowService) {
+                               PaperTradingShadowService paperTradingShadowService,
+                               com.ttl.tabletennis.prediction.staking.ClosingLineLookupService closingLineLookupService,
+                               com.ttl.tabletennis.service.papertrade.MatchTimelineQueryService matchTimelineQueryService,
+                               com.ttl.tabletennis.service.papertrade.CompletedMatchLogQueryService completedMatchLogQueryService,
+                               com.ttl.tabletennis.service.papertrade.ClvMetricsBuilder clvMetricsBuilder,
+                               com.ttl.tabletennis.service.papertrade.DecisionTelemetryBuilder decisionTelemetryBuilder,
+                               com.ttl.tabletennis.service.papertrade.IntegrityService integrityService,
+                               com.ttl.tabletennis.service.papertrade.SessionLifecycleService sessionLifecycleService,
+                               com.ttl.tabletennis.service.papertrade.SessionSnapshotService sessionSnapshotService,
+                               com.ttl.tabletennis.service.papertrade.SessionResetService sessionResetService,
+                               com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver scoreWinnerResolver) {
         this.oddsValueEngineService = oddsValueEngineService;
         this.settlementFacade = settlementFacade;
         this.sessionRepository = sessionRepository;
         this.betRepository = betRepository;
+        this.oddsSnapshotRepository = oddsSnapshotRepository;
         this.decisionSampleRepository = decisionSampleRepository;
         this.learningSampleRepository = learningSampleRepository;
         this.matchRepository = matchRepository;
         this.trackedMatchObservationRepository = trackedMatchObservationRepository;
         this.ttSeriesScraper = ttSeriesScraper;
         this.paperTradingShadowService = paperTradingShadowService;
+        this.closingLineLookupService = closingLineLookupService;
+        this.matchTimelineQueryService = matchTimelineQueryService;
+        this.completedMatchLogQueryService = completedMatchLogQueryService;
+        this.clvMetricsBuilder = clvMetricsBuilder;
+        this.decisionTelemetryBuilder = decisionTelemetryBuilder;
+        this.integrityService = integrityService;
+        this.sessionLifecycleService = sessionLifecycleService;
+        this.sessionSnapshotService = sessionSnapshotService;
+        this.sessionResetService = sessionResetService;
+        this.scoreWinnerResolver = scoreWinnerResolver;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -437,7 +549,7 @@ public class PaperTradingService {
 
             String eventKey = StringUtils.hasText(row.matchupKey())
                     ? row.matchupKey().trim()
-                    : buildEventKey(row);
+                    : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.buildEventKey(row);
             String dedupeKey = StringUtils.hasText(row.suggestedDedupeKey())
                     ? row.suggestedDedupeKey().trim()
                     : eventKey + "|" + normalizeKey(candidate.sideName());
@@ -676,7 +788,7 @@ public class PaperTradingService {
             bet.setStartTimeIso(row.startTimeIso());
             bet.setExternalEventId(StringUtils.hasText(row.externalEventId())
                     ? row.externalEventId().trim()
-                    : extractExternalEventId(row.source()));
+                    : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(row.source()));
             bet.setLiveAtPlacement(row.live());
             bet.setPlayer1Id(row.player1Id());
             bet.setPlayer2Id(row.player2Id());
@@ -684,7 +796,7 @@ public class PaperTradingService {
             bet.setPlayer1Name(safeText(row.player1Name(), "Player 1"));
             bet.setPlayer2Name(safeText(row.player2Name(), "Player 2"));
             bet.setSideName(safeText(candidate.sideName(), "Player"));
-            String placementScore = normalizeScoreForBet(
+            String placementScore = com.ttl.tabletennis.service.papertrade.ScoreNormalizer.normalizeScoreForBet(
                     bet,
                     row.liveScore(),
                     row.player1Id(),
@@ -785,7 +897,7 @@ public class PaperTradingService {
         session.setSimulationBetsSettled(session.getSimulationBetsSettled() + settled);
         session.setSimulationBetsVoided(session.getSimulationBetsVoided() + voided);
         AdaptiveProfile postSyncProfile = buildAdaptiveProfile(session);
-        applyAdaptiveSnapshot(session, postSyncProfile, LocalDateTime.now());
+        postSyncProfile.applyTo(session, LocalDateTime.now());
         saveSession(session);
 
             return new PaperTradingSyncResultDto(
@@ -821,169 +933,41 @@ public class PaperTradingService {
 
     @Transactional
     public List<PaperTradeBetDto> getLiveStudioOpenBets() {
-        PaperTradeSession session = getOrCreateActiveSession();
-        return betRepository.findBySessionIdAndStatusOrderByPlacedAtDesc(session.getId(), PaperTradeBet.STATUS_OPEN)
-                .stream()
-                .map(this::toDto)
-                .toList();
+        return integrityService.getLiveStudioOpenBets(
+                getOrCreateActiveSession(),
+                bet -> deriveTrackingState(bet, LocalDateTime.now())
+        );
     }
 
     @Transactional
     public List<PaperTradeBetDto> getLiveStudioSettledTape(int limit) {
-        PaperTradeSession session = getOrCreateActiveSession();
-        int take = clamp(limit, 5, 200);
-        return betRepository.findBySessionIdAndStatusInOrderByPlacedAtDesc(
-                        session.getId(),
-                        List.of(
-                                PaperTradeBet.STATUS_WON,
-                                PaperTradeBet.STATUS_LOST,
-                                PaperTradeBet.STATUS_PUSHED,
-                                PaperTradeBet.STATUS_VOIDED
-                        ),
-                        PageRequest.of(0, take)
-                )
-                .stream()
-                .map(this::toDto)
-                .toList();
+        return integrityService.getLiveStudioSettledTape(
+                getOrCreateActiveSession(),
+                limit,
+                bet -> deriveTrackingState(bet, LocalDateTime.now())
+        );
     }
 
     @Transactional
     public LiveStudioIntegrityDto getLiveStudioIntegrity() {
-        PaperTradeSession session = getOrCreateActiveSession();
-        long trackedObservations = trackedMatchObservationRepository.countBySessionIdAndSourceKind(
-                session.getId(),
-                OBSERVATION_SOURCE_MARKET_BOARD
-        ) + trackedMatchObservationRepository.countBySessionIdAndSourceKind(
-                session.getId(),
-                OBSERVATION_SOURCE_SCORE_FEED
-        );
-        long boardObservations = trackedMatchObservationRepository.countBySessionIdAndSourceKind(
-                session.getId(),
-                OBSERVATION_SOURCE_MARKET_BOARD
-        );
-        long scoreFeedObservations = trackedMatchObservationRepository.countBySessionIdAndSourceKind(
-                session.getId(),
-                OBSERVATION_SOURCE_SCORE_FEED
-        );
-        long trackedAfterCloseObservations = trackedMatchObservationRepository.findBySessionIdOrderByObservedAtDesc(
-                        session.getId(),
-                        PageRequest.of(0, 5000)
-                ).stream()
-                .filter(TrackedMatchObservation::isTrackedAfterClose)
-                .count();
-
-        List<PaperTradeBet> settledBets = betRepository.findBySessionIdAndStatusInOrderBySettledAtAsc(
-                session.getId(),
-                List.of(
-                        PaperTradeBet.STATUS_WON,
-                        PaperTradeBet.STATUS_LOST,
-                        PaperTradeBet.STATUS_PUSHED,
-                        PaperTradeBet.STATUS_VOIDED
-                )
-        );
-        long scoreBacked = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_DECISIVE_LIVE_SCORE)
-                        || matchesSettlementSource(bet, SETTLEMENT_SOURCE_HEURISTIC_FALLBACK))
-                .count();
-        long targetedCompletion = settledBets.stream()
-                .filter(this::isTargetedCompletionSettlement)
-                .count();
-        long officialResult = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_OFFICIAL_RESULT))
-                .count();
-        long databaseResult = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_DATABASE_RESULT))
-                .count();
-        long heuristic = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_HEURISTIC_FALLBACK))
-                .count();
-        long voided = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_TIMEOUT_VOID)
-                        || PaperTradeBet.STATUS_VOIDED.equalsIgnoreCase(safeText(bet.getStatus(), "")))
-                .count();
-
-        return new LiveStudioIntegrityDto(
-                trackedObservations,
-                boardObservations,
-                scoreFeedObservations,
-                trackedAfterCloseObservations,
-                scoreBacked,
-                targetedCompletion,
-                officialResult,
-                databaseResult,
-                heuristic,
-                voided
-        );
+        return integrityService.getLiveStudioIntegrity(getOrCreateActiveSession());
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Thin delegate to {@link com.ttl.tabletennis.service.papertrade.MatchTimelineQueryService}.
+     * Kept here so existing callers in controllers and tests don't change shape
+     * during the §4 PaperTradingService decomposition (see
+     * docs/ttlelite-series-3.0/runbooks/paper-trading-service-decomposition.md).
+     */
     public List<TrackedMatchObservationDto> getMatchTimeline(String eventKey) {
-        if (!StringUtils.hasText(eventKey)) {
-            return List.of();
-        }
-        return trackedMatchObservationRepository.findByEventKeyOrderByObservedAtAsc(eventKey.trim())
-                .stream()
-                .map(this::toObservationDto)
-                .toList();
+        return matchTimelineQueryService.getMatchTimeline(eventKey);
     }
 
     @Transactional(readOnly = true)
+    /** Thin delegate to {@link com.ttl.tabletennis.service.papertrade.CompletedMatchLogQueryService}
+     *  — moved during the §4 PaperTradingService decomposition (2026-05-19). */
     public List<CompletedMatchLogDto> recentCompletedMatchesLog(int days, int limit) {
-        int withinDays = clamp(days, 1, 30);
-        int take = clamp(limit, 10, 400);
-        LocalDate toDate = LocalDate.now();
-        LocalDate fromDate = toDate.minusDays(withinDays);
-
-        List<Match> completed = new ArrayList<>(matchRepository.findCompletedMatchesBetween(fromDate, toDate));
-        completed.sort(Comparator
-                .comparing(Match::getDate, Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(Match::getId, Comparator.nullsLast(Comparator.reverseOrder())));
-        if (completed.size() > take) {
-            completed = completed.subList(0, take);
-        }
-
-        Long activeSessionId = sessionRepository.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE)
-                .map(PaperTradeSession::getId)
-                .orElse(null);
-
-        List<CompletedMatchLogDto> out = new ArrayList<>();
-        for (Match match : completed) {
-            Optional<PaperTradeBet> activePick = Optional.empty();
-            if (activeSessionId != null && match.getId() != null) {
-                activePick = betRepository.findFirstBySessionIdAndResultMatchIdOrderByIdAsc(activeSessionId, match.getId());
-            }
-            Optional<PaperTradeBet> historicalPick = match.getId() == null
-                    ? Optional.empty()
-                    : betRepository.findFirstByResultMatchIdOrderBySettledAtDesc(match.getId());
-            Optional<PaperTradeBet> pick = activePick.or(() -> historicalPick);
-
-            String p1 = match.getPlayer1() == null ? "Player 1" : match.getPlayer1().getName();
-            String p2 = match.getPlayer2() == null ? "Player 2" : match.getPlayer2().getName();
-            String winner = winnerName(match, p1, p2);
-            String loser = loserName(match, p1, p2, winner);
-            String score = scoreLabel(match);
-
-            String matchDateIso = match.getDate() == null ? null : match.getDate().toString();
-            String startTimeIso = pick.map(PaperTradeBet::getStartTimeIso)
-                    .filter(StringUtils::hasText)
-                    .or(() -> historicalPick.map(PaperTradeBet::getStartTimeIso).filter(StringUtils::hasText))
-                    .orElse(null);
-
-            out.add(new CompletedMatchLogDto(
-                    match.getId(),
-                    p1 + " vs " + p2,
-                    matchDateIso,
-                    startTimeIso,
-                    p1,
-                    p2,
-                    winner,
-                    loser,
-                    score,
-                    activePick.isPresent() || historicalPick.isPresent(),
-                    pick.map(PaperTradeBet::getStatus).orElse(null)
-            ));
-        }
-        return out;
+        return completedMatchLogQueryService.recentCompletedMatchesLog(days, limit);
     }
 
     @Transactional
@@ -993,32 +977,16 @@ public class PaperTradingService {
 
     @Transactional
     public PaperTradingSessionDto resetSession(Double startingBankroll, String label, boolean clearHistory) {
-        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
-            if (clearHistory) {
-                paperTradingShadowService.clearAll();
-                trackedMatchObservationRepository.deleteAllInBatch();
-                decisionSampleRepository.deleteAllInBatch();
-                betRepository.deleteAllInBatch();
-                sessionRepository.deleteAllInBatch();
-                PaperTradeSession created = createSession(startingBankroll, label);
-                AdaptiveProfile profile = buildAdaptiveProfile(created);
-                applyAdaptiveSnapshot(created, profile, LocalDateTime.now());
-                saveSession(created);
-                return buildSessionDto(created, 20, 40);
-            }
-
-            List<PaperTradeSession> activeSessions = sessionRepository.findByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE);
-            if (!activeSessions.isEmpty()) {
-                activeSessions.forEach(active -> active.setStatus(PaperTradeSession.STATUS_CLOSED));
-                saveSessions(activeSessions);
-            }
-
-            PaperTradeSession created = createSession(startingBankroll, label);
-            AdaptiveProfile profile = buildAdaptiveProfile(created);
-            applyAdaptiveSnapshot(created, profile, LocalDateTime.now());
-            saveSession(created);
-            return buildSessionDto(created, 20, 40);
-        }
+        return sessionResetService.resetSession(
+                startingBankroll,
+                label,
+                clearHistory,
+                20,
+                40,
+                exposureCaps(),
+                this::buildAdaptiveProfile,
+                bet -> deriveTrackingState(bet, LocalDateTime.now())
+        );
     }
 
     public SettlementStats settleOpenBetsLegacy(PaperTradeSession session, List<LiveOddsRecommendationDto> rows) {
@@ -1026,7 +994,7 @@ public class PaperTradingService {
                 session.getId(),
                 PaperTradeBet.STATUS_OPEN
         );
-        RowLookup rowLookup = buildRowLookup(rows);
+        RowLookup rowLookup = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.build(rows);
         OfficialResultRefreshContext officialResultRefreshContext = new OfficialResultRefreshContext();
         LocalDateTime now = LocalDateTime.now();
         int minMissingForScoreSettle = clamp(minMissingObservationsForScoreSettle, 1, 10);
@@ -1040,7 +1008,7 @@ public class PaperTradingService {
             String scoreBeforeUpdate = bet.getLastObservedScore();
             String phaseBeforeUpdate = bet.getLastObservedPhase();
             LiveOddsRecommendationDto currentRow = findCurrentRowForBet(bet, rowLookup, now);
-            String currentScore = normalizeScoreForBet(
+            String currentScore = com.ttl.tabletennis.service.papertrade.ScoreNormalizer.normalizeScoreForBet(
                     bet,
                     currentRow == null ? null : currentRow.liveScore(),
                     currentRow == null ? null : currentRow.player1Id(),
@@ -1075,7 +1043,7 @@ public class PaperTradingService {
                 }
                 if (allowScoreSettlementWithoutWindow) {
                     boolean finishedPhase = isFinishedPhase(currentRow.matchPhase());
-                    Optional<Long> winnerFromCurrent = determineWinnerFromScore(
+                    Optional<Long> winnerFromCurrent = scoreWinnerResolver.determineWinnerFromScore(
                             currentScore,
                             bet.getPlayer1Id(),
                             bet.getPlayer2Id(),
@@ -1094,7 +1062,7 @@ public class PaperTradingService {
                         continue;
                     }
                     if (finishedPhase) {
-                        Optional<Long> winnerFromCurrentLenient = determineWinnerFromScore(
+                        Optional<Long> winnerFromCurrentLenient = scoreWinnerResolver.determineWinnerFromScore(
                                 currentScore,
                                 bet.getPlayer1Id(),
                                 bet.getPlayer2Id(),
@@ -1112,7 +1080,7 @@ public class PaperTradingService {
                         String fallbackPhase = StringUtils.hasText(currentRow.matchPhase())
                                 ? currentRow.matchPhase()
                                 : (StringUtils.hasText(phaseBeforeUpdate) ? phaseBeforeUpdate : bet.getLastObservedPhase());
-                        Optional<Long> winnerFromLastFinished = determineWinnerFromScore(
+                        Optional<Long> winnerFromLastFinished = scoreWinnerResolver.determineWinnerFromScore(
                                 fallbackScore,
                                 bet.getPlayer1Id(),
                                 bet.getPlayer2Id(),
@@ -1141,7 +1109,7 @@ public class PaperTradingService {
                     String staleScore = StringUtils.hasText(currentScore)
                             ? currentScore
                             : bet.getLastObservedScore();
-                    Optional<Long> winnerFromStaleOnBoard = determineWinnerFromNearFinishFallback(
+                    Optional<Long> winnerFromStaleOnBoard = scoreWinnerResolver.determineWinnerFromNearFinishFallback(
                             staleScore,
                             bet.getPlayer1Id(),
                             bet.getPlayer2Id()
@@ -1184,7 +1152,7 @@ public class PaperTradingService {
             boolean allowLenientFromLastScore = true;
             boolean overdueForBackfill = isOverdueForLastScoreBackfill(bet, now);
 
-            Optional<Long> winnerFromLastFastPath = determineWinnerFromScore(
+            Optional<Long> winnerFromLastFastPath = scoreWinnerResolver.determineWinnerFromScore(
                     bet.getLastObservedScore(),
                     bet.getPlayer1Id(),
                     bet.getPlayer2Id(),
@@ -1226,7 +1194,7 @@ public class PaperTradingService {
                 continue;
             }
 
-            Optional<Long> winnerFromLast = determineWinnerFromScore(
+            Optional<Long> winnerFromLast = scoreWinnerResolver.determineWinnerFromScore(
                     bet.getLastObservedScore(),
                     bet.getPlayer1Id(),
                     bet.getPlayer2Id(),
@@ -1242,7 +1210,7 @@ public class PaperTradingService {
                 continue;
             }
 
-            Optional<Long> winnerFromNearFinishScore = determineWinnerFromNearFinishFallback(
+            Optional<Long> winnerFromNearFinishScore = scoreWinnerResolver.determineWinnerFromNearFinishFallback(
                     bet.getLastObservedScore(),
                     bet.getPlayer1Id(),
                     bet.getPlayer2Id()
@@ -1312,6 +1280,52 @@ public class PaperTradingService {
             }
 
             if (shouldVoidMissingBoardBet(bet, targetDate, now)) {
+                // #130 — Before voiding, try to settle from a decisive last
+                // live state. TT Elite matches always resolve and the result
+                // is always eventually posted, so a void is almost always a
+                // failure to capture a knowable W/L. If the last state was
+                // decisive (e.g. 2-0 sets, or 2-1 with a commanding game
+                // lead) and the match has gone stale (presumed finished),
+                // call the winner instead of refunding.
+                // Reaching this point means shouldVoidMissingBoardBet is true:
+                // the phase-aware timeout has elapsed AND the match has been
+                // absent from the board for many consecutive syncs. That is
+                // itself definitive proof the match has gone dark / finished —
+                // no further lastObservedAt staleness gate is needed (and
+                // lastObservedAt is unreliable here: it also tracks tracked-
+                // observation re-application, so it can read "fresh" even when
+                // the match ended long ago).
+                Optional<Long> confidentWinner = scoreWinnerResolver.determineWinnerFromConfidenceState(
+                        bet.getLastObservedScore(),
+                        bet.getPlayer1Id(),
+                        bet.getPlayer2Id(),
+                        bet.getLastObservedPhase());
+                if (confidentWinner.isPresent()) {
+                    applySettlement(session, bet, confidentWinner.get(), null, "SETTLED_FROM_CONFIDENCE_LAST_STATE");
+                    saveBet(bet);
+                    settled++;
+                    continue;
+                }
+
+                // Ambiguous but with LIVE CONTEXT (we saw a real in-progress
+                // score, just not a decisive/terminal one — e.g. "2-2 (9-8)"):
+                // HOLD for the official-results recovery rather than voiding
+                // early. The match definitely happened and tt-series will
+                // post its result per tournament block (1-3h). Only void once
+                // we pass the hard cap, by which point the official result
+                // has had ample time to appear and genuinely isn't available.
+                //
+                // Bets that NEVER went live (no score observed at all —
+                // no-show, wrong identity, or a match that didn't happen)
+                // keep the original void timing: there's no live evidence the
+                // match is real, so we don't tie up stake for 6h on them.
+                boolean hadLiveContext = StringUtils.hasText(bet.getLastObservedScore());
+                if (hadLiveContext && !passedHardVoidCap(bet, now)) {
+                    if (changed) {
+                        saveBet(bet);
+                    }
+                    continue; // hold open; official-results recovery + later sweeps retry
+                }
                 applySettlement(session, bet, null, null, "VOIDED_MISSING_BOARD_TIMEOUT");
                 saveBet(bet);
                 settled++;
@@ -1324,6 +1338,21 @@ public class PaperTradingService {
             }
         }
         return new SettlementStats(settled, voided);
+    }
+
+    /**
+     * #130 — True once a bet has been open past the hard void cap measured
+     * from match start (falling back to placement time). Past this, we give
+     * up waiting for an official result and void.
+     */
+    private boolean passedHardVoidCap(PaperTradeBet bet, LocalDateTime now) {
+        if (bet == null || now == null) {
+            return true;
+        }
+        int capMinutes = Math.max(120, voidHardCapMinutes);
+        Optional<LocalDateTime> startOpt = parseStartDateTime(bet.getStartTimeIso());
+        LocalDateTime anchor = startOpt.orElse(bet.getPlacedAt() == null ? now : bet.getPlacedAt());
+        return !now.isBefore(anchor.plusMinutes(capMinutes));
     }
 
     private void applySettlement(PaperTradeSession session, PaperTradeBet bet, Match match) {
@@ -1413,12 +1442,8 @@ public class PaperTradingService {
         return SETTLEMENT_SOURCE_HEURISTIC_FALLBACK;
     }
 
-    private boolean isTargetedCompletionSettlement(PaperTradeBet bet) {
-        if (bet == null || !StringUtils.hasText(bet.getSettlementReason())) {
-            return false;
-        }
-        return bet.getSettlementReason().trim().toUpperCase(Locale.ROOT).contains("TARGETED_MATCH_COMPLETED");
-    }
+    // isTargetedCompletionSettlement moved to IntegrityService — it was used
+    // only by the integrity DTO path.
 
     private boolean isTrackedAfterCloseDatabaseContext(PaperTradeBet bet,
                                                        Optional<TrackedMatchObservation> latestTrackedObservation,
@@ -1484,7 +1509,7 @@ public class PaperTradingService {
         }
         String matchupKey = StringUtils.hasText(snapshot.matchupKey())
                 ? snapshot.matchupKey().trim()
-                : toPairStartKey(
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.toPairStartKey(
                 snapshot.player1Id(),
                 snapshot.player1Name(),
                 snapshot.player2Id(),
@@ -1562,7 +1587,7 @@ public class PaperTradingService {
                     ? ""
                     : (StringUtils.hasText(effectiveExternalEventId(bet))
                     ? effectiveExternalEventId(bet)
-                    : extractExternalEventId(bet.getSource()));
+                    : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(bet.getSource()));
             if (StringUtils.hasText(eventId)) {
                 eventIds.add(eventId);
             }
@@ -1570,255 +1595,16 @@ public class PaperTradingService {
         return eventIds;
     }
 
-    private String extractExternalEventId(String source) {
-        if (!StringUtils.hasText(source)) {
-            return "";
-        }
-        Matcher matcher = SOURCE_EVENT_ID_PATTERN.matcher(source.trim());
-        if (!matcher.find()) {
-            return "";
-        }
-        String raw = matcher.group(1);
-        if (!StringUtils.hasText(raw)) {
-            return "";
-        }
-        return raw.trim().replaceAll("[^A-Za-z0-9:_-]", "");
-    }
+    // extractExternalEventId moved to com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.
 
-    private String effectiveExternalEventId(PaperTradeBet bet) {
-        if (bet == null) {
-            return "";
-        }
-        if (StringUtils.hasText(bet.getLockedExternalEventId())) {
-            return bet.getLockedExternalEventId().trim();
-        }
-        if (StringUtils.hasText(bet.getExternalEventId())) {
-            return bet.getExternalEventId().trim();
-        }
-        return "";
-    }
+    // effectiveExternalEventId / effectiveSourceFeedEventId / effectiveLockedStartTimeIso
+    // moved to com.ttl.tabletennis.service.papertrade.BetLockedIdentity.
 
-    private String effectiveSourceFeedEventId(PaperTradeBet bet) {
-        if (bet == null) {
-            return "";
-        }
-        if (StringUtils.hasText(bet.getLockedSourceFeedEventId())) {
-            return bet.getLockedSourceFeedEventId().trim();
-        }
-        if (StringUtils.hasText(bet.getLastSourceFeedEventId())) {
-            return bet.getLastSourceFeedEventId().trim();
-        }
-        return "";
-    }
+    // lockBetIdentityIfEligible / rowMatchesLockedIdentity / observationMatchesLockedIdentity
+    // + 3 markIdentityDriftAttempt overloads moved to
+    // com.ttl.tabletennis.service.papertrade.BetIdentityLockManager (import-static below).
 
-    private String effectiveLockedStartTimeIso(PaperTradeBet bet) {
-        if (bet == null) {
-            return "";
-        }
-        if (StringUtils.hasText(bet.getLockedStartTimeIso())) {
-            return bet.getLockedStartTimeIso().trim();
-        }
-        if (StringUtils.hasText(bet.getStartTimeIso())) {
-            return bet.getStartTimeIso().trim();
-        }
-        return "";
-    }
-
-    private boolean lockBetIdentityIfEligible(PaperTradeBet bet, LocalDateTime lockedAt) {
-        if (bet == null) {
-            return false;
-        }
-        boolean changed = false;
-        String externalEventId = StringUtils.hasText(bet.getExternalEventId()) ? bet.getExternalEventId().trim() : null;
-        String sourceFeedEventId = StringUtils.hasText(bet.getLastSourceFeedEventId()) ? bet.getLastSourceFeedEventId().trim() : null;
-        String startTimeIso = StringUtils.hasText(bet.getStartTimeIso()) ? bet.getStartTimeIso().trim() : null;
-        boolean hasStrongIdentity = StringUtils.hasText(externalEventId) || StringUtils.hasText(sourceFeedEventId);
-
-        if (!hasStrongIdentity) {
-            return false;
-        }
-
-        if (!bet.isIdentityLocked()) {
-            bet.setIdentityLocked(true);
-            bet.setIdentityLockedAt(lockedAt == null ? LocalDateTime.now() : lockedAt);
-            changed = true;
-        } else if (bet.getIdentityLockedAt() == null && lockedAt != null) {
-            bet.setIdentityLockedAt(lockedAt);
-            changed = true;
-        }
-
-        if (StringUtils.hasText(startTimeIso) && !StringUtils.hasText(bet.getLockedStartTimeIso())) {
-            bet.setLockedStartTimeIso(startTimeIso);
-            changed = true;
-        }
-        if (StringUtils.hasText(externalEventId) && !StringUtils.hasText(bet.getLockedExternalEventId())) {
-            bet.setLockedExternalEventId(externalEventId);
-            changed = true;
-        }
-        if (StringUtils.hasText(sourceFeedEventId) && !StringUtils.hasText(bet.getLockedSourceFeedEventId())) {
-            bet.setLockedSourceFeedEventId(sourceFeedEventId);
-            changed = true;
-        }
-        return changed;
-    }
-
-    private boolean rowMatchesLockedIdentity(PaperTradeBet bet, LiveOddsRecommendationDto row) {
-        if (bet == null || row == null || !bet.isIdentityLocked()) {
-            return true;
-        }
-        String lockedExternalEventId = effectiveExternalEventId(bet);
-        String lockedSourceFeedEventId = effectiveSourceFeedEventId(bet);
-        String lockedStartTimeIso = effectiveLockedStartTimeIso(bet);
-
-        String candidateExternalEventId = StringUtils.hasText(row.externalEventId())
-                ? row.externalEventId().trim()
-                : extractExternalEventId(row.source());
-        String candidateSourceFeedEventId = StringUtils.hasText(row.sourceFeedEventId()) ? row.sourceFeedEventId().trim() : "";
-        String candidateStartTimeIso = StringUtils.hasText(row.startTimeIso()) ? row.startTimeIso().trim() : "";
-
-        if (StringUtils.hasText(lockedSourceFeedEventId)
-                && StringUtils.hasText(candidateSourceFeedEventId)
-                && !lockedSourceFeedEventId.equalsIgnoreCase(candidateSourceFeedEventId)) {
-            return false;
-        }
-        if (StringUtils.hasText(lockedExternalEventId)
-                && StringUtils.hasText(candidateExternalEventId)
-                && !lockedExternalEventId.equalsIgnoreCase(candidateExternalEventId)) {
-            return false;
-        }
-
-        boolean exactIdentityMatch = (StringUtils.hasText(lockedSourceFeedEventId)
-                && lockedSourceFeedEventId.equalsIgnoreCase(candidateSourceFeedEventId))
-                || (StringUtils.hasText(lockedExternalEventId)
-                && lockedExternalEventId.equalsIgnoreCase(candidateExternalEventId));
-
-        if (!exactIdentityMatch && StringUtils.hasText(lockedStartTimeIso) && StringUtils.hasText(candidateStartTimeIso)) {
-            return isCompatibleStartTime(lockedStartTimeIso, candidateStartTimeIso);
-        }
-        return true;
-    }
-
-    private boolean observationMatchesLockedIdentity(PaperTradeBet bet, TrackedMatchObservation observation) {
-        if (bet == null || observation == null || !bet.isIdentityLocked()) {
-            return true;
-        }
-        String lockedExternalEventId = effectiveExternalEventId(bet);
-        String lockedSourceFeedEventId = effectiveSourceFeedEventId(bet);
-        String lockedStartTimeIso = effectiveLockedStartTimeIso(bet);
-
-        String candidateExternalEventId = StringUtils.hasText(observation.getExternalEventId())
-                ? observation.getExternalEventId().trim()
-                : "";
-        String candidateSourceFeedEventId = StringUtils.hasText(observation.getSourceFeedEventId())
-                ? observation.getSourceFeedEventId().trim()
-                : "";
-        String candidateStartTimeIso = StringUtils.hasText(observation.getStartTimeIso())
-                ? observation.getStartTimeIso().trim()
-                : "";
-
-        if (StringUtils.hasText(lockedSourceFeedEventId)
-                && StringUtils.hasText(candidateSourceFeedEventId)
-                && !lockedSourceFeedEventId.equalsIgnoreCase(candidateSourceFeedEventId)) {
-            return false;
-        }
-        if (StringUtils.hasText(lockedExternalEventId)
-                && StringUtils.hasText(candidateExternalEventId)
-                && !lockedExternalEventId.equalsIgnoreCase(candidateExternalEventId)) {
-            return false;
-        }
-
-        boolean exactIdentityMatch = (StringUtils.hasText(lockedSourceFeedEventId)
-                && lockedSourceFeedEventId.equalsIgnoreCase(candidateSourceFeedEventId))
-                || (StringUtils.hasText(lockedExternalEventId)
-                && lockedExternalEventId.equalsIgnoreCase(candidateExternalEventId));
-
-        if (!exactIdentityMatch && StringUtils.hasText(lockedStartTimeIso) && StringUtils.hasText(candidateStartTimeIso)) {
-            return isCompatibleStartTime(lockedStartTimeIso, candidateStartTimeIso);
-        }
-        return true;
-    }
-
-    private void markIdentityDriftAttempt(PaperTradeBet bet,
-                                          LiveOddsRecommendationDto row,
-                                          LocalDateTime observedAt,
-                                          String reason) {
-        if (bet == null || row == null || !bet.isIdentityLocked()) {
-            return;
-        }
-        String candidateExternalEventId = StringUtils.hasText(row.externalEventId())
-                ? row.externalEventId().trim()
-                : extractExternalEventId(row.source());
-        String candidateSourceFeedEventId = StringUtils.hasText(row.sourceFeedEventId()) ? row.sourceFeedEventId().trim() : null;
-        String candidateStartTimeIso = StringUtils.hasText(row.startTimeIso()) ? row.startTimeIso().trim() : null;
-        markIdentityDriftAttempt(
-                bet,
-                candidateExternalEventId,
-                candidateSourceFeedEventId,
-                candidateStartTimeIso,
-                observedAt,
-                reason
-        );
-    }
-
-    private void markIdentityDriftAttempt(PaperTradeBet bet,
-                                          TrackedMatchObservation observation,
-                                          String reason) {
-        if (bet == null || observation == null || !bet.isIdentityLocked()) {
-            return;
-        }
-        markIdentityDriftAttempt(
-                bet,
-                observation.getExternalEventId(),
-                observation.getSourceFeedEventId(),
-                observation.getStartTimeIso(),
-                observation.getObservedAt(),
-                reason
-        );
-    }
-
-    private void markIdentityDriftAttempt(PaperTradeBet bet,
-                                          String candidateExternalEventId,
-                                          String candidateSourceFeedEventId,
-                                          String candidateStartTimeIso,
-                                          LocalDateTime observedAt,
-                                          String reason) {
-        if (bet == null || !bet.isIdentityLocked()) {
-            return;
-        }
-        bet.setIdentityDriftCount(Math.max(0, bet.getIdentityDriftCount()) + 1);
-        bet.setLastIdentityDriftAt(observedAt == null ? LocalDateTime.now() : observedAt);
-        log.warn(
-                "[paper] identity drift blocked: betId={} reason={} lockedExternalEventId={} candidateExternalEventId={} lockedSourceFeedEventId={} candidateSourceFeedEventId={} lockedStartTimeIso={} candidateStartTimeIso={}",
-                bet.getId(),
-                reason,
-                effectiveExternalEventId(bet),
-                safeText(candidateExternalEventId, ""),
-                effectiveSourceFeedEventId(bet),
-                safeText(candidateSourceFeedEventId, ""),
-                effectiveLockedStartTimeIso(bet),
-                safeText(candidateStartTimeIso, "")
-        );
-    }
-
-    private String inferObservationSourceKind(LiveOddsRecommendationDto row) {
-        if (row == null) {
-            return OBSERVATION_SOURCE_MARKET_BOARD;
-        }
-        if (StringUtils.hasText(row.sourceType())) {
-            String sourceType = row.sourceType().trim().toUpperCase(Locale.ROOT);
-            if (sourceType.contains("SCORE")) {
-                return OBSERVATION_SOURCE_SCORE_FEED;
-            }
-        }
-        if (!StringUtils.hasText(row.source())) {
-            return OBSERVATION_SOURCE_MARKET_BOARD;
-        }
-        String source = row.source().trim().toUpperCase(Locale.ROOT);
-        if (source.contains("SCORE")) {
-            return OBSERVATION_SOURCE_SCORE_FEED;
-        }
-        return OBSERVATION_SOURCE_MARKET_BOARD;
-    }
+    // inferObservationSourceKind moved to ObservationClassifier (import-static above).
 
     private double observationSourceConfidence(LiveOddsRecommendationDto row) {
         if (row == null) {
@@ -1835,13 +1621,48 @@ public class PaperTradingService {
     }
 
     private boolean isTrackedAfterCloseObservation(LiveOddsRecommendationDto row) {
-        if (row == null) {
+        return isTrackedAfterCloseObservation(row, null, null);
+    }
+
+    /**
+     * #119 — Decide whether an incoming row indicates the match has closed.
+     *
+     * <p>Original criteria (still in force): a SCORE_FEED observation with
+     * any of {@code !displayed}, {@code resulted}, or {@code matchCompleted}.
+     *
+     * <p>New time-based fallback: when the score feed never emits a terminal
+     * observation (a real BETRADAR_UF quirk — Hard Rock's inner
+     * {@code matchState} block sometimes goes silent at game-5 deuce instead
+     * of pushing a final-state row), we also treat the match as closed when:
+     * <ul>
+     *   <li>the bet was last observed in a LIVE_LATE-like phase, AND</li>
+     *   <li>the bet's {@code lastObservedAt} is older than the
+     *       {@code ttl.paper.trackedAfterClose.staleMinutes} threshold
+     *       (default 20 min).</li>
+     * </ul>
+     * Without this fallback, {@code StaleLiveRecoveryService} never wakes
+     * (it requires {@code trackedAfterClose=true}), and the bet sits OPEN
+     * until the void timeout fires — what production saw in Session 65.
+     */
+    private boolean isTrackedAfterCloseObservation(LiveOddsRecommendationDto row,
+                                                    PaperTradeBet bet,
+                                                    LocalDateTime now) {
+        if (row != null && OBSERVATION_SOURCE_SCORE_FEED.equals(inferObservationSourceKind(row))
+                && (!row.displayed() || row.resulted() || row.matchCompleted())) {
+            return true;
+        }
+        if (bet == null || now == null) {
             return false;
         }
-        if (!OBSERVATION_SOURCE_SCORE_FEED.equals(inferObservationSourceKind(row))) {
+        if (!isLateLikePhase(bet.getLastObservedPhase())) {
             return false;
         }
-        return !row.displayed() || row.resulted() || row.matchCompleted();
+        LocalDateTime lastObservedAt = bet.getLastObservedAt();
+        if (lastObservedAt == null) {
+            return false;
+        }
+        long minutesStale = java.time.Duration.between(lastObservedAt, now).toMinutes();
+        return minutesStale >= trackedAfterCloseStaleMinutes;
     }
 
     private void recordObservation(Long sessionId,
@@ -1858,7 +1679,7 @@ public class PaperTradingService {
         }
         String eventKey = StringUtils.hasText(bet.getEventKey())
                 ? bet.getEventKey().trim()
-                : buildEventKey(row);
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.buildEventKey(row);
         if (!StringUtils.hasText(eventKey)) {
             return;
         }
@@ -1899,7 +1720,7 @@ public class PaperTradingService {
                 ? effectiveExternalEventId(bet)
                 : (StringUtils.hasText(row.externalEventId())
                 ? row.externalEventId().trim()
-                : extractExternalEventId(row.source())));
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(row.source())));
         observation.setSource(safeText(row.source(), "UNKNOWN"));
         observation.setSourceKind(sourceKind);
         observation.setSourceConfidence(observationSourceConfidence(row));
@@ -1924,12 +1745,9 @@ public class PaperTradingService {
         trackedMatchObservationRepository.save(observation);
     }
 
-    private Optional<TrackedMatchObservation> latestTrackedObservationForBet(PaperTradeBet bet) {
-        if (bet == null || bet.getId() == null) {
-            return Optional.empty();
-        }
-        return trackedMatchObservationRepository.findTopByBetIdOrderByObservedAtDesc(bet.getId());
-    }
+    // latestTrackedObservationForBet was removed as part of the §4 cleanup pass
+    // (2026-05-19) — confirmed unused; preferredTrackedObservationForBet is
+    // the actual call path for tracked observations.
 
     private Optional<TrackedMatchObservation> preferredTrackedObservationForBet(PaperTradeBet bet) {
         if (bet == null || bet.getId() == null) {
@@ -2050,135 +1868,12 @@ public class PaperTradingService {
         return changed;
     }
 
-    private boolean matchesSettlementSource(PaperTradeBet bet, String expectedSource) {
-        if (bet == null || !StringUtils.hasText(expectedSource)) {
-            return false;
-        }
-        return expectedSource.equalsIgnoreCase(safeText(bet.getSettlementSource(), ""));
-    }
+    // matchesSettlementSource moved to IntegrityService — it was used only by
+    // getLiveStudioIntegrity.
 
-    private RowLookup buildRowLookup(List<LiveOddsRecommendationDto> rows) {
-        Map<String, LiveOddsRecommendationDto> byDedupe = new HashMap<>();
-        Map<String, LiveOddsRecommendationDto> byEvent = new HashMap<>();
-        Map<String, LiveOddsRecommendationDto> byExternalEventId = new HashMap<>();
-        Map<String, LiveOddsRecommendationDto> bySourceFeedEventId = new HashMap<>();
-        Map<String, LiveOddsRecommendationDto> byPairStart = new HashMap<>();
-        Map<String, LiveOddsRecommendationDto> byPair = new HashMap<>();
-        List<LiveOddsRecommendationDto> allRows = new ArrayList<>();
-        if (rows == null) {
-            return new RowLookup(byDedupe, byEvent, byExternalEventId, bySourceFeedEventId, byPairStart, byPair, allRows);
-        }
-        for (LiveOddsRecommendationDto row : rows) {
-            if (row == null) {
-                continue;
-            }
-            allRows.add(row);
-            String dedupeKey = row.suggestedDedupeKey();
-            if (!StringUtils.hasText(dedupeKey) && StringUtils.hasText(row.matchupKey()) && StringUtils.hasText(row.suggestedSide())) {
-                dedupeKey = row.matchupKey().trim() + "|" + normalizeKey(row.suggestedSide());
-            }
-            putPreferredRow(byDedupe, dedupeKey, row);
-            putPreferredRow(byEvent, row.matchupKey(), row);
-            putPreferredRow(byEvent, buildEventKey(row), row);
-            String externalEventId = StringUtils.hasText(row.externalEventId())
-                    ? row.externalEventId().trim()
-                    : extractExternalEventId(row.source());
-            putPreferredRow(byExternalEventId, externalEventId, row);
-            putPreferredRow(bySourceFeedEventId, row.sourceFeedEventId(), row);
-            String pairStartKey = toPairStartKey(
-                    row.player1Id(),
-                    row.player1Name(),
-                    row.player2Id(),
-                    row.player2Name(),
-                    row.startTimeIso()
-            );
-            putPreferredRow(byPairStart, pairStartKey, row);
-            String namePairStartKey = toPairStartKey(
-                    null,
-                    row.player1Name(),
-                    null,
-                    row.player2Name(),
-                    row.startTimeIso()
-            );
-            putPreferredRow(byPairStart, namePairStartKey, row);
-            String pairKey = toPairKey(
-                    row.player1Id(),
-                    row.player1Name(),
-                    row.player2Id(),
-                    row.player2Name()
-            );
-            putPreferredRow(byPair, pairKey, row);
-            String namePairKey = toPairKey(
-                    null,
-                    row.player1Name(),
-                    null,
-                    row.player2Name()
-            );
-            putPreferredRow(byPair, namePairKey, row);
-        }
-        return new RowLookup(byDedupe, byEvent, byExternalEventId, bySourceFeedEventId, byPairStart, byPair, allRows);
-    }
-
-    private void putPreferredRow(Map<String, LiveOddsRecommendationDto> index,
-                                 String rawKey,
-                                 LiveOddsRecommendationDto candidate) {
-        if (index == null || candidate == null || !StringUtils.hasText(rawKey)) {
-            return;
-        }
-        String key = rawKey.trim();
-        LiveOddsRecommendationDto current = index.get(key);
-        if (current == null || preferSettlementRow(candidate, current)) {
-            index.put(key, candidate);
-        }
-    }
-
-    private boolean preferSettlementRow(LiveOddsRecommendationDto candidate, LiveOddsRecommendationDto current) {
-        if (candidate == null) {
-            return false;
-        }
-        if (current == null) {
-            return true;
-        }
-        int candidateRank = settlementRowRank(candidate);
-        int currentRank = settlementRowRank(current);
-        if (candidateRank != currentRank) {
-            return candidateRank > currentRank;
-        }
-        int candidatePairs = parseScorePairs(candidate.liveScore()).size();
-        int currentPairs = parseScorePairs(current.liveScore()).size();
-        if (candidatePairs != currentPairs) {
-            return candidatePairs > currentPairs;
-        }
-        boolean candidateScoreSource = OBSERVATION_SOURCE_SCORE_FEED.equals(inferObservationSourceKind(candidate));
-        boolean currentScoreSource = OBSERVATION_SOURCE_SCORE_FEED.equals(inferObservationSourceKind(current));
-        if (candidateScoreSource != currentScoreSource) {
-            return candidateScoreSource;
-        }
-        return false;
-    }
-
-    private int settlementRowRank(LiveOddsRecommendationDto row) {
-        if (row == null) {
-            return 0;
-        }
-        int rank = 0;
-        if (StringUtils.hasText(row.liveScore())) {
-            rank += 4;
-        }
-        if (hasExplicitCompletionSignal(row)) {
-            rank += 5;
-        }
-        if (isFinishedPhase(row.matchPhase())) {
-            rank += 3;
-        }
-        if (isLateLikePhase(row.matchPhase())) {
-            rank += 2;
-        }
-        if (row.live()) {
-            rank += 1;
-        }
-        return rank;
-    }
+    // buildRowLookup / putPreferredRow / preferSettlementRow / settlementRowRank
+    // moved to com.ttl.tabletennis.service.papertrade.RowLookupBuilder.
+    // RowLookup record lifted to com.ttl.tabletennis.service.papertrade.RowLookup.
 
     private LiveOddsRecommendationDto findCurrentRowForBet(PaperTradeBet bet, RowLookup lookup, LocalDateTime observedAt) {
         if (bet == null || lookup == null) {
@@ -2194,7 +1889,7 @@ public class PaperTradingService {
         }
         String betExternalEventId = StringUtils.hasText(effectiveExternalEventId(bet))
                 ? effectiveExternalEventId(bet).trim()
-                : extractExternalEventId(bet.getSource());
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(bet.getSource());
         if (StringUtils.hasText(betExternalEventId)) {
             LiveOddsRecommendationDto byExternalEventId = lookup.byExternalEventId().get(betExternalEventId);
             if (byExternalEventId != null) {
@@ -2204,7 +1899,7 @@ public class PaperTradingService {
         if (StringUtils.hasText(bet.getDedupeKey())) {
             LiveOddsRecommendationDto byDedupe = lookup.byDedupe().get(bet.getDedupeKey().trim());
             if (byDedupe != null) {
-                best = preferSettlementRow(byDedupe, best) ? byDedupe : best;
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byDedupe, best) ? byDedupe : best;
             }
             int sideSep = bet.getDedupeKey().lastIndexOf('|');
             if (sideSep > 0) {
@@ -2212,7 +1907,7 @@ public class PaperTradingService {
                 if (StringUtils.hasText(dedupeEventKey)) {
                     LiveOddsRecommendationDto byDedupeEvent = lookup.byEvent().get(dedupeEventKey);
                     if (byDedupeEvent != null) {
-                        best = preferSettlementRow(byDedupeEvent, best) ? byDedupeEvent : best;
+                        best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byDedupeEvent, best) ? byDedupeEvent : best;
                     }
                 }
             }
@@ -2220,10 +1915,10 @@ public class PaperTradingService {
         if (StringUtils.hasText(bet.getEventKey())) {
             LiveOddsRecommendationDto byEvent = lookup.byEvent().get(bet.getEventKey().trim());
             if (byEvent != null) {
-                best = preferSettlementRow(byEvent, best) ? byEvent : best;
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byEvent, best) ? byEvent : best;
             }
         }
-        String pairStartKey = toPairStartKey(
+        String pairStartKey = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.toPairStartKey(
                 bet.getPlayer1Id(),
                 bet.getPlayer1Name(),
                 bet.getPlayer2Id(),
@@ -2233,10 +1928,10 @@ public class PaperTradingService {
         if (StringUtils.hasText(pairStartKey)) {
             LiveOddsRecommendationDto byPairStart = lookup.byPairStart().get(pairStartKey);
             if (byPairStart != null) {
-                best = preferSettlementRow(byPairStart, best) ? byPairStart : best;
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byPairStart, best) ? byPairStart : best;
             }
         }
-        String namePairStartKey = toPairStartKey(
+        String namePairStartKey = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.toPairStartKey(
                 null,
                 bet.getPlayer1Name(),
                 null,
@@ -2246,10 +1941,10 @@ public class PaperTradingService {
         if (StringUtils.hasText(namePairStartKey)) {
             LiveOddsRecommendationDto byNamePairStart = lookup.byPairStart().get(namePairStartKey);
             if (byNamePairStart != null) {
-                best = preferSettlementRow(byNamePairStart, best) ? byNamePairStart : best;
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byNamePairStart, best) ? byNamePairStart : best;
             }
         }
-        String pairKey = toPairKey(
+        String pairKey = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.toPairKey(
                 bet.getPlayer1Id(),
                 bet.getPlayer1Name(),
                 bet.getPlayer2Id(),
@@ -2257,11 +1952,11 @@ public class PaperTradingService {
         );
         if (StringUtils.hasText(pairKey)) {
             LiveOddsRecommendationDto byPair = lookup.byPair().get(pairKey);
-            if (byPair != null && isCompatibleStartTime(bet.getStartTimeIso(), byPair.startTimeIso())) {
-                best = preferSettlementRow(byPair, best) ? byPair : best;
+            if (byPair != null && com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.isCompatibleStartTime(bet.getStartTimeIso(), byPair.startTimeIso())) {
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byPair, best) ? byPair : best;
             }
         }
-        String namePairKey = toPairKey(
+        String namePairKey = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.toPairKey(
                 null,
                 bet.getPlayer1Name(),
                 null,
@@ -2269,13 +1964,13 @@ public class PaperTradingService {
         );
         if (StringUtils.hasText(namePairKey)) {
             LiveOddsRecommendationDto byNamePair = lookup.byPair().get(namePairKey);
-            if (byNamePair != null && isCompatibleStartTime(bet.getStartTimeIso(), byNamePair.startTimeIso())) {
-                best = preferSettlementRow(byNamePair, best) ? byNamePair : best;
+            if (byNamePair != null && com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.isCompatibleStartTime(bet.getStartTimeIso(), byNamePair.startTimeIso())) {
+                best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(byNamePair, best) ? byNamePair : best;
             }
         }
         LiveOddsRecommendationDto loose = findLooseRowForBet(bet, lookup);
         if (loose != null) {
-            best = preferSettlementRow(loose, best) ? loose : best;
+            best = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(loose, best) ? loose : best;
         }
         if (bet.isIdentityLocked()) {
             if (best == null) {
@@ -2294,8 +1989,8 @@ public class PaperTradingService {
         if (bet == null || lookup == null) {
             return null;
         }
-        String betA = normalizePersonToken(bet.getPlayer1Name());
-        String betB = normalizePersonToken(bet.getPlayer2Name());
+        String betA = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.normalizePersonToken(bet.getPlayer1Name());
+        String betB = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.normalizePersonToken(bet.getPlayer2Name());
         if (!StringUtils.hasText(betA) || !StringUtils.hasText(betB) || "na".equals(betA) || "na".equals(betB)) {
             return null;
         }
@@ -2306,86 +2001,24 @@ public class PaperTradingService {
             if (row == null) {
                 continue;
             }
-            String rowA = normalizePersonToken(row.player1Name());
-            String rowB = normalizePersonToken(row.player2Name());
-            boolean strictPair = isSamePair(betA, betB, rowA, rowB);
-            boolean loosePair = strictPair || isLoosePairNameMatch(bet, row);
+            String rowA = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.normalizePersonToken(row.player1Name());
+            String rowB = com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.normalizePersonToken(row.player2Name());
+            boolean strictPair = com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.isSamePair(betA, betB, rowA, rowB);
+            boolean loosePair = strictPair || com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.isLoosePairNameMatch(bet, row);
             if (!loosePair) {
                 continue;
             }
-            if (isCompatibleStartTime(bet.getStartTimeIso(), row.startTimeIso())) {
-                compatible = preferSettlementRow(row, compatible) ? row : compatible;
+            if (com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.isCompatibleStartTime(bet.getStartTimeIso(), row.startTimeIso())) {
+                compatible = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(row, compatible) ? row : compatible;
                 continue;
             }
-            fallback = preferSettlementRow(row, fallback) ? row : fallback;
+            fallback = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.preferSettlementRow(row, fallback) ? row : fallback;
         }
         return compatible != null ? compatible : fallback;
     }
 
-    private boolean isLoosePairNameMatch(PaperTradeBet bet, LiveOddsRecommendationDto row) {
-        if (bet == null || row == null) {
-            return false;
-        }
-        return (isSameParticipantLoose(bet.getPlayer1Name(), row.player1Name())
-                && isSameParticipantLoose(bet.getPlayer2Name(), row.player2Name()))
-                || (isSameParticipantLoose(bet.getPlayer1Name(), row.player2Name())
-                && isSameParticipantLoose(bet.getPlayer2Name(), row.player1Name()));
-    }
-
-    private boolean isSameParticipantLoose(String betName, String rowName) {
-        if (!StringUtils.hasText(betName) || !StringUtils.hasText(rowName)) {
-            return false;
-        }
-        if (NameUtils.areNamesSimilar(betName, rowName)) {
-            return true;
-        }
-
-        String betLookup = NameUtils.normalizeForLookup(betName);
-        String rowLookup = NameUtils.normalizeForLookup(rowName);
-        if (!StringUtils.hasText(betLookup) || !StringUtils.hasText(rowLookup)) {
-            return false;
-        }
-        if (betLookup.equals(rowLookup)) {
-            return true;
-        }
-
-        String[] betParts = betLookup.split("\\s+");
-        String[] rowParts = rowLookup.split("\\s+");
-        if (betParts.length == 0 || rowParts.length == 0) {
-            return false;
-        }
-        String betLast = betParts[betParts.length - 1];
-        String rowLast = rowParts[rowParts.length - 1];
-        if (!betLast.equals(rowLast)) {
-            return false;
-        }
-        String betFirst = betParts[0];
-        String rowFirst = rowParts[0];
-        if (!StringUtils.hasText(betFirst) || !StringUtils.hasText(rowFirst)) {
-            return true;
-        }
-        return betFirst.charAt(0) == rowFirst.charAt(0);
-    }
-
-    private boolean isSamePair(String a1, String a2, String b1, String b2) {
-        if (!StringUtils.hasText(a1) || !StringUtils.hasText(a2) || !StringUtils.hasText(b1) || !StringUtils.hasText(b2)) {
-            return false;
-        }
-        return (a1.equals(b1) && a2.equals(b2)) || (a1.equals(b2) && a2.equals(b1));
-    }
-
-    private boolean isCompatibleStartTime(String betStartIso, String rowStartIso) {
-        if (!StringUtils.hasText(betStartIso) || !StringUtils.hasText(rowStartIso)) {
-            return true;
-        }
-        Optional<LocalDateTime> betStart = parseStartDateTime(betStartIso);
-        Optional<LocalDateTime> rowStart = parseStartDateTime(rowStartIso);
-        if (betStart.isPresent() && rowStart.isPresent()) {
-            long diffMinutes = Math.abs(ChronoUnit.MINUTES.between(betStart.get(), rowStart.get()));
-            return diffMinutes <= 720;
-        }
-        return startBucket(betStartIso).equals(startBucket(rowStartIso));
-    }
+    // isLoosePairNameMatch, isSameParticipantLoose, isSamePair, isCompatibleStartTime
+    // moved to com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.
 
     private boolean updateLastObservedFromRow(PaperTradeBet bet,
                                               LiveOddsRecommendationDto row,
@@ -2403,14 +2036,14 @@ public class PaperTradingService {
         double sourceConfidence = observationSourceConfidence(row);
         if (StringUtils.hasText(row.startTimeIso())) {
             String startIso = row.startTimeIso().trim();
-            if (shouldReplaceStartTimeIso(bet.getStartTimeIso(), startIso)) {
+            if (com.ttl.tabletennis.service.papertrade.BetIdentityMatcher.shouldReplaceStartTimeIso(bet.getStartTimeIso(), startIso)) {
                 bet.setStartTimeIso(startIso);
                 changed = true;
             }
         }
         String externalEventId = StringUtils.hasText(row.externalEventId())
                 ? row.externalEventId().trim()
-                : extractExternalEventId(row.source());
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(row.source());
         if (StringUtils.hasText(externalEventId) && !externalEventId.equals(safeText(bet.getExternalEventId(), ""))) {
             bet.setExternalEventId(externalEventId);
             changed = true;
@@ -2478,7 +2111,9 @@ public class PaperTradingService {
             changed = true;
         }
 
-        boolean trackedAfterClose = isTrackedAfterCloseObservation(row);
+        // #119 — pass bet + observedAt so the time-based stale-LIVE_LATE
+        // fallback can fire when the score-feed never emits a terminal flag.
+        boolean trackedAfterClose = isTrackedAfterCloseObservation(row, bet, observedAt);
         if (bet.isTrackedAfterClose() != trackedAfterClose) {
             bet.setTrackedAfterClose(trackedAfterClose);
             changed = true;
@@ -2492,32 +2127,7 @@ public class PaperTradingService {
         return changed;
     }
 
-    private boolean shouldReplaceStartTimeIso(String currentStartIso, String candidateStartIso) {
-        if (!StringUtils.hasText(candidateStartIso)) {
-            return false;
-        }
-        if (!StringUtils.hasText(currentStartIso)) {
-            return true;
-        }
-        String current = currentStartIso.trim();
-        String candidate = candidateStartIso.trim();
-        if (candidate.equals(current)) {
-            return false;
-        }
-
-        Optional<LocalDateTime> currentParsed = parseStartDateTime(current);
-        Optional<LocalDateTime> candidateParsed = parseStartDateTime(candidate);
-        if (currentParsed.isPresent() && candidateParsed.isPresent()) {
-            return candidateParsed.get().isBefore(currentParsed.get());
-        }
-        if (currentParsed.isEmpty() && candidateParsed.isPresent()) {
-            return true;
-        }
-        if (currentParsed.isPresent()) {
-            return false;
-        }
-        return startBucket(candidate).compareTo(startBucket(current)) < 0;
-    }
+    // shouldReplaceStartTimeIso moved to BetIdentityMatcher.
 
     private boolean shouldBypassSettlementWindowForCurrentRow(PaperTradeBet bet,
                                                               LiveOddsRecommendationDto row,
@@ -2561,235 +2171,14 @@ public class PaperTradingService {
         return betStart.isEmpty() || !now.isBefore(betStart.get().minusMinutes(5));
     }
 
-    private Optional<Long> determineWinnerFromScore(String rawScore,
-                                                    Long player1Id,
-                                                    Long player2Id,
-                                                    String phaseRaw,
-                                                    boolean allowLenientInference) {
-        if (!StringUtils.hasText(rawScore) || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        List<ScorePair> parsed = parseScorePairs(rawScore);
-        if (parsed.isEmpty()) {
-            return Optional.empty();
-        }
-
-        int targetSets = clamp(scoreSettlementTargetSets, 3, 7);
-        int minMarginSets = clamp(scoreSettlementMinMarginSets, 1, 3);
-        boolean finishedPhase = isFinishedPhase(phaseRaw);
-        boolean latePhase = isLateLikePhase(phaseRaw);
-        int setPairIndex = findPrimarySetScorePairIndex(parsed, targetSets);
-        if (setPairIndex >= 0) {
-            Optional<Long> strictSetWinner = winnerFromSetScorePair(parsed.get(setPairIndex), targetSets, player1Id, player2Id);
-            if (strictSetWinner.isPresent()) {
-                return strictSetWinner;
-            }
-        }
-
-        if (!allowLenientInference) {
-            return Optional.empty();
-        }
-
-        if (!latePhase && !finishedPhase) {
-            return Optional.empty();
-        }
-
-        if (setPairIndex >= 0) {
-            ScorePair setPair = parsed.get(setPairIndex);
-            boolean tiedInFinalSet = setPair.left() == (targetSets - 1) && setPair.right() == (targetSets - 1);
-            if ((finishedPhase || latePhase) && tiedInFinalSet) {
-                Optional<ScorePair> pointScore = findPointScorePair(parsed, setPairIndex);
-                if (pointScore.isPresent()) {
-                    Optional<Long> inferred = finishedPhase
-                            ? winnerFromFinishedPhaseTiedFinalSetPoints(pointScore.get(), player1Id, player2Id)
-                            : winnerFromTiedFinalSetPoints(pointScore.get(), player1Id, player2Id);
-                    if (inferred.isPresent()) {
-                        return inferred;
-                    }
-                }
-            }
-            return Optional.empty();
-        }
-
-        Optional<ScorePair> pointOnly = findPointScorePair(parsed, -1);
-        if (pointOnly.isEmpty()) {
-            return Optional.empty();
-        }
-        if (!finishedPhase && parsed.size() > 1) {
-            return Optional.empty();
-        }
-        return winnerFromPointScorePair(pointOnly.get(), minMarginSets, player1Id, player2Id);
-    }
-
-    private int findPrimarySetScorePairIndex(List<ScorePair> parsed, int targetSets) {
-        if (parsed == null || parsed.isEmpty()) {
-            return -1;
-        }
-        int maxTotalSets = Math.max(1, (targetSets * 2) - 1);
-        for (int i = 0; i < parsed.size(); i++) {
-            ScorePair pair = parsed.get(i);
-            int top = Math.max(pair.left(), pair.right());
-            int total = pair.left() + pair.right();
-            if (top <= targetSets && total <= maxTotalSets) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private Optional<ScorePair> findPointScorePair(List<ScorePair> parsed, int setPairIndex) {
-        if (parsed == null || parsed.isEmpty()) {
-            return Optional.empty();
-        }
-        for (int i = parsed.size() - 1; i >= 0; i--) {
-            if (i == setPairIndex) {
-                continue;
-            }
-            return Optional.of(parsed.get(i));
-        }
-        return Optional.empty();
-    }
-
-    private Optional<Long> winnerFromSetScorePair(ScorePair score,
-                                                  int targetSets,
-                                                  Long player1Id,
-                                                  Long player2Id) {
-        if (score == null || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        int p1 = score.left();
-        int p2 = score.right();
-        if (p1 == p2) {
-            return Optional.empty();
-        }
-        int top = Math.max(p1, p2);
-        if (top < targetSets) {
-            return Optional.empty();
-        }
-        return Optional.of(p1 > p2 ? player1Id : player2Id);
-    }
-
-    private Optional<Long> winnerFromPointScorePair(ScorePair score,
-                                                    int minMarginSets,
-                                                    Long player1Id,
-                                                    Long player2Id) {
-        if (score == null || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        int p1 = score.left();
-        int p2 = score.right();
-        if (p1 == p2) {
-            return Optional.empty();
-        }
-        int top = Math.max(p1, p2);
-        int margin = Math.abs(p1 - p2);
-        if (top < 11 || margin < Math.max(2, minMarginSets)) {
-            return Optional.empty();
-        }
-        return Optional.of(p1 > p2 ? player1Id : player2Id);
-    }
-
-    private Optional<Long> winnerFromTiedFinalSetPoints(ScorePair score,
-                                                        Long player1Id,
-                                                        Long player2Id) {
-        return winnerFromCompletedGamePoints(score, player1Id, player2Id);
-    }
-
-    private Optional<Long> winnerFromFinishedPhaseTiedFinalSetPoints(ScorePair score,
-                                                                     Long player1Id,
-                                                                     Long player2Id) {
-        if (score == null || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        int p1 = score.left();
-        int p2 = score.right();
-        if (p1 == p2) {
-            return Optional.empty();
-        }
-        int top = Math.max(p1, p2);
-        int margin = Math.abs(p1 - p2);
-        int pointFloor = clamp(nearFinishFallbackPointFloor, 7, 15);
-        int minLead = clamp(nearFinishFallbackMinPointLead, 2, 6);
-        if (top < pointFloor || margin < minLead) {
-            return Optional.empty();
-        }
-        return Optional.of(p1 > p2 ? player1Id : player2Id);
-    }
-
-    private Optional<Long> determineWinnerFromNearFinishFallback(String rawScore,
-                                                                 Long player1Id,
-                                                                 Long player2Id) {
-        if (!nearFinishFallbackEnabled || !StringUtils.hasText(rawScore) || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        List<ScorePair> pairs = parseScorePairs(rawScore);
-        if (pairs.size() < 2) {
-            return Optional.empty();
-        }
-
-        int targetSets = clamp(scoreSettlementTargetSets, 3, 7);
-        int maxTotalSets = Math.max(1, (targetSets * 2) - 1);
-
-        ScorePair setScore = null;
-        for (ScorePair pair : pairs) {
-            int top = Math.max(pair.left(), pair.right());
-            int total = pair.left() + pair.right();
-            if (top <= targetSets && total <= maxTotalSets) {
-                setScore = pair;
-                break;
-            }
-        }
-        if (setScore == null) {
-            return Optional.empty();
-        }
-        int setTop = Math.max(setScore.left(), setScore.right());
-        int setLow = Math.min(setScore.left(), setScore.right());
-        if (setTop != (targetSets - 1) || setLow != (targetSets - 1)) {
-            return Optional.empty();
-        }
-
-        ScorePair last = pairs.get(pairs.size() - 1);
-        return winnerFromCompletedGamePoints(last, player1Id, player2Id);
-    }
-
-    private Optional<Long> winnerFromCompletedGamePoints(ScorePair score,
-                                                         Long player1Id,
-                                                         Long player2Id) {
-        if (score == null || player1Id == null || player2Id == null) {
-            return Optional.empty();
-        }
-        int p1 = score.left();
-        int p2 = score.right();
-        if (p1 == p2) {
-            return Optional.empty();
-        }
-        int top = Math.max(p1, p2);
-        int margin = Math.abs(p1 - p2);
-        if (top < 11 || margin < 2) {
-            return Optional.empty();
-        }
-        return Optional.of(p1 > p2 ? player1Id : player2Id);
-    }
-
-    private List<ScorePair> parseScorePairs(String rawScore) {
-        List<ScorePair> pairs = new ArrayList<>();
-        if (!StringUtils.hasText(rawScore)) {
-            return pairs;
-        }
-        Matcher matcher = SCORE_PAIR_PATTERN.matcher(rawScore);
-        while (matcher.find()) {
-            try {
-                int left = Integer.parseInt(matcher.group(1));
-                int right = Integer.parseInt(matcher.group(2));
-                if (left >= 0 && right >= 0) {
-                    pairs.add(new ScorePair(left, right));
-                }
-            } catch (Exception ignore) {
-                // continue scanning
-            }
-        }
-        return pairs;
-    }
+    // determineWinnerFromScore + determineWinnerFromNearFinishFallback + 7
+    // internal helpers (findPrimarySetScorePairIndex, findPointScorePair,
+    // winnerFromSetScorePair, winnerFromPointScorePair,
+    // winnerFromTiedFinalSetPoints, winnerFromFinishedPhaseTiedFinalSetPoints,
+    // winnerFromCompletedGamePoints) moved to
+    // com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver.
+    // parseScorePairs + ScorePair record moved to
+    // com.ttl.tabletennis.service.papertrade.ScorePair (with a parseAll(rawScore) factory).
 
     private boolean canSettleFromLastObservation(PaperTradeBet bet, LocalDateTime now) {
         if (bet == null || bet.getLastObservedAt() == null || now == null) {
@@ -2823,6 +2212,31 @@ public class PaperTradingService {
         return !now.isAfter(observation.getObservedAt().plusMinutes(graceMinutes));
     }
 
+    /**
+     * #123 — Returns the score-grace window (minutes) for a given match
+     * phase. The score-grace is added to {@code lastScoreBackfillMinutes}
+     * to compute the void timeout for a bet that has a visible last-score
+     * but no further board updates. Phase strings come from the score
+     * feed (LIVE_EARLY / LIVE_MID / LIVE_LATE / PREMATCH / FINISHED /
+     * UPCOMING). Unknown phases fall back to the late-like default to err
+     * on the side of faster void recovery.
+     */
+    private int phaseAwareScoreGraceMinutes(String phase) {
+        if (phase == null) {
+            return clamp(voidTimeoutLateLikeScoreGraceMin, 15, 720);
+        }
+        String upper = phase.trim().toUpperCase(Locale.ROOT);
+        return switch (upper) {
+            case "LIVE_LATE", "LIVE_FINAL", "FINISHED" -> clamp(voidTimeoutLateLikeScoreGraceMin, 15, 720);
+            case "LIVE_MID" -> clamp(voidTimeoutMidScoreGraceMin, 15, 720);
+            case "LIVE_EARLY" -> clamp(voidTimeoutEarlyScoreGraceMin, 15, 720);
+            case "PREMATCH", "UPCOMING" -> clamp(voidTimeoutPrematchScoreGraceMin, 15, 720);
+            // Default: assume late-like (closer to over than to starting).
+            // This is conservative against capital lock-up.
+            default -> clamp(voidTimeoutLateLikeScoreGraceMin, 15, 720);
+        };
+    }
+
     private boolean shouldVoidMissingBoardBet(PaperTradeBet bet, LocalDate targetDate, LocalDateTime now) {
         if (bet == null || now == null) {
             return false;
@@ -2844,9 +2258,12 @@ public class PaperTradingService {
         int timeoutMinutes = clamp(unmatchedRefundMinutes, 15, 1440);
         if (hasScoreContext) {
             int scoreBackfillWindow = clamp(lastScoreBackfillMinutes, 15, 720);
-            int scoreGrace = (isLateLikePhase(bet.getLastObservedPhase()) || isFinishedPhase(bet.getLastObservedPhase()))
-                    ? 240
-                    : 120;
+            // #123 — Phase-aware score-grace replaces the previous flat
+            // 240/120 hardcode. The previous logic kept LIVE_LATE bets stuck
+            // for 240+ min even when the match was almost certainly over (a
+            // game-5 deuce rarely lasts 90 min, let alone 240). Defaults
+            // mirror v3 SettlementPolicy.defaults() phaseAfterDarkMinutes.
+            int scoreGrace = phaseAwareScoreGraceMinutes(bet.getLastObservedPhase());
             timeoutMinutes = Math.max(timeoutMinutes, scoreBackfillWindow + scoreGrace);
         }
         Optional<LocalDateTime> startOpt = parseStartDateTime(bet.getStartTimeIso());
@@ -2968,7 +2385,7 @@ public class PaperTradingService {
         if (bet == null || row == null || !isTargetedCompletedScoreRow(row)) {
             return Optional.empty();
         }
-        Optional<Long> fromCurrent = determineWinnerFromScore(
+        Optional<Long> fromCurrent = scoreWinnerResolver.determineWinnerFromScore(
                 currentScore,
                 bet.getPlayer1Id(),
                 bet.getPlayer2Id(),
@@ -2981,7 +2398,7 @@ public class PaperTradingService {
         String fallbackScore = StringUtils.hasText(scoreBeforeUpdate)
                 ? scoreBeforeUpdate
                 : bet.getLastObservedScore();
-        return determineWinnerFromScore(
+        return scoreWinnerResolver.determineWinnerFromScore(
                 fallbackScore,
                 bet.getPlayer1Id(),
                 bet.getPlayer2Id(),
@@ -2996,9 +2413,7 @@ public class PaperTradingService {
                 && hasExplicitCompletionSignal(row);
     }
 
-    private boolean hasExplicitCompletionSignal(LiveOddsRecommendationDto row) {
-        return row != null && (row.matchCompleted() || row.resulted());
-    }
+    // hasExplicitCompletionSignal moved to ObservationClassifier (import-static above).
 
     private boolean textChanged(String before, String after) {
         String left = StringUtils.hasText(before) ? before.trim() : "";
@@ -3006,717 +2421,100 @@ public class PaperTradingService {
         return !left.equals(right);
     }
 
-    private String normalizeScoreForBet(PaperTradeBet bet,
-                                        String rawScore,
-                                        Long rowPlayer1Id,
-                                        String rowPlayer1Name,
-                                        Long rowPlayer2Id,
-                                        String rowPlayer2Name) {
-        if (bet == null || !StringUtils.hasText(rawScore)) {
-            return rawScore;
-        }
-        ScoreOrientation orientation = resolveScoreOrientation(
-                bet.getPlayer1Id(),
-                bet.getPlayer1Name(),
-                bet.getPlayer2Id(),
-                bet.getPlayer2Name(),
-                rowPlayer1Id,
-                rowPlayer1Name,
-                rowPlayer2Id,
-                rowPlayer2Name
-        );
-        if (orientation == ScoreOrientation.REVERSED) {
-            return reverseScorePairs(rawScore);
-        }
-        return rawScore.trim();
-    }
+    // normalizeScoreForBet / resolveScoreOrientation / reverseScorePairs +
+    // ScoreOrientation enum + SCORE_PAIR_PATTERN moved to
+    // com.ttl.tabletennis.service.papertrade.ScoreNormalizer.
 
-    private ScoreOrientation resolveScoreOrientation(Long betPlayer1Id,
-                                                     String betPlayer1Name,
-                                                     Long betPlayer2Id,
-                                                     String betPlayer2Name,
-                                                     Long rowPlayer1Id,
-                                                     String rowPlayer1Name,
-                                                     Long rowPlayer2Id,
-                                                     String rowPlayer2Name) {
-        String betLeft = playerToken(betPlayer1Id, betPlayer1Name);
-        String betRight = playerToken(betPlayer2Id, betPlayer2Name);
-        String rowLeft = playerToken(rowPlayer1Id, rowPlayer1Name);
-        String rowRight = playerToken(rowPlayer2Id, rowPlayer2Name);
-        if (!StringUtils.hasText(betLeft)
-                || !StringUtils.hasText(betRight)
-                || !StringUtils.hasText(rowLeft)
-                || !StringUtils.hasText(rowRight)) {
-            return ScoreOrientation.UNKNOWN;
-        }
-        if (betLeft.equals(rowLeft) && betRight.equals(rowRight)) {
-            return ScoreOrientation.DIRECT;
-        }
-        if (betLeft.equals(rowRight) && betRight.equals(rowLeft)) {
-            return ScoreOrientation.REVERSED;
-        }
-        return ScoreOrientation.UNKNOWN;
-    }
-
-    private String reverseScorePairs(String rawScore) {
-        if (!StringUtils.hasText(rawScore)) {
-            return rawScore;
-        }
-        Matcher matcher = SCORE_PAIR_PATTERN.matcher(rawScore);
-        StringBuffer swapped = new StringBuffer();
-        boolean found = false;
-        while (matcher.find()) {
-            found = true;
-            String replacement = matcher.group(2) + "-" + matcher.group(1);
-            matcher.appendReplacement(swapped, Matcher.quoteReplacement(replacement));
-        }
-        if (!found) {
-            return rawScore.trim();
-        }
-        matcher.appendTail(swapped);
-        return swapped.toString().trim();
-    }
-
-    private boolean isLateLikePhase(String phaseRaw) {
-        if (!StringUtils.hasText(phaseRaw)) {
-            return false;
-        }
-        String phase = phaseRaw.trim().toUpperCase(Locale.ROOT);
-        return phase.contains("LIVE_LATE")
-                || phase.contains("LIVE_MID")
-                || phase.contains("FINISH")
-                || phase.contains("FINAL")
-                || phase.contains("SETTLED")
-                || phase.contains("COMPLETE")
-                || phase.contains("RESULT")
-                || phase.contains("END");
-    }
+    // isLateLikePhase moved to PaperTradingHelpers (import-static above).
 
     private PaperTradingSessionDto buildSessionDto(PaperTradeSession session, int openLimit, int recentLimit) {
-        int openTake = clamp(openLimit, 5, 100);
-        int recentTake = clamp(recentLimit, 10, 200);
-
-        List<PaperTradeBet> allOpenRows = betRepository.findBySessionIdAndStatusOrderByPlacedAtDesc(
-                session.getId(),
-                PaperTradeBet.STATUS_OPEN
-        );
-        List<PaperTradeBet> openRows = allOpenRows;
-        if (openRows.size() > openTake) {
-            openRows = openRows.subList(0, openTake);
-        }
-
-        List<PaperTradeBet> recentRows = betRepository.findBySessionIdOrderByPlacedAtDesc(
-                session.getId(),
-                PageRequest.of(0, recentTake)
-        );
-
-        List<PaperTradeBet> settledRows = betRepository.findBySessionIdAndStatusInOrderBySettledAtAsc(
-                session.getId(),
-                List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST, PaperTradeBet.STATUS_PUSHED, PaperTradeBet.STATUS_VOIDED)
-        );
-        PaperTradingSessionDto.DecisionTelemetryDto decisionTelemetry = buildDecisionTelemetry(session.getId());
-
-        List<PaperTradeBetDto> openDtos = openRows.stream().map(this::toDto).toList();
-        List<PaperTradeBetDto> recentDtos = recentRows.stream().map(this::toDto).toList();
-        List<PaperTradingSessionDto.TriggerInsightDto> triggerInsights = buildTopTriggers(settledRows);
-        PaperTradingSessionDto.ExposureMetricsDto exposureMetrics = buildExposureMetrics(session, allOpenRows);
-
-        long openCount = betRepository.countBySessionIdAndStatus(session.getId(), PaperTradeBet.STATUS_OPEN);
-        long voidedCount = betRepository.countBySessionIdAndStatus(session.getId(), PaperTradeBet.STATUS_VOIDED);
-        double roiPct = session.getTotalStaked() <= EPS
-                ? 0.0
-                : (session.getRealizedPnl() / session.getTotalStaked()) * 100.0;
-        int settledDecisions = session.getWins() + session.getLosses();
-        double settledWinRate = settledDecisions == 0
-                ? 0.0
-                : session.getWins() / (double) settledDecisions;
-
-        return new PaperTradingSessionDto(
-                session.getId(),
-                session.getLabel(),
-                session.getStatus(),
-                round2(session.getStartingBankroll()),
-                round2(session.getCurrentBankroll()),
-                round2(session.getPeakBankroll()),
-                round2(session.getRealizedPnl()),
-                round2(roiPct),
-                round2(session.getTotalStaked()),
-                round2(session.getTotalReturned()),
-                session.getTotalBets(),
-                (int) openCount,
-                session.getWins(),
-                session.getLosses(),
-                session.getPushes(),
-                (int) voidedCount,
-                session.getSimulationRowsScanned(),
-                session.getSimulationBetsPlaced(),
-                session.getSimulationBetsSettled(),
-                session.getSimulationBetsVoided(),
-                settledWinRate,
-                session.getCreatedAt(),
-                session.getUpdatedAt(),
-                session.getLastSyncAt(),
-                new PaperTradingSessionDto.AdaptiveMetricsDto(
-                        session.getAdaptiveSampleSize(),
-                        round4(session.getAdaptiveEdgeShift() * 100.0),
-                        round4(session.getAdaptiveSelectionScoreShift()),
-                        round4(session.getAdaptiveStakeMultiplier()),
-                        round4(session.getAdaptiveCalibrationError() * 100.0),
-                        round4(session.getAdaptiveRoiSignal() * 100.0),
-                        session.getAdaptiveUpdatedAt()
-                ),
-                decisionTelemetry,
-                exposureMetrics,
-                openDtos,
-                recentDtos,
-                triggerInsights,
-                buildEquityCurve(session, settledRows)
+        return sessionSnapshotService.buildSessionDto(
+                session,
+                openLimit,
+                recentLimit,
+                exposureCaps(),
+                bet -> deriveTrackingState(bet, LocalDateTime.now())
         );
     }
 
     private PaperTradingSessionDto.DecisionTelemetryDto buildDecisionTelemetry(Long sessionId) {
-        if (sessionId == null) {
-            return new PaperTradingSessionDto.DecisionTelemetryDto(0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
-        }
-        List<PaperTradeDecisionSample> rows = decisionSampleRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
-        if (rows == null || rows.isEmpty()) {
-            return new PaperTradingSessionDto.DecisionTelemetryDto(0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
-        }
-
-        long consideredCount = rows.size();
-        long placedCount = rows.stream()
-                .filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        long skippedCount = rows.stream()
-                .filter(sample -> "SKIPPED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        long fallbackPlacedCount = rows.stream()
-                .filter(PaperTradeDecisionSample::isFallbackPick)
-                .filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        double placementRatePct = consideredCount == 0 ? 0.0 : round4((placedCount * 100.0) / consideredCount);
-        double avgSelectionScore = averageNonNull(rows, PaperTradeDecisionSample::getSelectionScore);
-        double avgSignalQualityPct = averageNonNull(rows, PaperTradeDecisionSample::getSignalQuality) * 100.0;
-        double avgPlacedEdgePct = averageNonNull(
-                rows.stream().filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus())).toList(),
-                PaperTradeDecisionSample::getSuggestedEdge
-        ) * 100.0;
-        double avgSkippedEdgePct = averageNonNull(
-                rows.stream().filter(sample -> "SKIPPED".equalsIgnoreCase(sample.getDecisionStatus())).toList(),
-                PaperTradeDecisionSample::getSuggestedEdge
-        ) * 100.0;
-
-        Map<String, Integer> skipReasons = new HashMap<>();
-        for (PaperTradeDecisionSample row : rows) {
-            if (row == null || !"SKIPPED".equalsIgnoreCase(row.getDecisionStatus())) {
-                continue;
-            }
-            String reason = safeText(row.getDecisionReason(), "UNKNOWN");
-            skipReasons.merge(reason, 1, Integer::sum);
-        }
-        List<PaperTradingSessionDto.DecisionReasonDto> topSkipReasons = skipReasons.entrySet().stream()
-                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
-                .limit(5)
-                .map(entry -> new PaperTradingSessionDto.DecisionReasonDto(entry.getKey(), entry.getValue()))
-                .toList();
-
-        return new PaperTradingSessionDto.DecisionTelemetryDto(
-                consideredCount,
-                placedCount,
-                skippedCount,
-                fallbackPlacedCount,
-                placementRatePct,
-                round4(avgSelectionScore),
-                round4(avgSignalQualityPct),
-                round4(avgPlacedEdgePct),
-                round4(avgSkippedEdgePct),
-                topSkipReasons
-        );
+        return decisionTelemetryBuilder.buildDecisionTelemetry(sessionId);
     }
 
     private PaperTradingSessionDto.ExposureMetricsDto buildExposureMetrics(PaperTradeSession session,
                                                                            List<PaperTradeBet> openRows) {
-        List<PaperTradeBet> open = openRows == null ? List.of() : openRows;
-        ExposureProfile exposureProfile = ExposureProfile.fromOpenBets(open);
-        double capitalBase = Math.max(
-                valueOrZero(session == null ? null : session.getCurrentBankroll()),
-                round2(valueOrZero(session == null ? null : session.getCurrentBankroll()) + exposureProfile.openStake())
-        );
-        capitalBase = Math.max(100.0, capitalBase);
-
-        double openExposureCap = round2(capitalBase * clamp(maxOpenExposurePct, 0.10, 0.95));
-        double openExposure = round2(exposureProfile.openStake());
-        double openExposureUsagePct = openExposureCap <= EPS ? 0.0 : clamp(openExposure / openExposureCap, 0.0, 2.0);
-        double openExposureRemaining = round2(Math.max(0.0, openExposureCap - openExposure));
-        int maxOpenBets = clamp(maxConcurrentOpenBets, 1, 60);
-        double concurrentUsagePct = maxOpenBets <= 0 ? 0.0 : clamp(exposureProfile.openBets() / (double) maxOpenBets, 0.0, 2.0);
-
-        double playerCap = round2(capitalBase * clamp(maxExposurePerPlayerPct, 0.03, 0.60));
-        double triggerCap = round2(capitalBase * clamp(maxExposurePerTriggerPct, 0.05, 0.75));
-
-        Map<Long, Double> playerStake = new HashMap<>();
-        Map<Long, String> playerNames = new HashMap<>();
-        Map<String, Double> triggerStake = new HashMap<>();
-
-        for (PaperTradeBet bet : open) {
-            if (bet == null || !PaperTradeBet.STATUS_OPEN.equalsIgnoreCase(bet.getStatus())) {
-                continue;
-            }
-            double stake = Math.max(0.0, bet.getStake());
-            if (bet.getSidePlayerId() != null) {
-                playerStake.merge(bet.getSidePlayerId(), stake, Double::sum);
-                if (StringUtils.hasText(bet.getSideName())) {
-                    playerNames.putIfAbsent(bet.getSidePlayerId(), bet.getSideName().trim());
-                }
-            }
-            String trigger = normalizeTriggerStatic(bet.getTopTrigger());
-            if (StringUtils.hasText(trigger)) {
-                triggerStake.merge(trigger, stake, Double::sum);
-            }
-        }
-
-        long mostExposedPlayerId = playerStake.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse(-1L);
-        double mostExposedPlayerStake = round2(mostExposedPlayerId < 0 ? 0.0 : playerStake.getOrDefault(mostExposedPlayerId, 0.0));
-        String mostExposedPlayerName = mostExposedPlayerId < 0
-                ? null
-                : playerNames.getOrDefault(mostExposedPlayerId, "Player " + mostExposedPlayerId);
-        double mostExposedPlayerUsagePct = playerCap <= EPS ? 0.0 : clamp(mostExposedPlayerStake / playerCap, 0.0, 2.0);
-        int playerNearCapCount = (int) playerStake.values().stream()
-                .mapToDouble(Double::doubleValue)
-                .filter(stake -> playerCap > EPS && (stake / playerCap) >= 0.80)
-                .count();
-
-        String mostExposedTrigger = triggerStake.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse(null);
-        double mostExposedTriggerStake = round2(StringUtils.hasText(mostExposedTrigger)
-                ? triggerStake.getOrDefault(mostExposedTrigger, 0.0)
-                : 0.0);
-        double mostExposedTriggerUsagePct = triggerCap <= EPS ? 0.0 : clamp(mostExposedTriggerStake / triggerCap, 0.0, 2.0);
-        int triggerNearCapCount = (int) triggerStake.values().stream()
-                .mapToDouble(Double::doubleValue)
-                .filter(stake -> triggerCap > EPS && (stake / triggerCap) >= 0.80)
-                .count();
-
-        return new PaperTradingSessionDto.ExposureMetricsDto(
-                openExposure,
-                openExposureCap,
-                round4(openExposureUsagePct),
-                openExposureRemaining,
-                maxOpenBets,
-                round4(concurrentUsagePct),
-                mostExposedPlayerName,
-                mostExposedPlayerStake,
-                playerCap,
-                round4(mostExposedPlayerUsagePct),
-                playerNearCapCount,
-                mostExposedTrigger,
-                mostExposedTriggerStake,
-                triggerCap,
-                round4(mostExposedTriggerUsagePct),
-                triggerNearCapCount
-        );
+        return com.ttl.tabletennis.service.papertrade.ExposureMetricsBuilder.buildExposureMetrics(session, openRows, exposureCaps());
     }
+
+    /** Bundle the four {@code @Value}-injected exposure caps into the record
+     *  shared by {@link com.ttl.tabletennis.service.papertrade.ExposureMetricsBuilder}
+     *  and {@link com.ttl.tabletennis.service.papertrade.SessionSnapshotService}. */
+    private com.ttl.tabletennis.service.papertrade.ExposureMetricsBuilder.ExposureCaps exposureCaps() {
+        return new com.ttl.tabletennis.service.papertrade.ExposureMetricsBuilder.ExposureCaps(
+                maxConcurrentOpenBets,
+                maxOpenExposurePct,
+                maxExposurePerPlayerPct,
+                maxExposurePerTriggerPct);
+    }
+
+    private PaperTradingSessionDto.ClvMetricsDto buildClvMetrics(List<PaperTradeBet> recentRows) {
+        return clvMetricsBuilder.buildClvMetrics(recentRows);
+    }
+    // snapshotSide / firstNonBlank / normalizeComparableName moved to
+    // com.ttl.tabletennis.service.papertrade.ClvMetricsBuilder as part of the §4
+    // decomposition (paper-trading-service-decomposition.md). All three were
+    // only used by buildClvMetrics so they moved with their owner.
 
     private AdaptiveProfile buildAdaptiveProfile(PaperTradeSession session) {
         if (!adaptiveEnabled || session == null || session.getId() == null) {
             return AdaptiveProfile.neutral();
         }
-
         int historyTake = clamp(adaptiveHistoryWindow, 20, 500);
         List<AdaptiveDecisionSample> recentDecisions = loadAdaptiveDecisionSamples(historyTake);
-        int decisions = recentDecisions.size();
-        int minDecisions = clamp(adaptiveMinSettledDecisions, 4, 80);
-        if (decisions < minDecisions) {
-            return new AdaptiveProfile(
-                    decisions,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    clamp(minEdgeForBet, 0.0, 0.20),
-                    Map.of()
-            );
-        }
-
-        int triggerMinDecisions = clamp(adaptiveTriggerMinDecisions, 3, 60);
-        double weightedWins = 0.0;
-        double modelProbSum = 0.0;
-        double edgeSum = 0.0;
-        double stakeSum = 0.0;
-        double pnlSum = 0.0;
-        double weightSum = 0.0;
-        double halfLifeDays = Math.max(2.0, adaptiveLearningHalfLifeDays);
-        LocalDateTime now = LocalDateTime.now();
-        Map<String, TriggerAggregate> triggerAggregates = new HashMap<>();
-        for (AdaptiveDecisionSample sample : recentDecisions) {
-            double w = adaptiveRecencyWeight(sample.settledAt(), now, halfLifeDays);
-            if (w <= 0.0) {
-                continue;
-            }
-            weightSum += w;
-            if (PaperTradeBet.STATUS_WON.equals(sample.status())) {
-                weightedWins += w;
-            }
-            modelProbSum += clamp(sample.modelProbability(), 0.01, 0.99) * w;
-            edgeSum += clamp(sample.edge(), -0.25, 0.35) * w;
-            stakeSum += Math.max(0.0, sample.stake()) * w;
-            pnlSum += sample.profitLoss() * w;
-
-            String triggerKey = normalizeTrigger(sample.topTrigger());
-            TriggerAggregate aggregate = triggerAggregates.getOrDefault(triggerKey, TriggerAggregate.empty());
-            triggerAggregates.put(triggerKey, aggregate.add(sample, w));
-        }
-
-        if (weightSum <= EPS) {
-            return AdaptiveProfile.neutral();
-        }
-
-        double observedWinRate = weightedWins / weightSum;
-        double avgModelProbability = modelProbSum / weightSum;
-        double calibrationError = avgModelProbability - observedWinRate;
-        double roiSignal = stakeSum <= EPS ? 0.0 : pnlSum / stakeSum;
-        double avgSettledEdge = edgeSum / weightSum;
-
-        // Use effective weighted sample support instead of history window position so
-        // adaptation responds to statistical significance, not just queue length.
-        double reliabilitySupportTarget = Math.max(4.0, minDecisions * 2.5);
-        double reliability = clamp(weightSum / (weightSum + reliabilitySupportTarget), 0.0, 1.0);
-        double maxEdgeShift = clamp(adaptiveMaxEdgeShift, 0.002, 0.05);
-        double maxScoreShift = clamp(adaptiveMaxSelectionScoreShift, 0.2, 3.0);
-        double maxStakeDelta = clamp(adaptiveMaxStakeMultiplierDelta, 0.02, 0.4);
-
-        double edgeShiftRaw = (calibrationError * 0.06) + ((-roiSignal) * 0.04);
-        double edgeShift = clamp(edgeShiftRaw * reliability, -(maxEdgeShift * 0.5), maxEdgeShift);
-        double modelGapShift = clamp(edgeShift * 0.9, -(maxEdgeShift * 0.5), maxEdgeShift);
-        double selectionScoreShift = clamp(edgeShift * 35.0, -(maxScoreShift * 0.5), maxScoreShift);
-        double probabilityShiftRaw = ((-calibrationError) * 0.35) + (roiSignal * 0.08);
-        double modelProbabilityShift = clamp(probabilityShiftRaw * reliability, -0.035, 0.035);
-
-        double normalizedShift = edgeShift / maxEdgeShift;
-        double stakeMultiplier = 1.0 - (normalizedShift * (maxStakeDelta * 0.65));
-        stakeMultiplier = clamp(stakeMultiplier, 1.0 - maxStakeDelta, 1.0 + (maxStakeDelta * 0.4));
-
-        double confidenceWidthTightening = clamp(Math.max(0.0, edgeShift) * 1.8, 0.0, 0.10);
-        double selectionPenalty = clamp(Math.max(0.0, edgeShift) * 24.0, 0.0, 1.2);
-
-        Map<String, TriggerAdaptiveSignal> triggerSignals = new HashMap<>();
-        for (Map.Entry<String, TriggerAggregate> entry : triggerAggregates.entrySet()) {
-            TriggerAggregate aggregate = entry.getValue();
-            if (aggregate.decisions() < triggerMinDecisions || aggregate.weightSum() <= EPS || aggregate.stakeSum() <= EPS) {
-                continue;
-            }
-            double triggerSupportTarget = Math.max(3.0, triggerMinDecisions * 3.0);
-            double triggerReliability = clamp(
-                    aggregate.weightSum() / (aggregate.weightSum() + triggerSupportTarget),
-                    0.0,
-                    1.0
-            ) * reliability;
-            double triggerWinRate = aggregate.winsWeight() / aggregate.weightSum();
-            double triggerModelProb = aggregate.modelProbabilitySum() / aggregate.weightSum();
-            double triggerCalibrationError = triggerModelProb - triggerWinRate;
-            double triggerRoi = aggregate.pnlSum() / aggregate.stakeSum();
-            double triggerProbabilityShift = clamp(
-                    ((-triggerCalibrationError) * 0.45) + (triggerRoi * 0.12),
-                    -0.025,
-                    0.025
-            ) * triggerReliability;
-            double triggerModelGapShift = clamp(
-                    (triggerCalibrationError * 0.28) + ((-triggerRoi) * 0.10),
-                    -0.010,
-                    0.015
-            ) * triggerReliability;
-            double triggerSelectionPenalty = clamp(
-                    (triggerCalibrationError * 8.0) + ((-triggerRoi) * 4.0),
-                    -0.6,
-                    1.2
-            ) * triggerReliability;
-            double triggerEdgeShift = clamp(
-                    (triggerCalibrationError * 0.22) + ((-triggerRoi) * 0.10),
-                    -0.008,
-                    0.012
-            ) * triggerReliability;
-
-            triggerSignals.put(entry.getKey(), new TriggerAdaptiveSignal(
-                    aggregate.decisions(),
-                    round4(triggerProbabilityShift),
-                    round4(triggerModelGapShift),
-                    round4(triggerSelectionPenalty),
-                    round4(triggerEdgeShift)
-            ));
-        }
-
-        return new AdaptiveProfile(
-                decisions,
-                round4(reliability),
-                round4(edgeShift),
-                round4(modelGapShift),
-                round4(selectionScoreShift),
-                round4(modelProbabilityShift),
-                round4(stakeMultiplier),
-                round4(confidenceWidthTightening),
-                round4(selectionPenalty),
-                round4(calibrationError),
-                round4(roiSignal),
-                round4(avgSettledEdge),
-                triggerSignals
+        return com.ttl.tabletennis.service.papertrade.AdaptiveProfileBuilder.buildAdaptiveProfile(
+                recentDecisions,
+                adaptiveConfig(),
+                LocalDateTime.now()
         );
     }
 
+    /** Snapshot of the {@code @Value}-injected adaptive properties — bundled at the
+     *  delegate call site so the pure-function {@link com.ttl.tabletennis.service.papertrade.AdaptiveProfileBuilder}
+     *  doesn't need to know about Spring config. */
+    private com.ttl.tabletennis.service.papertrade.AdaptiveProfileBuilder.AdaptiveConfig adaptiveConfig() {
+        return new com.ttl.tabletennis.service.papertrade.AdaptiveProfileBuilder.AdaptiveConfig(
+                adaptiveMinSettledDecisions,
+                adaptiveTriggerMinDecisions,
+                adaptiveLearningHalfLifeDays,
+                adaptiveMaxEdgeShift,
+                adaptiveMaxSelectionScoreShift,
+                adaptiveMaxStakeMultiplierDelta,
+                minEdgeForBet
+        );
+    }
+
+    /** Thin delegate to {@link com.ttl.tabletennis.service.papertrade.TriggerInsightsBuilder}
+     *  — moved during the §4 PaperTradingService decomposition (2026-05-19).
+     *  Kept here so the buildSessionDto call site doesn't have to know about
+     *  the helper class. */
     private List<PaperTradingSessionDto.TriggerInsightDto> buildTopTriggers(List<PaperTradeBet> settledRows) {
-        record TriggerAggregate(int count,
-                                int wins,
-                                int losses,
-                                double pnl,
-                                double edgeSum,
-                                double modelProbSum,
-                                double impliedProbSum,
-                                double confidenceWidthSum,
-                                int confidenceCount,
-                                double stakeSum) {
-            TriggerAggregate add(PaperTradeBet bet) {
-                int addWins = PaperTradeBet.STATUS_WON.equals(bet.getStatus()) ? 1 : 0;
-                int addLosses = PaperTradeBet.STATUS_LOST.equals(bet.getStatus()) ? 1 : 0;
-                double addPnl = bet.getProfitLoss() == null ? 0.0 : bet.getProfitLoss();
-                double width = 0.0;
-                int widthCount = 0;
-                if (bet.getConfidenceLow() != null && bet.getConfidenceHigh() != null) {
-                    width = Math.max(0.0, bet.getConfidenceHigh() - bet.getConfidenceLow());
-                    widthCount = 1;
-                }
-                return new TriggerAggregate(
-                        count + 1,
-                        wins + addWins,
-                        losses + addLosses,
-                        pnl + addPnl,
-                        edgeSum + bet.getEdge(),
-                        modelProbSum + bet.getModelProbability(),
-                        impliedProbSum + bet.getImpliedProbability(),
-                        confidenceWidthSum + width,
-                        confidenceCount + widthCount,
-                        stakeSum + bet.getStake()
-                );
-            }
-        }
-
-        Map<String, TriggerAggregate> aggregateByTrigger = new LinkedHashMap<>();
-        for (PaperTradeBet bet : settledRows) {
-            String trigger = StringUtils.hasText(bet.getTopTrigger()) ? bet.getTopTrigger().trim() : "Unknown Trigger";
-            TriggerAggregate aggregate = aggregateByTrigger.get(trigger);
-            if (aggregate == null) {
-                aggregate = new TriggerAggregate(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0);
-            }
-            aggregateByTrigger.put(trigger, aggregate.add(bet));
-        }
-
-        List<PaperTradingSessionDto.TriggerInsightDto> out = new ArrayList<>();
-        for (Map.Entry<String, TriggerAggregate> entry : aggregateByTrigger.entrySet()) {
-            TriggerAggregate agg = entry.getValue();
-            int decisions = agg.wins + agg.losses;
-            double winRate = decisions == 0 ? 0.0 : agg.wins / (double) decisions;
-            double avgEdgePct = agg.count == 0 ? 0.0 : (agg.edgeSum / agg.count) * 100.0;
-            double avgModelProb = agg.count == 0 ? 0.0 : (agg.modelProbSum / agg.count);
-            double avgImpliedProb = agg.count == 0 ? 0.0 : (agg.impliedProbSum / agg.count);
-            double avgConfidenceWidthPct = agg.confidenceCount == 0 ? 0.0 : (agg.confidenceWidthSum / agg.confidenceCount) * 100.0;
-            double calibrationDeltaPct = decisions == 0
-                    ? 0.0
-                    : ((agg.wins / (double) decisions) - avgModelProb) * 100.0;
-            double roiPct = agg.stakeSum <= EPS ? 0.0 : (agg.pnl / agg.stakeSum) * 100.0;
-            out.add(new PaperTradingSessionDto.TriggerInsightDto(
-                    entry.getKey(),
-                    agg.count,
-                    agg.wins,
-                    agg.losses,
-                    winRate,
-                    round2(agg.pnl),
-                    round4(avgEdgePct),
-                    round4(avgModelProb),
-                    round4(avgImpliedProb),
-                    round4(avgConfidenceWidthPct),
-                    round4(calibrationDeltaPct),
-                    round4(roiPct)
-            ));
-        }
-        out.sort(Comparator
-                .comparingInt(PaperTradingSessionDto.TriggerInsightDto::count).reversed()
-                .thenComparing((a, b) -> Double.compare(Math.abs(b.pnl()), Math.abs(a.pnl()))));
-        if (out.size() > 8) {
-            return out.subList(0, 8);
-        }
-        return out;
+        return com.ttl.tabletennis.service.papertrade.TriggerInsightsBuilder.buildTopTriggers(settledRows);
     }
 
-    private List<PaperTradingSessionDto.TriggerInsightDto> buildTopTriggersFromLearning(List<PaperTradeLearningSample> samples) {
-        if (samples == null || samples.isEmpty()) {
-            return List.of();
-        }
-        record TriggerAggregate(int count,
-                                int wins,
-                                int losses,
-                                double pnl,
-                                double edgeSum,
-                                double modelProbSum,
-                                double impliedProbSum,
-                                double confidenceWidthSum,
-                                int confidenceCount,
-                                double stakeSum) {
-            TriggerAggregate add(PaperTradeLearningSample sample) {
-                int addWins = PaperTradeBet.STATUS_WON.equals(sample.getStatus()) ? 1 : 0;
-                int addLosses = PaperTradeBet.STATUS_LOST.equals(sample.getStatus()) ? 1 : 0;
-                return new TriggerAggregate(
-                        count + 1,
-                        wins + addWins,
-                        losses + addLosses,
-                        pnl + sample.getProfitLoss(),
-                        edgeSum + sample.getEdge(),
-                        modelProbSum + sample.getModelProbability(),
-                        impliedProbSum + sample.getImpliedProbability(),
-                        confidenceWidthSum + Math.max(0.0, sample.getConfidenceWidth()),
-                        confidenceCount + 1,
-                        stakeSum + sample.getStake()
-                );
-            }
-        }
-
-        Map<String, TriggerAggregate> aggregateByTrigger = new LinkedHashMap<>();
-        for (PaperTradeLearningSample sample : samples) {
-            String trigger = StringUtils.hasText(sample.getTopTrigger()) ? sample.getTopTrigger().trim() : "Unknown Trigger";
-            TriggerAggregate aggregate = aggregateByTrigger.get(trigger);
-            if (aggregate == null) {
-                aggregate = new TriggerAggregate(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0);
-            }
-            aggregateByTrigger.put(trigger, aggregate.add(sample));
-        }
-
-        List<PaperTradingSessionDto.TriggerInsightDto> out = new ArrayList<>();
-        for (Map.Entry<String, TriggerAggregate> entry : aggregateByTrigger.entrySet()) {
-            TriggerAggregate agg = entry.getValue();
-            int decisions = agg.wins + agg.losses;
-            double winRate = decisions == 0 ? 0.0 : agg.wins / (double) decisions;
-            double avgEdgePct = agg.count == 0 ? 0.0 : (agg.edgeSum / agg.count) * 100.0;
-            double avgModelProb = agg.count == 0 ? 0.0 : (agg.modelProbSum / agg.count);
-            double avgImpliedProb = agg.count == 0 ? 0.0 : (agg.impliedProbSum / agg.count);
-            double avgConfidenceWidthPct = agg.confidenceCount == 0 ? 0.0 : (agg.confidenceWidthSum / agg.confidenceCount) * 100.0;
-            double calibrationDeltaPct = decisions == 0
-                    ? 0.0
-                    : ((agg.wins / (double) decisions) - avgModelProb) * 100.0;
-            double roiPct = agg.stakeSum <= EPS ? 0.0 : (agg.pnl / agg.stakeSum) * 100.0;
-            out.add(new PaperTradingSessionDto.TriggerInsightDto(
-                    entry.getKey(),
-                    agg.count,
-                    agg.wins,
-                    agg.losses,
-                    winRate,
-                    round2(agg.pnl),
-                    round4(avgEdgePct),
-                    round4(avgModelProb),
-                    round4(avgImpliedProb),
-                    round4(avgConfidenceWidthPct),
-                    round4(calibrationDeltaPct),
-                    round4(roiPct)
-            ));
-        }
-        out.sort(Comparator
-                .comparingInt(PaperTradingSessionDto.TriggerInsightDto::count).reversed()
-                .thenComparing((a, b) -> Double.compare(Math.abs(b.pnl()), Math.abs(a.pnl()))));
-        if (out.size() > 8) {
-            return out.subList(0, 8);
-        }
-        return out;
-    }
+    // buildTopTriggersFromLearning was removed as part of the §4 cleanup pass
+    // (2026-05-19) — 78 LOC of trigger aggregation over learning samples that
+    // had no call sites. The live trigger path is buildTopTriggers, which
+    // computes the same shape from settled PaperTradeBet rows.
 
     private List<PaperTradingSessionDto.EquityPointDto> buildEquityCurve(PaperTradeSession session,
                                                                           List<PaperTradeBet> settledRows) {
-        List<PaperTradingSessionDto.EquityPointDto> curve = new ArrayList<>();
-        LocalDateTime startAt = session.getCreatedAt() == null ? LocalDateTime.now() : session.getCreatedAt();
-        double cumulative = 0.0;
-        curve.add(new PaperTradingSessionDto.EquityPointDto(startAt, session.getStartingBankroll(), cumulative));
-        for (PaperTradeBet bet : settledRows) {
-            if (bet.getProfitLoss() == null) {
-                continue;
-            }
-            cumulative = round2(cumulative + bet.getProfitLoss());
-            LocalDateTime at = bet.getSettledAt() == null ? bet.getPlacedAt() : bet.getSettledAt();
-            curve.add(new PaperTradingSessionDto.EquityPointDto(
-                    at,
-                    round2(session.getStartingBankroll() + cumulative),
-                    cumulative
-            ));
-        }
-        if (curve.size() > 250) {
-            return curve.subList(curve.size() - 250, curve.size());
-        }
-        return curve;
+        return com.ttl.tabletennis.service.papertrade.EquityCurveBuilder.buildEquityCurve(session, settledRows);
     }
 
     private PaperTradeBetDto toDto(PaperTradeBet bet) {
-        String trackingState = deriveTrackingState(bet, LocalDateTime.now());
-        return new PaperTradeBetDto(
-                bet.getId(),
-                bet.getStatus(),
-                bet.getSource(),
-                bet.getStrategy(),
-                bet.getModelVersion(),
-                bet.getEventName(),
-                bet.getCompetitionName(),
-                bet.isLiveAtPlacement(),
-                bet.getStartTimeIso(),
-                bet.getExternalEventId(),
-                bet.isIdentityLocked(),
-                bet.getIdentityLockedAt(),
-                bet.getLockedStartTimeIso(),
-                bet.getLockedExternalEventId(),
-                bet.getLockedSourceFeedEventId(),
-                bet.getIdentityDriftCount(),
-                bet.getLastIdentityDriftAt(),
-                bet.getPlayer1Name(),
-                bet.getPlayer2Name(),
-                bet.getSideName(),
-                bet.getAmericanOdds(),
-                bet.getDecimalOdds(),
-                bet.getStake(),
-                bet.getPotentialPayout(),
-                bet.getProfitLoss(),
-                bet.getModelProbability(),
-                bet.getImpliedProbability(),
-                bet.getEdge(),
-                bet.getConfidenceLow(),
-                bet.getConfidenceHigh(),
-                bet.getTopTrigger(),
-                bet.getTopTriggerContribution(),
-                bet.getGrade(),
-                bet.getRationale(),
-                bet.getLastObservedScore(),
-                bet.getLastObservedPhase(),
-                bet.getLastScoreSource(),
-                bet.getLastScoreConfidence(),
-                bet.isLastObservationDisplayed(),
-                bet.isLastObservationResulted(),
-                bet.isLastMatchCompleted(),
-                bet.getLastSourceFeedCode(),
-                bet.getLastSourceFeedEventId(),
-                bet.getLastScoreDetail(),
-                bet.isTrackedAfterClose(),
-                trackingState,
-                bet.getSettlementReason(),
-                bet.getSettlementSource(),
-                bet.getLastObservedAt(),
-                bet.getPlacedAt(),
-                bet.getSettledAt(),
-                bet.getEventKey(),
-                bet.getDedupeKey(),
-                bet.getResultMatchId(),
-                bet.getWinnerPlayerId()
+        return com.ttl.tabletennis.service.papertrade.BetDtoMapper.toDto(
+                bet,
+                deriveTrackingState(bet, LocalDateTime.now())
         );
     }
 
@@ -3759,37 +2557,8 @@ public class PaperTradingService {
         return !normalized.isBlank() && !"UPCOMING".equals(normalized);
     }
 
-    private TrackedMatchObservationDto toObservationDto(TrackedMatchObservation observation) {
-        return new TrackedMatchObservationDto(
-                observation.getId(),
-                observation.getSessionId(),
-                observation.getBetId(),
-                observation.getEventKey(),
-                observation.getDedupeKey(),
-                observation.getExternalEventId(),
-                observation.getSource(),
-                observation.getSourceKind(),
-                round4(observation.getSourceConfidence()),
-                observation.isDisplayed(),
-                observation.isResulted(),
-                observation.isMatchCompleted(),
-                observation.getSourceFeedCode(),
-                observation.getSourceFeedEventId(),
-                observation.isLive(),
-                observation.isTrackedAfterClose(),
-                observation.getEventName(),
-                observation.getCompetitionName(),
-                observation.getStartTimeIso(),
-                observation.getPlayer1Id(),
-                observation.getPlayer1Name(),
-                observation.getPlayer2Id(),
-                observation.getPlayer2Name(),
-                observation.getLiveScore(),
-                observation.getMatchPhase(),
-                observation.getScoreDetail(),
-                observation.getObservedAt()
-        );
-    }
+    // toObservationDto moved to MatchTimelineQueryService as part of the
+    // §4 PaperTradingService decomposition (2026-05-19).
 
     private Match selectBestSettlementCandidate(Long sessionId,
                                                 PaperTradeBet bet,
@@ -4281,7 +3050,7 @@ public class PaperTradingService {
         if (bet == null || bet.getPlayer1Id() == null || bet.getPlayer2Id() == null) {
             return Optional.empty();
         }
-        Optional<Long> settledWinner = determineWinnerFromScore(
+        Optional<Long> settledWinner = scoreWinnerResolver.determineWinnerFromScore(
                 bet.getLastObservedScore(),
                 bet.getPlayer1Id(),
                 bet.getPlayer2Id(),
@@ -4295,15 +3064,15 @@ public class PaperTradingService {
         if (!StringUtils.hasText(bet.getLastObservedScore())) {
             return Optional.empty();
         }
-        List<ScorePair> parsed = parseScorePairs(bet.getLastObservedScore());
+        List<ScorePair> parsed = com.ttl.tabletennis.service.papertrade.ScorePair.parseAll(bet.getLastObservedScore());
         if (parsed.isEmpty()) {
             return Optional.empty();
         }
 
         int targetSets = clamp(scoreSettlementTargetSets, 3, 7);
-        int setPairIndex = findPrimarySetScorePairIndex(parsed, targetSets);
+        int setPairIndex = com.ttl.tabletennis.service.papertrade.ScoreWinnerResolver.findPrimarySetScorePairIndex(parsed, targetSets);
         if (setPairIndex >= 0) {
-            ScorePair setScore = parsed.get(setPairIndex);
+            com.ttl.tabletennis.service.papertrade.ScorePair setScore = parsed.get(setPairIndex);
             int left = setScore.left();
             int right = setScore.right();
             int top = Math.max(left, right);
@@ -4313,7 +3082,7 @@ public class PaperTradingService {
             }
         }
 
-        Optional<Long> nearFinishLeader = determineWinnerFromNearFinishFallback(
+        Optional<Long> nearFinishLeader = scoreWinnerResolver.determineWinnerFromNearFinishFallback(
                 bet.getLastObservedScore(),
                 bet.getPlayer1Id(),
                 bet.getPlayer2Id()
@@ -4410,46 +3179,8 @@ public class PaperTradingService {
                 || (Objects.equals(candidateP1, bet.getPlayer2Id()) && Objects.equals(candidateP2, bet.getPlayer1Id()));
     }
 
-    private String scoreLabel(Match match) {
-        if (match == null) {
-            return "N/A";
-        }
-        if (StringUtils.hasText(match.getResult())) {
-            return match.getResult().trim();
-        }
-        if (match.getPlayer1SetsWon() != null && match.getPlayer2SetsWon() != null) {
-            return match.getPlayer1SetsWon() + ":" + match.getPlayer2SetsWon();
-        }
-        return "N/A";
-    }
-
-    private String winnerName(Match match, String p1, String p2) {
-        if (match == null || match.getWinnerPlayerId() == null) {
-            return "N/A";
-        }
-        if (match.getPlayer1() != null && match.getPlayer1().getId() != null
-                && match.getWinnerPlayerId().equals(match.getPlayer1().getId())) {
-            return p1;
-        }
-        if (match.getPlayer2() != null && match.getPlayer2().getId() != null
-                && match.getWinnerPlayerId().equals(match.getPlayer2().getId())) {
-            return p2;
-        }
-        return "N/A";
-    }
-
-    private String loserName(Match match, String p1, String p2, String winner) {
-        if (match == null || !StringUtils.hasText(winner) || "N/A".equalsIgnoreCase(winner)) {
-            return "N/A";
-        }
-        if (winner.equals(p1)) {
-            return p2;
-        }
-        if (winner.equals(p2)) {
-            return p1;
-        }
-        return "N/A";
-    }
+    // scoreLabel / winnerName / loserName moved to CompletedMatchLogQueryService
+    // as part of the §4 PaperTradingService decomposition (2026-05-19).
 
     private LocalDate settlementTargetDate(PaperTradeBet bet) {
         if (bet == null) {
@@ -4541,9 +3272,8 @@ public class PaperTradingService {
         return !LocalDate.now().isBefore(targetDate.plusDays(1));
     }
 
-    private boolean isEligible(LiveOddsRecommendationDto row, AdaptiveProfile adaptiveProfile) {
-        return eligibilityRejectionReason(row, adaptiveProfile) == null;
-    }
+    // isEligible was removed as part of the §4 cleanup pass (2026-05-19) —
+    // a 3-line wrapper around eligibilityRejectionReason that no one called.
 
     private String eligibilityRejectionReason(LiveOddsRecommendationDto row, AdaptiveProfile adaptiveProfile) {
         if (row == null) {
@@ -4629,57 +3359,12 @@ public class PaperTradingService {
         return !startOpt.get().isBefore(cutoff);
     }
 
-    private boolean isFinishedPhase(String phaseRaw) {
-        if (!StringUtils.hasText(phaseRaw)) {
-            return false;
-        }
-        String phase = phaseRaw.trim().toUpperCase(Locale.ROOT);
-        return phase.contains("FINISH")
-                || phase.contains("FINAL")
-                || phase.contains("ENDED")
-                || phase.contains("CLOSED")
-                || phase.contains("SETTLED")
-                || phase.contains("RESULT")
-                || phase.contains("COMPLETE");
-    }
+    // isFinishedPhase moved to PaperTradingHelpers (import-static above).
 
-    private Optional<LocalDateTime> parseStartDateTime(String startTimeIso) {
-        if (!StringUtils.hasText(startTimeIso)) {
-            return Optional.empty();
-        }
-        String v = startTimeIso.trim();
-        try {
-            return Optional.of(OffsetDateTime.parse(v).toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
-        } catch (Exception ignore) {
-            // continue
-        }
-        try {
-            return Optional.of(java.time.Instant.parse(v).atZone(ZoneId.systemDefault()).toLocalDateTime());
-        } catch (Exception ignore) {
-            // continue
-        }
-        String localLike = (v.contains(" ") && !v.contains("T"))
-                ? v.replace(' ', 'T')
-                : v;
-        try {
-            return Optional.of(LocalDateTime.parse(localLike));
-        } catch (Exception ignore) {
-            // continue
-        }
-        try {
-            if (v.length() >= 10) {
-                LocalDate d = LocalDate.parse(v.substring(0, 10));
-                return Optional.of(d.plusDays(1).atStartOfDay().minusSeconds(1));
-            }
-        } catch (Exception ignore) {
-            // continue
-        }
-        return Optional.empty();
-    }
+    // parseStartDateTime moved to PaperTradingHelpers (import-static above).
 
-    private BetCandidate toCandidate(LiveOddsRecommendationDto row, AdaptiveProfile adaptiveProfile) {
-        return resolveCandidate(row, adaptiveProfile).candidate();
-    }
+    // toCandidate was removed as part of the §4 cleanup pass (2026-05-19) —
+    // a 3-line wrapper around resolveCandidate.candidate() with no call sites.
 
     private CandidateResolution resolveCandidate(LiveOddsRecommendationDto row, AdaptiveProfile adaptiveProfile) {
         String side = row.suggestedSide();
@@ -4736,9 +3421,8 @@ public class PaperTradingService {
         ), null);
     }
 
-    private boolean isCandidateSafe(LiveOddsRecommendationDto row, BetCandidate candidate, AdaptiveProfile adaptiveProfile) {
-        return candidateSafetyRejectionReason(row, candidate, adaptiveProfile) == null;
-    }
+    // isCandidateSafe was removed as part of the §4 cleanup pass (2026-05-19) —
+    // a 3-line wrapper around candidateSafetyRejectionReason with no call sites.
 
     private String candidateSafetyRejectionReason(LiveOddsRecommendationDto row,
                                                   BetCandidate candidate,
@@ -4960,65 +3644,26 @@ public class PaperTradingService {
         return round2(Math.max(0.0, stake));
     }
 
-    private String buildEventKey(LiveOddsRecommendationDto row) {
-        String startBucket = StringUtils.hasText(row.startTimeIso())
-                ? row.startTimeIso().trim()
-                : LocalDate.now().toString();
-        return normalizeKey(row.competitionName()) + "|"
-                + normalizeKey(row.eventName()) + "|"
-                + normalizeKey(row.player1Name()) + "|"
-                + normalizeKey(row.player2Name()) + "|"
-                + normalizeKey(startBucket);
-    }
+    // buildEventKey moved to MatchKeyBuilder.
 
+    /** Thin delegate — see {@link com.ttl.tabletennis.service.papertrade.SessionLifecycleService}. */
     private PaperTradeSession getOrCreateActiveSession() {
-        return sessionRepository.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE)
-                .orElseGet(() -> createSession(null, null));
+        return sessionLifecycleService.getOrCreateActiveSession();
     }
 
+    /** Thin delegate — see {@link com.ttl.tabletennis.service.papertrade.SessionLifecycleService}. */
     private PaperTradeSession createSession(Double startingBankroll, String label) {
-        double start = startingBankroll == null
-                ? clamp(defaultStartingBankroll, 100.0, 1_000_000.0)
-                : clamp(startingBankroll, 100.0, 1_000_000.0);
-
-        PaperTradeSession session = new PaperTradeSession();
-        session.setStatus(PaperTradeSession.STATUS_ACTIVE);
-        session.setLabel(StringUtils.hasText(label) ? label.trim() : "Paper Session " + LocalDate.now());
-        session.setStartingBankroll(round2(start));
-        session.setCurrentBankroll(round2(start));
-        session.setPeakBankroll(round2(start));
-        session.setRealizedPnl(0.0);
-        session.setTotalStaked(0.0);
-        session.setTotalReturned(0.0);
-        session.setTotalBets(0);
-        session.setWins(0);
-        session.setLosses(0);
-        session.setPushes(0);
-        session.setSimulationRowsScanned(0);
-        session.setSimulationBetsPlaced(0);
-        session.setSimulationBetsSettled(0);
-        session.setSimulationBetsVoided(0);
-        session.setAdaptiveSampleSize(0);
-        session.setAdaptiveEdgeShift(0.0);
-        session.setAdaptiveSelectionScoreShift(0.0);
-        session.setAdaptiveStakeMultiplier(1.0);
-        session.setAdaptiveCalibrationError(0.0);
-        session.setAdaptiveRoiSignal(0.0);
-        session.setAdaptiveUpdatedAt(null);
-        session.setLastSyncAt(null);
-        return saveSession(session);
+        return sessionLifecycleService.createSession(startingBankroll, label);
     }
 
+    /** Thin delegate — see {@link com.ttl.tabletennis.service.papertrade.SessionLifecycleService}. */
     private PaperTradeSession saveSession(PaperTradeSession session) {
-        PaperTradeSession saved = sessionRepository.save(session);
-        paperTradingShadowService.mirrorSession(saved);
-        return saved;
+        return sessionLifecycleService.saveSession(session);
     }
 
+    /** Thin delegate — see {@link com.ttl.tabletennis.service.papertrade.SessionLifecycleService}. */
     private List<PaperTradeSession> saveSessions(List<PaperTradeSession> sessions) {
-        List<PaperTradeSession> saved = sessionRepository.saveAll(sessions);
-        paperTradingShadowService.mirrorSessions(saved);
-        return saved;
+        return sessionLifecycleService.saveSessions(sessions);
     }
 
     private PaperTradeBet saveBet(PaperTradeBet bet) {
@@ -5076,18 +3721,8 @@ public class PaperTradingService {
         decisionSampleRepository.save(sample);
     }
 
-    private void applyAdaptiveSnapshot(PaperTradeSession session, AdaptiveProfile profile, LocalDateTime updatedAt) {
-        if (session == null || profile == null) {
-            return;
-        }
-        session.setAdaptiveSampleSize(profile.sampleSize());
-        session.setAdaptiveEdgeShift(round4(profile.edgeShift()));
-        session.setAdaptiveSelectionScoreShift(round4(profile.selectionScoreShift()));
-        session.setAdaptiveStakeMultiplier(round4(profile.stakeMultiplier()));
-        session.setAdaptiveCalibrationError(round4(profile.calibrationError()));
-        session.setAdaptiveRoiSignal(round4(profile.roiSignal()));
-        session.setAdaptiveUpdatedAt(updatedAt == null ? LocalDateTime.now() : updatedAt);
-    }
+    // applyAdaptiveSnapshot promoted to AdaptiveProfile.applyTo(session, now)
+    // — see com.ttl.tabletennis.service.papertrade.AdaptiveProfile.
 
     private void persistLearningSample(PaperTradeBet bet) {
         if (bet == null || bet.getId() == null || !StringUtils.hasText(bet.getStatus())) {
@@ -5123,7 +3758,22 @@ public class PaperTradingService {
         sample.setLastObservedPhase(bet.getLastObservedPhase());
         sample.setPlacedAt(bet.getPlacedAt());
         sample.setSettledAt(bet.getSettledAt() == null ? LocalDateTime.now() : bet.getSettledAt());
+        attachClosingLine(bet, sample);
         learningSampleRepository.save(sample);
+    }
+
+    private void attachClosingLine(PaperTradeBet bet, PaperTradeLearningSample sample) {
+        if (closingLineLookupService == null) {
+            return;
+        }
+        try {
+            closingLineLookupService.findFor(bet).ifPresent(line -> {
+                sample.setClosingDecimalOdds(line.decimalOdds());
+                sample.setClosingObservedAt(line.observedAt());
+            });
+        } catch (RuntimeException ex) {
+            log.warn("[paper] closing-line lookup failed for bet {}: {}", bet.getId(), ex.getMessage());
+        }
     }
 
     private List<AdaptiveDecisionSample> loadAdaptiveDecisionSamples(int historyTake) {
@@ -5241,25 +3891,10 @@ public class PaperTradingService {
         return inserted;
     }
 
-    private double adaptiveRecencyWeight(LocalDateTime settledAt, LocalDateTime now, double halfLifeDays) {
-        if (settledAt == null || now == null) {
-            return 1.0;
-        }
-        long days = Math.max(0L, ChronoUnit.DAYS.between(settledAt.toLocalDate(), now.toLocalDate()));
-        double halfLife = Math.max(2.0, halfLifeDays);
-        return Math.pow(0.5, days / halfLife);
-    }
+    // adaptiveRecencyWeight moved to AdaptiveProfileBuilder.recencyWeight — it
+    // was used only by buildAdaptiveProfile.
 
-    private String normalizeTrigger(String trigger) {
-        return normalizeTriggerStatic(trigger);
-    }
-
-    private static String normalizeTriggerStatic(String trigger) {
-        if (!StringUtils.hasText(trigger)) {
-            return "unknown trigger";
-        }
-        return trigger.trim().toLowerCase(Locale.ROOT);
-    }
+    // normalizeTrigger moved to PaperTradingHelpers (2026-05-19).
 
     private String normalizeStrategy(String strategyRaw) {
         if (!StringUtils.hasText(strategyRaw)) {
@@ -5272,124 +3907,15 @@ public class PaperTradingService {
         return OddsValueEngineService.STRATEGY_CONSERVATIVE;
     }
 
-    private String safeText(String value, String fallback) {
-        if (StringUtils.hasText(value)) {
-            return value.trim();
-        }
-        return fallback;
-    }
+    // safeText moved to PaperTradingHelpers (2026-05-19).
 
-    private String normalizeKey(String value) {
-        if (!StringUtils.hasText(value)) {
-            return "na";
-        }
-        return value.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-")
-                .replaceAll("^-+|-+$", "");
-    }
+    // normalizeKey moved to PaperTradingHelpers (import-static above).
 
-    private String toPairKey(Long player1Id,
-                             String player1Name,
-                             Long player2Id,
-                             String player2Name) {
-        String token1 = playerToken(player1Id, player1Name);
-        String token2 = playerToken(player2Id, player2Name);
-        if (!StringUtils.hasText(token1) || !StringUtils.hasText(token2)) {
-            return null;
-        }
-        String left = token1.compareTo(token2) <= 0 ? token1 : token2;
-        String right = token1.compareTo(token2) <= 0 ? token2 : token1;
-        return left + "|" + right;
-    }
+    // toPairKey / toPairStartKey / playerToken / normalizePersonToken moved to MatchKeyBuilder.
 
-    private String toPairStartKey(Long player1Id,
-                                  String player1Name,
-                                  Long player2Id,
-                                  String player2Name,
-                                  String startTimeIso) {
-        String pairKey = toPairKey(player1Id, player1Name, player2Id, player2Name);
-        if (!StringUtils.hasText(pairKey)) {
-            return null;
-        }
-        return pairKey + "|" + startBucket(startTimeIso);
-    }
+    // startBucket moved to PaperTradingHelpers (import-static above).
 
-    private String playerToken(Long playerId, String playerName) {
-        if (playerId != null) {
-            return "id-" + playerId;
-        }
-        if (StringUtils.hasText(playerName)) {
-            String normalized = normalizePersonToken(playerName);
-            if (StringUtils.hasText(normalized) && !"na".equals(normalized)) {
-                return "nm-" + normalized;
-            }
-        }
-        return null;
-    }
-
-    private String normalizePersonToken(String rawName) {
-        if (!StringUtils.hasText(rawName)) {
-            return "na";
-        }
-        String lookup = NameUtils.normalizeForLookup(rawName);
-        if (!StringUtils.hasText(lookup)) {
-            lookup = rawName;
-        }
-        String ascii = java.text.Normalizer.normalize(lookup, java.text.Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "")
-                .replace('ł', 'l')
-                .replace('Ł', 'l');
-        ascii = ascii.toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9\\s]+", " ")
-                .replaceAll("\\s+", " ")
-                .trim();
-        if (!StringUtils.hasText(ascii)) {
-            return normalizeKey(rawName);
-        }
-        String[] parts = ascii.split(" ");
-        Arrays.sort(parts);
-        String normalized = String.join("-", parts)
-                .replaceAll("^-+|-+$", "");
-        return StringUtils.hasText(normalized) ? normalized : normalizeKey(rawName);
-    }
-
-    private String startBucket(String startTimeIso) {
-        Optional<LocalDateTime> parsed = parseStartDateTime(startTimeIso);
-        if (parsed.isPresent()) {
-            return parsed.get().withSecond(0).withNano(0).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"));
-        }
-        if (!StringUtils.hasText(startTimeIso)) {
-            return "na";
-        }
-        String raw = startTimeIso.trim();
-        if (raw.length() >= 16) {
-            raw = raw.substring(0, 16);
-        }
-        return normalizeKey(raw);
-    }
-
-    private static int clamp(int value, int lo, int hi) {
-        if (value < lo) return lo;
-        return Math.min(value, hi);
-    }
-
-    private static double clamp(double value, double lo, double hi) {
-        if (value < lo) return lo;
-        if (value > hi) return hi;
-        return value;
-    }
-
-    private static double round2(double value) {
-        return Math.round(value * 100.0) / 100.0;
-    }
-
-    private static double round4(double value) {
-        return Math.round(value * 10000.0) / 10000.0;
-    }
-
-    private static double valueOrZero(Double value) {
-        return value == null ? 0.0 : value;
-    }
+    // clamp / round2 / round4 / valueOrZero moved to PaperTradingHelpers (2026-05-19).
 
     private String resolveDecisionEventKey(LiveOddsRecommendationDto row) {
         if (row == null) {
@@ -5398,7 +3924,7 @@ public class PaperTradingService {
         if (StringUtils.hasText(row.matchupKey())) {
             return row.matchupKey().trim();
         }
-        return buildEventKey(row);
+        return com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.buildEventKey(row);
     }
 
     private String resolveDecisionDedupeKey(LiveOddsRecommendationDto row,
@@ -5418,26 +3944,8 @@ public class PaperTradingService {
         return resolvedEventKey + "|" + normalizeKey(sideName);
     }
 
-    private static double averageNonNull(List<PaperTradeDecisionSample> rows,
-                                         java.util.function.Function<PaperTradeDecisionSample, Double> extractor) {
-        if (rows == null || rows.isEmpty() || extractor == null) {
-            return 0.0;
-        }
-        double sum = 0.0;
-        int count = 0;
-        for (PaperTradeDecisionSample row : rows) {
-            if (row == null) {
-                continue;
-            }
-            Double value = extractor.apply(row);
-            if (value == null) {
-                continue;
-            }
-            sum += value;
-            count++;
-        }
-        return count == 0 ? 0.0 : sum / count;
-    }
+    // averageNonNull moved to DecisionTelemetryBuilder — it was used only by
+    // buildDecisionTelemetry. See paper-trading-service-decomposition.md.
 
     private double confidenceWidth(LiveOddsRecommendationDto row) {
         if (row == null || row.confidenceLow() == null || row.confidenceHigh() == null) {
@@ -5522,65 +4030,9 @@ public class PaperTradingService {
                                        String rejectionReason) {
     }
 
-    private record ExposureProfile(int openBets,
-                                   double openStake,
-                                   Map<Long, Double> playerStake,
-                                   Map<String, Double> triggerStake) {
-        static ExposureProfile fromOpenBets(List<PaperTradeBet> bets) {
-            if (bets == null || bets.isEmpty()) {
-                return new ExposureProfile(0, 0.0, Map.of(), Map.of());
-            }
-            int openCount = 0;
-            double openStake = 0.0;
-            Map<Long, Double> byPlayer = new HashMap<>();
-            Map<String, Double> byTrigger = new HashMap<>();
-            for (PaperTradeBet bet : bets) {
-                if (bet == null || !PaperTradeBet.STATUS_OPEN.equalsIgnoreCase(bet.getStatus())) {
-                    continue;
-                }
-                double stake = Math.max(0.0, bet.getStake());
-                openCount++;
-                openStake += stake;
-                if (bet.getSidePlayerId() != null) {
-                    byPlayer.merge(bet.getSidePlayerId(), stake, Double::sum);
-                }
-                String trigger = normalizeTriggerStatic(bet.getTopTrigger());
-                if (StringUtils.hasText(trigger)) {
-                    byTrigger.merge(trigger, stake, Double::sum);
-                }
-            }
-            return new ExposureProfile(openCount, round2(openStake), byPlayer, byTrigger);
-        }
-
-        ExposureProfile addPlacement(Long sidePlayerId, String triggerKey, double stake) {
-            double normalizedStake = Math.max(0.0, stake);
-            Map<Long, Double> nextByPlayer = new HashMap<>(playerStake);
-            Map<String, Double> nextByTrigger = new HashMap<>(triggerStake);
-            if (sidePlayerId != null) {
-                nextByPlayer.merge(sidePlayerId, normalizedStake, Double::sum);
-            }
-            String trigger = normalizeTriggerStatic(triggerKey);
-            if (StringUtils.hasText(trigger)) {
-                nextByTrigger.merge(trigger, normalizedStake, Double::sum);
-            }
-            return new ExposureProfile(openBets + 1, round2(openStake + normalizedStake), nextByPlayer, nextByTrigger);
-        }
-
-        double playerStake(Long sidePlayerId) {
-            if (sidePlayerId == null || playerStake == null || playerStake.isEmpty()) {
-                return 0.0;
-            }
-            return Math.max(0.0, playerStake.getOrDefault(sidePlayerId, 0.0));
-        }
-
-        double triggerStake(String triggerKey) {
-            String normalized = normalizeTriggerStatic(triggerKey);
-            if (!StringUtils.hasText(normalized) || triggerStake == null || triggerStake.isEmpty()) {
-                return 0.0;
-            }
-            return Math.max(0.0, triggerStake.getOrDefault(normalized, 0.0));
-        }
-    }
+    // ExposureProfile moved to com.ttl.tabletennis.service.papertrade.ExposureProfile
+    // as part of the §4 decomposition. Both the placement loop and
+    // ExposureMetricsBuilder now reference the top-level class.
 
     private record RankedCandidate(LiveOddsRecommendationDto row,
                                    BetCandidate candidate,
@@ -5590,97 +4042,19 @@ public class PaperTradingService {
                                    boolean fallbackPick) {
     }
 
-    private record ScorePair(int left, int right) {
-    }
+    // ScorePair record moved to com.ttl.tabletennis.service.papertrade.ScorePair.
 
-    private enum ScoreOrientation {
-        DIRECT,
-        REVERSED,
-        UNKNOWN
-    }
+    // ScoreOrientation enum moved to ScoreNormalizer.
 
-    private record RowLookup(Map<String, LiveOddsRecommendationDto> byDedupe,
-                             Map<String, LiveOddsRecommendationDto> byEvent,
-                             Map<String, LiveOddsRecommendationDto> byExternalEventId,
-                             Map<String, LiveOddsRecommendationDto> bySourceFeedEventId,
-                             Map<String, LiveOddsRecommendationDto> byPairStart,
-                             Map<String, LiveOddsRecommendationDto> byPair,
-                             List<LiveOddsRecommendationDto> allRows) {
-    }
+    // RowLookup record moved to com.ttl.tabletennis.service.papertrade.RowLookup.
 
     record SettlementStats(int settled, int voided) {
-    }
-
-    private record AdaptiveProfile(int sampleSize,
-                                   double reliability,
-                                   double edgeShift,
-                                   double modelGapShift,
-                                   double selectionScoreShift,
-                                   double modelProbabilityShift,
-                                   double stakeMultiplier,
-                                   double confidenceWidthTightening,
-                                   double selectionPenalty,
-                                   double calibrationError,
-                                   double roiSignal,
-                                   double avgSettledEdge,
-                                   Map<String, TriggerAdaptiveSignal> triggerSignals) {
-        static AdaptiveProfile neutral() {
-            return new AdaptiveProfile(0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, Map.of());
-        }
-
-        TriggerAdaptiveSignal signalFor(String triggerKey) {
-            if (triggerSignals == null || triggerSignals.isEmpty()) {
-                return TriggerAdaptiveSignal.neutral();
-            }
-            if (!StringUtils.hasText(triggerKey)) {
-                return TriggerAdaptiveSignal.neutral();
-            }
-            return triggerSignals.getOrDefault(triggerKey.trim().toLowerCase(Locale.ROOT), TriggerAdaptiveSignal.neutral());
+        static SettlementStats empty() {
+            return new SettlementStats(0, 0);
         }
     }
 
-    private record TriggerAdaptiveSignal(int sampleSize,
-                                         double probabilityShift,
-                                         double modelGapShift,
-                                         double selectionPenalty,
-                                         double edgeThresholdShift) {
-        static TriggerAdaptiveSignal neutral() {
-            return new TriggerAdaptiveSignal(0, 0.0, 0.0, 0.0, 0.0);
-        }
-    }
-
-    private record AdaptiveDecisionSample(Long betId,
-                                          String topTrigger,
-                                          String status,
-                                          double modelProbability,
-                                          double impliedProbability,
-                                          double edge,
-                                          double stake,
-                                          double profitLoss,
-                                          double confidenceWidth,
-                                          LocalDateTime settledAt) {
-    }
-
-    private record TriggerAggregate(int decisions,
-                                    double winsWeight,
-                                    double modelProbabilitySum,
-                                    double pnlSum,
-                                    double stakeSum,
-                                    double weightSum) {
-        static TriggerAggregate empty() {
-            return new TriggerAggregate(0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        }
-
-        TriggerAggregate add(AdaptiveDecisionSample sample, double weight) {
-            double win = PaperTradeBet.STATUS_WON.equals(sample.status()) ? weight : 0.0;
-            return new TriggerAggregate(
-                    decisions + 1,
-                    winsWeight + win,
-                    modelProbabilitySum + (sample.modelProbability() * weight),
-                    pnlSum + (sample.profitLoss() * weight),
-                    stakeSum + (sample.stake() * weight),
-                    weightSum + weight
-            );
-        }
-    }
+    // AdaptiveProfile, TriggerAdaptiveSignal, AdaptiveDecisionSample,
+    // TriggerAggregate moved to com.ttl.tabletennis.service.papertrade.*
+    // as part of the §4 decomposition (slice A: lift the records).
 }

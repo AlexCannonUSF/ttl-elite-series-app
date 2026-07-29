@@ -94,6 +94,18 @@ require_cmd curl
 require_cmd jq
 require_cmd npm
 
+run_feature_flag_lint() {
+  print_step "Feature-flag lint + expiry enforcement"
+  (
+    cd "$ROOT_DIR"
+    ./scripts/lint-features.sh --enforce-expiry
+  )
+}
+
+# Always runs (cheap, deterministic, no infra dep) so an expired flag
+# stops release-gate before the slower test/build steps fire.
+run_feature_flag_lint
+
 if [[ "$RUN_CORE_TESTS" == "true" ]]; then
   run_core_tests
 fi
