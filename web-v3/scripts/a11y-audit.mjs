@@ -8,16 +8,18 @@ const require = createRequire(import.meta.url)
 const axe = require('axe-core')
 
 const defaultRoutes = [
-  { name: 'Home', path: '/v3/' },
-  { name: 'Home Command Palette', path: '/v3/', openCommandPalette: true },
-  { name: 'Live Board', path: '/v3/live-board' },
-  { name: 'Ops Console', path: '/v3/ops' },
-  { name: 'Ops Feeds', path: '/v3/ops/feeds' },
-  { name: 'Stream Workers', path: '/v3/ops/feeds/streams' },
-  { name: 'Ops Ingest', path: '/v3/ops/ingest' },
-  { name: 'Settlement Diffs', path: '/v3/ops/diffs' },
-  { name: 'Review Queue', path: '/v3/review' },
-  { name: 'ML Quality', path: '/v3/ml/quality' },
+  { name: 'Role Gateway', path: '/v3/' },
+  { name: 'User Sportsbook', path: '/v3/user' },
+  { name: 'Admin Command', path: '/v3/admin' },
+  { name: 'Admin Command Palette', path: '/v3/admin', openCommandPalette: true },
+  { name: 'Model Quality', path: '/v3/admin/model-quality' },
+  { name: 'Ops Console', path: '/v3/admin/ops' },
+  { name: 'Ops Feeds', path: '/v3/admin/feeds' },
+  { name: 'Stream Workers', path: '/v3/admin/streams' },
+  { name: 'Ops Ingest', path: '/v3/admin/ingest' },
+  { name: 'Settlement Diffs', path: '/v3/admin/diffs' },
+  { name: 'Review Queue', path: '/v3/admin/review' },
+  { name: 'Scrape Control', path: '/v3/admin/scrape' },
 ]
 
 const options = parseArgs(process.argv.slice(2))

@@ -16,6 +16,18 @@ export function parseMatchKey(matchKey: string | undefined): ParsedMatchKey | nu
   if (!matchKey) {
     return null
   }
+  const canonical = /^id-(\d+)\|id-(\d+)(?:\|(\d{4}-\d{2}-\d{2})t.*)?$/i.exec(matchKey)
+  if (canonical) {
+    const player1Id = Number.parseInt(canonical[1] ?? '', 10)
+    const player2Id = Number.parseInt(canonical[2] ?? '', 10)
+    if (Number.isFinite(player1Id) && Number.isFinite(player2Id)) {
+      return {
+        player1Id,
+        player2Id,
+        asOfDate: canonical[3],
+      }
+    }
+  }
   const parts = matchKey.split('@')
   const pair = parts[0] ?? ''
   const asOfDate = parts[1]

@@ -77,7 +77,7 @@ export function MlQualityRoute() {
       actions={
         <>
           <Button variant="ghost" asChild>
-            <Link to="/">Back to Home</Link>
+            <Link to="/admin">Admin Command</Link>
           </Button>
           <Button variant="secondary" onClick={() => void load(true)} disabled={loading || refreshing}>
             <RefreshCcw className={cn('size-4', refreshing && 'animate-spin')} />

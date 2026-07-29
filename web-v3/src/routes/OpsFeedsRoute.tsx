@@ -138,7 +138,7 @@ export function OpsFeedsRoute() {
       actions={
         <>
           <Button variant="ghost" asChild>
-            <Link to="/ops/feeds/streams">
+            <Link to="/admin/streams">
               <Radio className="size-4" />
               Stream Workers
             </Link>

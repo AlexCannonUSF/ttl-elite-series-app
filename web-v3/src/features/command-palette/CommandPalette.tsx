@@ -604,7 +604,7 @@ function buildBetCommands(session: PaperTradingSession | null, navigate: Navigat
     id: `bet.${bet.id}.detail`,
     keywords: ['bet', 'detail', 'evidence', 'prediction', 'history', 'market', bet.eventName, bet.sideName, bet.status],
     label: `Open bet #${bet.id} detail`,
-    run: () => navigate(`/matches/${bet.id}/evidence`),
+    run: () => navigate(`/user/matches/${bet.id}/evidence`),
   }))
 }
 
@@ -618,7 +618,7 @@ function buildAttentionFeedCommands(feeds: OpsFeedsResponse | null, navigate: Na
     id: `feed.${feed.sourceId}`,
     keywords: ['feed', feed.sourceId, feed.status, feed.trustTier, ...feed.capabilities],
     label: `Inspect feed ${feed.sourceId}`,
-    run: () => navigate(`/ops/feeds?source=${encodeURIComponent(feed.sourceId)}`),
+    run: () => navigate(`/admin/feeds?source=${encodeURIComponent(feed.sourceId)}`),
   }))
 }
 

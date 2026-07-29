@@ -1,11 +1,12 @@
 import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 
-import { HomeRoute } from '@/routes/HomeRoute'
+import { RoleGatewayRoute } from '@/routes/RoleGatewayRoute'
 
 const LiveBoardRoute = lazy(() => import('@/routes/LiveBoardRoute').then((module) => ({ default: module.LiveBoardRoute })))
 const MatchDetailRoute = lazy(() => import('@/routes/MatchDetailRoute').then((module) => ({ default: module.MatchDetailRoute })))
 const MlQualityRoute = lazy(() => import('@/routes/MlQualityRoute').then((module) => ({ default: module.MlQualityRoute })))
+const AdminHubRoute = lazy(() => import('@/routes/AdminHubRoute').then((module) => ({ default: module.AdminHubRoute })))
 const OpsConsoleRoute = lazy(() => import('@/routes/OpsConsoleRoute').then((module) => ({ default: module.OpsConsoleRoute })))
 const OpsDiffsRoute = lazy(() => import('@/routes/OpsDiffsRoute').then((module) => ({ default: module.OpsDiffsRoute })))
 const OpsFeedsRoute = lazy(() => import('@/routes/OpsFeedsRoute').then((module) => ({ default: module.OpsFeedsRoute })))
@@ -35,7 +36,55 @@ function lazyRoute(Route: LazyExoticComponent<ComponentType>) {
 export const router = createBrowserRouter([
   {
     path: '/',
-    element: <HomeRoute />,
+    element: <RoleGatewayRoute />,
+  },
+  {
+    path: '/user',
+    element: lazyRoute(LiveBoardRoute),
+  },
+  {
+    path: '/user/matches/:id',
+    element: lazyRoute(MatchDetailRoute),
+  },
+  {
+    path: '/user/matches/:id/:tab',
+    element: lazyRoute(MatchDetailRoute),
+  },
+  {
+    path: '/admin',
+    element: lazyRoute(AdminHubRoute),
+  },
+  {
+    path: '/admin/model-quality',
+    element: lazyRoute(MlQualityRoute),
+  },
+  {
+    path: '/admin/ops',
+    element: lazyRoute(OpsConsoleRoute),
+  },
+  {
+    path: '/admin/feeds',
+    element: lazyRoute(OpsFeedsRoute),
+  },
+  {
+    path: '/admin/ingest',
+    element: lazyRoute(OpsIngestRoute),
+  },
+  {
+    path: '/admin/streams',
+    element: lazyRoute(OpsStreamsRoute),
+  },
+  {
+    path: '/admin/diffs',
+    element: lazyRoute(OpsDiffsRoute),
+  },
+  {
+    path: '/admin/review',
+    element: lazyRoute(ReviewRoute),
+  },
+  {
+    path: '/admin/scrape',
+    element: lazyRoute(ScrapeRoute),
   },
   {
     path: '/live-board',

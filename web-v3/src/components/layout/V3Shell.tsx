@@ -1,6 +1,19 @@
 import type { ReactNode } from 'react'
-import { Activity, Database, Gauge, GitCompareArrows, PanelsTopLeft, Radar, RadioTower, ShieldCheck, Waypoints } from 'lucide-react'
-import { NavLink } from 'react-router-dom'
+import {
+  Activity,
+  BrainCircuit,
+  CircleDollarSign,
+  Database,
+  Gauge,
+  GitCompareArrows,
+  House,
+  RadioTower,
+  RefreshCw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Waves,
+} from 'lucide-react'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 
 import { Badge } from '@/components/ui/badge'
 import { CommandPalette } from '@/features/command-palette/CommandPalette'
@@ -15,103 +28,121 @@ type V3ShellProps = {
   actions?: ReactNode
 }
 
-const shellSections = [
-  { label: 'Overview', icon: PanelsTopLeft, to: '/' },
-  { label: 'Live Board', icon: Activity, to: '/live-board' },
-  { label: 'Ops Console', icon: Gauge, to: '/ops' },
-  { label: 'Ops Feeds', icon: Radar, to: '/ops/feeds' },
-  { label: 'Ops Ingest', icon: RadioTower, to: '/ops/ingest' },
-  { label: 'Settlement Diffs', icon: GitCompareArrows, to: '/ops/diffs' },
-  { label: 'Review', icon: ShieldCheck, to: '/review' },
-  { label: 'Scraper', icon: Database, to: '/ops/scrape' },
-  { label: 'Model Lab', icon: Waypoints, disabled: true },
+const userSections = [
+  { label: 'Live markets', icon: Activity, to: '/user' },
 ]
+
+const adminSections = [
+  { label: 'Command', icon: Gauge, to: '/admin' },
+  { label: 'Model', icon: BrainCircuit, to: '/admin/model-quality' },
+  { label: 'Ops', icon: Waves, to: '/admin/ops' },
+  { label: 'Feeds', icon: RadioTower, to: '/admin/feeds' },
+  { label: 'Ingest', icon: RefreshCw, to: '/admin/ingest' },
+  { label: 'Streams', icon: SlidersHorizontal, to: '/admin/streams' },
+  { label: 'Settlement', icon: GitCompareArrows, to: '/admin/diffs' },
+  { label: 'Review', icon: ShieldCheck, to: '/admin/review' },
+  { label: 'Scraper', icon: Database, to: '/admin/scrape' },
+]
+
+function inferAdmin(pathname: string) {
+  return pathname.startsWith('/admin')
+    || pathname.startsWith('/ops')
+    || pathname.startsWith('/review')
+    || pathname.startsWith('/ml/')
+}
 
 export function V3Shell({
   children,
-  eyebrow = 'TTLElite Series 3.0',
-  title = 'V3 Workspace',
-  description = 'Live operating surface for paper-trading, score-truth audit, and ops health.',
-  badges = (
-    <>
-      <Badge variant="accent">Live</Badge>
-    </>
-  ),
+  eyebrow,
+  title,
+  description,
+  badges = <Badge variant="accent">Live</Badge>,
   actions,
 }: V3ShellProps) {
+  const { pathname } = useLocation()
+  const admin = inferAdmin(pathname)
+  const sections = admin ? adminSections : userSections
+  const workspace = admin ? 'Model & Operations' : 'Sportsbook Intelligence'
+
   return (
-    <div className="min-h-screen bg-[var(--canvas)] text-[var(--ink)]">
-      <a className="skip-link" href="#v3-main">
-        Skip to main content
-      </a>
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,197,171,0.14),transparent_34%),radial-gradient(circle_at_top_right,rgba(249,115,22,0.14),transparent_30%),linear-gradient(180deg,rgba(248,244,234,0.96),rgba(241,236,226,1))]" />
-      <div className="relative mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-5 py-5 sm:px-8 lg:px-10">
-        <header className="flex flex-col gap-6 rounded-[32px] border border-[var(--line)] bg-[rgba(255,255,255,0.68)] px-5 py-5 shadow-[0_24px_80px_-48px_rgba(8,25,28,0.8)] backdrop-blur lg:px-7">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-3">
-                <span className="inline-flex size-11 items-center justify-center rounded-2xl bg-[var(--ink-strong)] text-[var(--canvas)]">
-                  <PanelsTopLeft aria-hidden="true" className="size-5" />
-                </span>
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.32em] text-[var(--ink-muted)]">
-                    {eyebrow}
-                  </p>
-                  <h1 className="font-serif text-4xl font-semibold tracking-[-0.05em] text-[var(--ink-strong)]">
-                    {title}
-                  </h1>
+    <div className={cn('role-shell min-h-screen text-[var(--ink)]', admin ? 'theme-admin' : 'theme-user')}>
+      <a className="skip-link" href="#v3-main">Skip to main content</a>
+      <div className="role-atmosphere pointer-events-none fixed inset-0" />
+      <div className="relative mx-auto flex min-h-screen w-full max-w-[1800px] flex-col px-4 py-4 sm:px-6 lg:px-8">
+        <header className="role-header rounded-[26px] border border-white/10 px-4 py-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:px-5">
+          <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <Link
+                className={cn(
+                  'grid size-11 shrink-0 place-items-center rounded-2xl border',
+                  admin
+                    ? 'border-blue-300/25 bg-blue-300/10 text-blue-200'
+                    : 'border-emerald-300/25 bg-emerald-300/10 text-emerald-200',
+                )}
+                to="/"
+                aria-label="Choose workspace"
+              >
+                {admin ? <BrainCircuit className="size-5" aria-hidden="true" /> : <CircleDollarSign className="size-5" aria-hidden="true" />}
+              </Link>
+              <div className="min-w-0">
+                <p className={cn(
+                  'truncate text-[10px] font-semibold uppercase tracking-[0.3em]',
+                  admin ? 'text-blue-300' : 'text-emerald-300',
+                )}>
+                  {eyebrow ?? workspace}
+                </p>
+                <div className="flex items-center gap-3">
+                  <h1 className="truncate text-xl font-semibold tracking-[-0.035em] text-white sm:text-2xl">{title ?? workspace}</h1>
+                  <span className="hidden items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 sm:inline-flex">
+                    <span className={cn('size-1.5 rounded-full', admin ? 'bg-blue-400' : 'animate-pulse bg-emerald-400')} />
+                    {admin ? 'Operator' : 'Live'}
+                  </span>
                 </div>
               </div>
-              <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--ink-muted)] sm:text-base">
-                {description}
-              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {badges}
-              {actions}
-              <CommandPalette />
-            </div>
-          </div>
 
-          <nav aria-label="Primary v3 sections" className="flex flex-wrap gap-3">
-            {shellSections.map(({ label, icon: Icon, to, disabled }) => {
-              if (!to || disabled) {
-                return (
-                  <div
-                    aria-disabled="true"
-                    key={label}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-sm text-[var(--ink-muted)]"
-                  >
-                    <Icon aria-hidden="true" className="size-4" />
-                    <span>{label}</span>
-                  </div>
-                )
-              }
-
-              return (
+            <nav aria-label={`${workspace} sections`} className="hide-scrollbar -mx-1 flex gap-1 overflow-x-auto px-1">
+              {sections.map(({ label, icon: Icon, to }) => (
                 <NavLink
                   key={label}
                   to={to}
-                  end={to === '/'}
-                  className={({ isActive }) =>
-                    cn(
-                      'inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors',
-                      isActive
-                        ? 'border-[var(--accent-soft)] bg-[var(--accent-fade)] text-[var(--accent-ink)]'
-                        : 'border-[var(--line)] bg-[var(--panel)] text-[var(--ink-muted)] hover:border-[var(--accent-soft)] hover:text-[var(--ink-strong)]',
-                    )
-                  }
+                  end={to === '/user' || to === '/admin'}
+                  className={({ isActive }) => cn(
+                    'inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition',
+                    isActive
+                      ? admin
+                        ? 'border-blue-300/25 bg-blue-300/12 text-blue-100'
+                        : 'border-emerald-300/25 bg-emerald-300/12 text-emerald-100'
+                      : 'border-transparent text-slate-400 hover:border-white/10 hover:bg-white/[0.04] hover:text-white',
+                  )}
                 >
-                  <Icon aria-hidden="true" className="size-4" />
-                  <span>{label}</span>
+                  <Icon className="size-3.5" aria-hidden="true" />
+                  {label}
                 </NavLink>
-              )
-            })}
-          </nav>
+              ))}
+            </nav>
+
+            <div className="role-shell-actions flex flex-wrap items-center gap-2">
+              {badges}
+              {actions}
+              {admin ? <CommandPalette /> : null}
+              <Link
+                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/[0.08] hover:text-white"
+                to="/"
+              >
+                <House className="size-3.5" aria-hidden="true" />
+                Switch
+              </Link>
+            </div>
+          </div>
+          {description ? (
+            <p className="mt-3 max-w-4xl border-t border-white/[0.07] pt-3 text-xs leading-5 text-slate-400 sm:text-sm">
+              {description}
+            </p>
+          ) : null}
         </header>
 
-        <main id="v3-main" tabIndex={-1} className="mt-6 flex-1">{children}</main>
-
+        <main id="v3-main" tabIndex={-1} className="mt-5 flex-1">{children}</main>
       </div>
     </div>
   )

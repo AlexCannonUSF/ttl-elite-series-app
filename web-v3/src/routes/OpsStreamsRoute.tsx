@@ -113,7 +113,7 @@ export function OpsStreamsRoute() {
       actions={
         <>
           <Button variant="ghost" asChild>
-            <Link to="/ops/feeds">
+            <Link to="/admin/feeds">
               <ArrowLeft className="size-4" />
               Ops Feeds
             </Link>

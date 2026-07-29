@@ -1,6 +1,5 @@
 import {
   type Dispatch,
-  type KeyboardEvent as ReactKeyboardEvent,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -11,15 +10,14 @@ import {
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
-  CheckCircle2,
+  Clock3,
   CircleDollarSign,
   Filter,
+  Flame,
+  Layers3,
   RefreshCcw,
   Search,
   Star,
-  TrendingDown,
-  TrendingUp,
 } from 'lucide-react'
 
 import { V3Shell } from '@/components/layout/V3Shell'
@@ -28,7 +26,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveBoard, fetchLiveSession, fetchMatchupAnalysis, syncLiveSession } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
-import { FlashOnChange } from '@/features/live-studio/FlashOnChange'
 import { SessionRibbon } from '@/features/live-studio/SessionRibbon'
 import type {
   LiveBoardHistoryPoint,
@@ -41,10 +38,6 @@ import { cn } from '@/lib/utils'
 
 const REFRESH_INTERVAL_MS = 8000
 const HISTORY_LIMIT = 80
-
-const compactNumber = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 0,
-})
 
 export function LiveBoardRoute() {
   const [rows, setRows] = useState<LiveOddsRecommendation[]>([])
@@ -59,6 +52,7 @@ export function LiveBoardRoute() {
   const [history, setHistory] = useState<Record<string, LiveBoardHistoryPoint[]>>({})
   const [session, setSession] = useState<PaperTradingSession | null>(null)
   const [myPicksOnly, setMyPicksOnly] = useState(false)
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'LIVE' | 'VALUE' | 'UPCOMING'>('ALL')
   const [matchupIntel, setMatchupIntel] = useState<MatchupAnalysis | null>(null)
   const [intelError, setIntelError] = useState<string | null>(null)
   const [intelLoading, setIntelLoading] = useState(false)
@@ -176,6 +170,9 @@ export function LiveBoardRoute() {
     if (myPicksOnly) {
       base = base.filter((row) => myPickByRow.has(rowKey(row)))
     }
+    if (marketFilter === 'LIVE') base = base.filter((row) => row.live)
+    if (marketFilter === 'VALUE') base = base.filter((row) => row.recommended || (row.suggestedEdge ?? 0) > 0)
+    if (marketFilter === 'UPCOMING') base = base.filter((row) => !row.live)
     if (term) {
       base = base.filter((row) => {
         const blob = `${row.eventName} ${row.competitionName} ${row.player1Name} ${row.player2Name} ${row.suggestedSide ?? ''} ${row.topTrigger ?? ''}`.toLowerCase()
@@ -193,7 +190,7 @@ export function LiveBoardRoute() {
       if (aMine !== bMine) return aMine - bMine
       return a.eventName.localeCompare(b.eventName)
     })
-  }, [rows, search, myPicksOnly, myPickByRow])
+  }, [rows, search, myPicksOnly, myPickByRow, marketFilter])
 
   const selectedRow = useMemo(() => {
     if (!selectedKey) {
@@ -237,8 +234,8 @@ export function LiveBoardRoute() {
 
   return (
     <V3Shell
-      title="Live Board"
-      description="Live odds, model edge, score state, and paper-pick readiness in the v3 operating shell."
+      title="Live Intelligence"
+      description="Follow the action, compare the Hard Rock market with our fair price, and understand every model lean before you decide."
       badges={
         <>
           <Badge variant="accent">Live</Badge>
@@ -274,7 +271,37 @@ export function LiveBoardRoute() {
         </>
       }
     >
-      <SessionRibbon />
+      <section className="user-board-banner overflow-hidden rounded-[30px] border border-emerald-300/15 p-5 text-white shadow-2xl shadow-black/20 sm:p-7">
+        <div className="grid items-end gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-200">
+                <span className="size-1.5 animate-pulse rounded-full bg-rose-400" />
+                {diagnostics.liveRows} live now
+              </span>
+              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-200">
+                Hard Rock + TTLElite fair
+              </span>
+            </div>
+            <h2 className="mt-5 max-w-3xl text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
+              The match room built for the decision, not the noise.
+            </h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
+              Live matches stay first, then the schedule runs chronologically. Every market shows the price you can take,
+              the price our model believes is fair, and the evidence that makes the difference credible—or says to pass.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <HeroMetric label="Markets" value={String(diagnostics.totalRows)} />
+            <HeroMetric label="Value reads" value={String(diagnostics.recommendedRows)} />
+            <HeroMetric label="Open picks" value={String(session?.openBets ?? 0)} />
+          </div>
+        </div>
+      </section>
+
+      <div className="mt-5">
+        <SessionRibbon />
+      </div>
 
       {error ? (
         <div className="mt-5 inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
@@ -283,26 +310,38 @@ export function LiveBoardRoute() {
         </div>
       ) : null}
 
-      <section className="mt-5 grid items-start gap-5 xl:grid-cols-[1.08fr_0.92fr]">
-        <Card>
+      <section className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(420px,0.78fr)_minmax(600px,1.22fr)]">
+        <Card className="xl:max-h-[calc(100vh-2rem)] xl:overflow-hidden">
           <CardHeader>
-            <Badge variant="accent" className="w-fit">
-              Live first · chronological
-            </Badge>
-            <CardTitle>Live market watchlist</CardTitle>
-            <CardDescription>
-              Live matches stay on top; upcoming matches follow in start-time order. Compare the live Hard Rock line with our fair price before acting.
-            </CardDescription>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <Badge variant="accent" className="w-fit"><Layers3 className="mr-1 size-3" /> Market room</Badge>
+                <CardTitle className="mt-2">Live first. Then by time.</CardTitle>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-3 py-1 font-mono text-xs font-bold text-emerald-800">
+                {refreshing ? 'Updating…' : 'Live data'}
+              </span>
+            </div>
+            <CardDescription>Select any matchup to turn the market into a full bettor read.</CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <DiagnosticTile icon={BarChart3} label="Rows" value={compactNumber.format(diagnostics.totalRows)} />
-              <DiagnosticTile icon={Activity} label="Live" value={compactNumber.format(diagnostics.liveRows)} />
-              <DiagnosticTile icon={CheckCircle2} label="Recommended" value={compactNumber.format(diagnostics.recommendedRows)} />
-              <DiagnosticTile icon={TrendingUp} label="Avg Edge" value={formatSignedPct(diagnostics.averageSuggestedEdge)} />
+          <CardContent className="grid gap-4 xl:min-h-0">
+            <div className="grid grid-cols-4 gap-1 rounded-[16px] bg-slate-100 p-1">
+              {(['ALL', 'LIVE', 'VALUE', 'UPCOMING'] as const).map((filter) => (
+                <button
+                  className={cn(
+                    'rounded-xl px-2 py-2 text-[10px] font-bold uppercase tracking-[0.12em] transition',
+                    marketFilter === filter ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600 hover:text-slate-800',
+                  )}
+                  key={filter}
+                  onClick={() => setMarketFilter(filter)}
+                  type="button"
+                >
+                  {filter}
+                </button>
+              ))}
             </div>
 
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <label className="flex min-h-12 flex-1 items-center gap-3 rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.74)] px-4 text-sm text-[var(--ink-muted)]">
                 <Search aria-hidden="true" className="size-4" />
                 <span className="sr-only">Filter live board rows</span>
@@ -323,39 +362,27 @@ export function LiveBoardRoute() {
                 <Star aria-hidden="true" className="size-4" />
                 {myPicksOnly ? `My picks (${openBets.length})` : `My picks (${openBets.length}) only`}
               </Button>
-              <Button
-                aria-pressed={includeUnresolved}
-                variant="secondary"
-                onClick={() => setIncludeUnresolved((value) => !value)}
-              >
-                <Filter aria-hidden="true" className="size-4" />
-                {includeUnresolved ? 'Unresolved included' : 'Unresolved hidden'}
-              </Button>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-[820px] border-separate border-spacing-y-2">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-[0.2em] text-[var(--ink-muted)]">
-                    <th className="px-3 pb-1 font-semibold">Match</th>
-                    <th className="px-3 pb-1 text-right font-semibold">Hard Rock</th>
-                    <th className="px-3 pb-1 text-right font-semibold">TTLElite fair</th>
-                    <th className="px-3 pb-1 text-right font-semibold">Edge</th>
-                    <th className="px-3 pb-1 font-semibold">Bettor read</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRows.map((row) => (
-                    <BoardRow
-                      key={rowKey(row)}
-                      row={row}
-                      myPick={myPickByRow.get(rowKey(row)) ?? null}
-                      selected={selectedRow ? rowKey(selectedRow) === rowKey(row) : false}
-                      onSelect={() => setSelectedKey(rowKey(row))}
-                    />
-                  ))}
-                </tbody>
-              </table>
+            <button
+              className="flex items-center gap-2 justify-self-start text-xs font-semibold text-[var(--ink-muted)]"
+              type="button"
+              onClick={() => setIncludeUnresolved((value) => !value)}
+            >
+              <Filter className="size-3.5" />
+              {includeUnresolved ? 'Showing unresolved identities' : 'Only resolved identities'}
+            </button>
+
+            <div className="hide-scrollbar grid gap-2 xl:max-h-[calc(100vh-312px)] xl:overflow-y-auto xl:pr-1">
+              {filteredRows.map((row) => (
+                <MarketWatchCard
+                  key={rowKey(row)}
+                  row={row}
+                  myPick={myPickByRow.get(rowKey(row)) ?? null}
+                  selected={selectedRow ? rowKey(selectedRow) === rowKey(row) : false}
+                  onSelect={() => setSelectedKey(rowKey(row))}
+                />
+              ))}
             </div>
 
             {!loading && filteredRows.length === 0 ? (
@@ -371,7 +398,7 @@ export function LiveBoardRoute() {
             <BettorMatchupPanel
               analysis={matchupIntel}
               bet={myPickByRow.get(rowKey(selectedRow)) ?? null}
-              detailHref={`/matches/${encodeURIComponent(matchDetailKey(selectedRow))}/evidence`}
+              detailHref={`/user/matches/${encodeURIComponent(matchDetailKey(selectedRow))}/prediction`}
               history={selectedHistory}
               intelError={intelError}
               intelLoading={intelLoading}
@@ -388,7 +415,7 @@ export function LiveBoardRoute() {
   )
 }
 
-function BoardRow({
+function MarketWatchCard({
   onSelect,
   row,
   myPick,
@@ -399,186 +426,73 @@ function BoardRow({
   myPick: PaperTradeBet | null
   selected: boolean
 }) {
-  const suggestedPlayer = row.suggestedSide === row.player1Name ? 'P1' : row.suggestedSide === row.player2Name ? 'P2' : null
-  const p1Suggested = suggestedPlayer === 'P1'
-  const p2Suggested = suggestedPlayer === 'P2'
-  const myPickIsP1 = myPick != null && myPick.sideName === row.player1Name
-  const myPickIsP2 = myPick != null && myPick.sideName === row.player2Name
-  const myCurrentOdds = myPickIsP1 ? row.decimalOddsPlayer1 : myPickIsP2 ? row.decimalOddsPlayer2 : null
-  const oddsDelta = myPick && myCurrentOdds != null ? myCurrentOdds - myPick.decimalOdds : null
-
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLTableRowElement>) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      onSelect()
-    }
-  }
+  const sideP1 = row.suggestedSide === row.player1Name
+  const sideP2 = row.suggestedSide === row.player2Name
+  const suggestedBook = sideP1 ? row.americanOddsPlayer1 : sideP2 ? row.americanOddsPlayer2 : null
+  const suggestedFair = sideP1 ? row.modelFairAmericanOddsPlayer1 : sideP2 ? row.modelFairAmericanOddsPlayer2 : null
 
   return (
-    <tr
-      aria-label={`Select ${row.eventName}`}
-      aria-selected={selected}
+    <button
+      aria-pressed={selected}
       className={cn(
-        'cursor-pointer rounded-[20px] bg-[rgba(255,255,255,0.76)] shadow-[0_18px_48px_-42px_rgba(8,25,28,0.72)] transition-colors hover:bg-[rgba(255,255,255,0.92)]',
-        selected && 'outline outline-2 outline-offset-2 outline-[var(--accent-soft)]',
-        row.recommended && !myPick && 'bg-[rgba(236,253,245,0.82)]',
-        myPick && 'bg-[rgba(254,243,199,0.78)] outline outline-2 -outline-offset-2 outline-amber-300',
+        'group w-full rounded-[22px] border p-4 text-left transition',
+        selected
+          ? 'border-emerald-400 bg-emerald-50 shadow-[0_16px_36px_-28px_rgba(5,150,105,0.8)]'
+          : 'border-[var(--line)] bg-white/60 hover:border-emerald-300 hover:bg-white',
       )}
-      tabIndex={0}
       onClick={onSelect}
-      onKeyDown={handleKeyDown}
+      type="button"
     >
-      <td className="rounded-l-[20px] px-3 py-3 align-top">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {myPick ? (
-            <Badge variant="accent" className="border-amber-300 bg-amber-100 text-amber-900">
-              <Star aria-hidden="true" className="size-3" />
-              MY PICK · {myPick.sideName}
-            </Badge>
-          ) : null}
           <StatusPill live={row.live} />
-          <Scoreboard
-            player1Name={row.player1Name}
-            player2Name={row.player2Name}
-            liveScore={row.liveScore}
-            phase={row.matchPhase}
-          />
-          {row.recommended && !myPick ? <Badge variant="accent">Recommended</Badge> : null}
+          {row.recommended ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-800"><Flame className="size-3" />Value</span> : null}
+          {myPick ? <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700"><Star className="size-3" />My pick</span> : null}
         </div>
-        <p className="mt-2 font-medium text-[var(--ink-strong)]">{row.eventName}</p>
-        <p className="mt-1 max-w-[320px] truncate text-sm text-[var(--ink-muted)]">
-          {row.competitionName} | {formatStart(row.startTimeIso)}
-        </p>
-      </td>
-      <td className="px-3 py-3 text-right align-top font-mono text-sm">
-        <p className={cn('font-semibold', p1Suggested && 'text-emerald-700')}>
-          <FlashOnChange value={row.decimalOddsPlayer1}>{formatAmerican(row.americanOddsPlayer1)}</FlashOnChange>
-        </p>
-        <p className={cn('mt-2 font-semibold', p2Suggested && 'text-emerald-700')}>
-          <FlashOnChange value={row.decimalOddsPlayer2}>{formatAmerican(row.americanOddsPlayer2)}</FlashOnChange>
-        </p>
-      </td>
-      <td className="px-3 py-3 text-right align-top font-mono text-sm">
-        <p className={cn('font-semibold', p1Suggested && 'text-emerald-700')}>
-          {formatAmerican(row.modelFairAmericanOddsPlayer1)}
-        </p>
-        <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">{formatPct(row.modelProbabilityPlayer1)}</p>
-        <p className={cn('mt-1.5 font-semibold', p2Suggested && 'text-emerald-700')}>
-          {formatAmerican(row.modelFairAmericanOddsPlayer2)}
-        </p>
-        <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">{formatPct(row.modelProbabilityPlayer2)}</p>
-      </td>
-      <td className="px-3 py-3 text-right align-top font-mono text-sm">
-        <p>
-          <FlashOnChange value={row.edgePlayer1}>{formatSignedPct(row.edgePlayer1)}</FlashOnChange>
-        </p>
-        <p className="mt-2">
-          <FlashOnChange value={row.edgePlayer2}>{formatSignedPct(row.edgePlayer2)}</FlashOnChange>
-        </p>
-      </td>
-      <td className="rounded-r-[20px] px-3 py-3 align-top text-sm">
-        {myPick ? (
-          <>
-            <p className="font-semibold text-amber-900">
-              ${myPick.stake.toFixed(2)} on {myPick.sideName}
-            </p>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              Placed at {myPick.decimalOdds.toFixed(2)} · now{' '}
-              {myCurrentOdds != null ? myCurrentOdds.toFixed(2) : '—'}
-            </p>
-            {oddsDelta != null ? <OddsDeltaPill delta={oddsDelta} /> : null}
-            {myPick.potentialPayout != null ? (
-              <p className="mt-1 font-mono text-xs text-[var(--ink-muted)]">
-                Pays ${myPick.potentialPayout.toFixed(2)}
-              </p>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <p className="font-semibold text-[var(--ink-strong)]">{row.suggestedSide ?? 'No pick'}</p>
-            <p className="mt-1 text-[var(--ink-muted)]">{row.topTrigger ?? row.grade ?? 'Watching'}</p>
-            <p className="mt-2 font-mono text-xs text-[var(--ink-muted)]">{formatSignedPct(row.suggestedEdge)}</p>
-          </>
-        )}
-      </td>
-    </tr>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">
+          <Clock3 className="size-3" />{formatTimeOnly(row.startTimeIso)}
+        </span>
+      </div>
+
+      <div className="mt-3">
+        <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-[var(--ink-strong)]">{row.player1Name}</p>
+            <p className="mt-1 truncate font-semibold text-[var(--ink-strong)]">{row.player2Name}</p>
+          </div>
+          {row.liveScore ? (
+            <span className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-base font-bold text-rose-800">{row.liveScore}</span>
+          ) : (
+            <span className="font-mono text-xs text-[var(--ink-muted)]">{formatStart(row.startTimeIso)}</span>
+          )}
+        </div>
+        <p className="mt-2 truncate text-xs text-[var(--ink-muted)]">{row.competitionName}</p>
+      </div>
+
+      <div className="mt-3 grid grid-cols-[1.15fr_0.7fr_0.7fr_0.7fr] items-center gap-2 border-t border-[var(--line)] pt-3">
+        <div className="min-w-0">
+          <p className="text-[9px] font-semibold uppercase tracking-[0.15em] text-[var(--ink-muted)]">{row.recommended ? 'Model lean' : 'Model status'}</p>
+          <p className="mt-1 truncate text-xs font-bold text-[var(--ink-strong)]">{row.suggestedSide ?? 'Pass / watch'}</p>
+        </div>
+        <CompactPrice label="Hard Rock" value={formatAmerican(suggestedBook)} />
+        <CompactPrice label="Our fair" value={formatAmerican(suggestedFair)} />
+        <CompactPrice label="Edge" value={formatSignedPct(row.suggestedEdge)} accent={(row.suggestedEdge ?? 0) > 0} />
+      </div>
+    </button>
   )
 }
 
-function Scoreboard({
-  player1Name,
-  player2Name,
-  liveScore,
-  phase,
-}: {
-  player1Name: string
-  player2Name: string
-  liveScore: string | null
-  phase: string | null
-}) {
-  if (!liveScore) {
-    return phase ? <Badge>{formatPhase(phase)}</Badge> : null
-  }
-  // Server returns liveScore like "0-1 (1-0)" — sets · current game in points.
-  const match = /^(\d+)-(\d+)(?:\s*\((\d+)-(\d+)\))?$/.exec(liveScore.trim())
-  if (!match) {
-    return <Badge>SCORE {liveScore}</Badge>
-  }
-  const p1Sets = match[1] ?? '0'
-  const p2Sets = match[2] ?? '0'
-  const p1Pts = match[3]
-  const p2Pts = match[4]
+function CompactPrice({ accent = false, label, value }: { accent?: boolean; label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-[12px] border border-rose-200 bg-rose-50 px-2 py-1 font-mono text-xs text-rose-800">
-      <ScoreCell label={shortName(player1Name)} sets={p1Sets} pts={p1Pts} />
-      <span className="text-rose-300">·</span>
-      <ScoreCell label={shortName(player2Name)} sets={p2Sets} pts={p2Pts} />
-      {phase ? <span className="ml-1 rounded-full bg-rose-100 px-2 text-[10px] uppercase">{formatPhase(phase)}</span> : null}
-    </span>
+    <div className="text-right">
+      <p className="text-[8px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">{label}</p>
+      <p className={cn('mt-1 font-mono text-xs font-bold', accent ? 'text-emerald-700' : 'text-[var(--ink-strong)]')}>{value}</p>
+    </div>
   )
 }
 
-function ScoreCell({ label, sets, pts }: { label: string; sets: string; pts?: string | undefined }) {
-  return (
-    <span className="inline-flex items-baseline gap-1">
-      <span className="font-semibold">{label}</span>
-      <span className="text-base font-bold">{sets}</span>
-      {pts ? <span className="text-[var(--ink-muted)]">({pts})</span> : null}
-    </span>
-  )
-}
-
-function OddsDeltaPill({ delta }: { delta: number }) {
-  if (!Number.isFinite(delta) || Math.abs(delta) < 0.005) {
-    return <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">no move</span>
-  }
-  const improved = delta > 0 // your price got longer → you're winning the price for under
-  const tone = improved
-    ? 'bg-emerald-100 text-emerald-800'
-    : 'bg-rose-100 text-rose-800'
-  const Icon = improved ? TrendingUp : TrendingDown
-  return (
-    <span className={cn('mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold', tone)}>
-      <Icon className="size-3" />
-      {delta >= 0 ? '+' : ''}{delta.toFixed(2)} {improved ? 'better' : 'worse'}
-    </span>
-  )
-}
-
-function shortName(name: string) {
-  if (!name) return ''
-  const parts = name.trim().split(/\s+/)
-  if (parts.length === 1) return (parts[0] ?? '').slice(0, 8)
-  const first = (parts[0] ?? '')[0] ?? ''
-  const last = parts[parts.length - 1] ?? ''
-  return `${first}. ${last}`
-}
-
-function formatPhase(phase: string) {
-  return phase
-    .replaceAll('_', ' ')
-    .toLowerCase()
-    .replace(/\b\w/g, (m) => m.toUpperCase())
+function HeroMetric({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-[18px] border border-white/10 bg-white/[0.05] p-3"><p className="font-mono text-xl font-bold">{value}</p><p className="mt-1 text-[9px] uppercase tracking-[0.15em] text-slate-400">{label}</p></div>
 }
 
 /** Match a board row to one of the user's open paper bets. */
@@ -603,22 +517,6 @@ function matchOpenBet(row: LiveOddsRecommendation, openBets: PaperTradeBet[]): P
     }
   }
   return null
-}
-
-function DiagnosticTile({ icon: Icon, label, value }: { icon: typeof BarChart3; label: string; value: string }) {
-  return (
-    <div className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.72)] p-4">
-      <div className="flex items-center gap-3">
-        <span className="inline-flex size-10 items-center justify-center rounded-2xl bg-[var(--panel-soft)] text-[var(--accent-ink)]">
-          <Icon className="size-4" />
-        </span>
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--ink-muted)]">{label}</p>
-          <p className="mt-1 font-serif text-2xl font-semibold tracking-[-0.04em] text-[var(--ink-strong)]">{value}</p>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function StatusPill({ live }: { live: boolean }) {
@@ -768,4 +666,11 @@ function formatStart(value: string | null) {
     month: 'short',
     day: 'numeric',
   }).format(parsed)
+}
+
+function formatTimeOnly(value: string | null) {
+  if (!value) return 'TBD'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'TBD'
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(parsed)
 }

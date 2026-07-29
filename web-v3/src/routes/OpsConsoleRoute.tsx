@@ -198,14 +198,14 @@ export function OpsConsoleRoute() {
               detail={`${posture.feedWatch} feed(s) outside healthy, ${formatNumber(posture.dlqDepth)} DLQ row(s).`}
               icon={RadioTower}
               label="Inspect feed health"
-              to="/ops/feeds"
+              to="/admin/feeds"
               tone={posture.feedWatch > 0 ? 'warn' : 'ok'}
             />
             <AttentionLink
               detail={`${formatNumber(posture.maxLag)} max stream lag (warn ≥ ${LAG_WARN_THRESHOLD}), bus ${snapshot?.ingest?.bus.status ?? 'unknown'}.`}
               icon={DatabaseZap}
               label="Inspect ingestion bus"
-              to="/ops/ingest"
+              to="/admin/ingest"
               tone={
                 posture.maxLag >= LAG_WARN_THRESHOLD
                   || isIngestBusUnhealthy(snapshot?.ingest?.bus.status)
@@ -217,21 +217,21 @@ export function OpsConsoleRoute() {
               detail={`${snapshot?.streams?.summary.enabledWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0} workers enabled, ${snapshot?.streams?.summary.activeForceRequests ?? 0} force request(s).`}
               icon={Activity}
               label="Inspect stream workers"
-              to="/ops/feeds/streams"
+              to="/admin/streams"
               tone={(snapshot?.streams?.summary.offWorkers ?? 0) > 0 ? 'warn' : 'ok'}
             />
             <AttentionLink
               detail={`${formatNumber(posture.diffRows)} filtered disagreement row(s), ${snapshot?.diffs?.summary.contradictionRows ?? 0} contradiction(s).`}
               icon={GitCompareArrows}
               label="Inspect settlement diffs"
-              to="/ops/diffs?focus=DISAGREEMENT"
+              to="/admin/diffs?focus=DISAGREEMENT"
               tone={posture.diffRows > 0 ? 'warn' : 'ok'}
             />
             <AttentionLink
               detail={`${formatNumber(posture.reviewRows)} manual-review row(s) currently queued.`}
               icon={ShieldCheck}
               label="Open review queue"
-              to="/review"
+              to="/admin/review"
               tone={posture.reviewRows > 0 ? 'warn' : 'ok'}
             />
           </CardContent>
@@ -241,7 +241,7 @@ export function OpsConsoleRoute() {
       <section className="mt-5 grid gap-5 xl:grid-cols-3">
         <ConsolePanel
           description="Per-source SLA, staleness, and DLQ depth."
-          href="/ops/feeds"
+          href="/admin/feeds"
           icon={RadioTower}
           metrics={[
             ['Healthy', `${snapshot?.feeds?.summary.healthySources ?? 0}/${snapshot?.feeds?.summary.totalSources ?? 0}`],
@@ -252,7 +252,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Redis stream mode, lag, pending entries, and DLQ pressure."
-          href="/ops/ingest"
+          href="/admin/ingest"
           icon={DatabaseZap}
           metrics={[
             ['Bus', snapshot?.ingest?.bus.mode ?? 'N/A'],
@@ -263,7 +263,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Stream-CV components, VLM usage, and route/template inventory."
-          href="/ops/feeds/streams"
+          href="/admin/streams"
           icon={Activity}
           metrics={[
             ['Ready', `${snapshot?.streams?.summary.enabledWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0}`],
@@ -274,7 +274,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Primary settlement outcomes against shadow replay."
-          href="/ops/diffs"
+          href="/admin/diffs"
           icon={GitCompareArrows}
           metrics={[
             ['Rows', String(snapshot?.diffs?.summary.totalRows ?? 0)],
@@ -285,7 +285,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Human triage for held or ambiguous Score Truth decisions."
-          href="/review"
+          href="/admin/review"
           icon={ShieldCheck}
           metrics={[
             ['Total queued', String(snapshot?.review?.totalItems ?? 0)],
@@ -296,7 +296,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Paper-trade session health — bankroll, ROI, open exposure, settled win/loss tally."
-          href="/"
+          href="/admin"
           icon={CircleDollarSign}
           metrics={[
             ['Bankroll', snapshot?.session ? `$${snapshot.session.currentBankroll.toFixed(2)}` : '—'],
@@ -307,7 +307,7 @@ export function OpsConsoleRoute() {
         />
         <ConsolePanel
           description="Tt-series.com match-table backfill. Auto-rebuilds Elo / TS-2 / Weng-Lin / Glicko-2 when new rows land."
-          href="/ops/scrape"
+          href="/admin/scrape"
           icon={Database}
           metrics={[
             ['State', snapshot?.scrape ? (snapshot.scrape.running ? 'Running' : 'Idle') : '—'],

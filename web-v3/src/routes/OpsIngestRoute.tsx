@@ -123,7 +123,7 @@ export function OpsIngestRoute() {
       actions={
         <>
           <Button variant="ghost" asChild>
-            <Link to="/ops/feeds">
+            <Link to="/admin/feeds">
               <Activity className="size-4" />
               Ops Feeds
             </Link>

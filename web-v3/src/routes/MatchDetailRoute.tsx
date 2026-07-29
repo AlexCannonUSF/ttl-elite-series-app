@@ -12,7 +12,7 @@ import {
   TrendingUp,
   type LucideIcon,
 } from 'lucide-react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 
 import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
@@ -80,8 +80,39 @@ const detailTabs: TabDefinition[] = [
   },
 ]
 
+const userDetailTabs: TabDefinition[] = [
+  {
+    description: 'The probability, confidence range, and strongest drivers.',
+    icon: Brain,
+    key: 'prediction',
+    label: 'Why this lean',
+  },
+  {
+    description: 'Live observations, score changes, and market continuity.',
+    icon: Clock3,
+    key: 'history',
+    label: 'Live timeline',
+  },
+  {
+    description: 'Hard Rock line, our fair price, value gap, and signal state.',
+    icon: BarChart3,
+    key: 'market',
+    label: 'Price detail',
+  },
+  {
+    description: 'How much trustworthy data supports the current read.',
+    icon: Shield,
+    key: 'evidence',
+    label: 'Data confidence',
+  },
+]
+
 export function MatchDetailRoute() {
+  const location = useLocation()
   const { id, tab } = useParams()
+  const userMode = location.pathname.startsWith('/user/')
+  const detailBase = userMode ? '/user/matches' : '/matches'
+  const visibleTabs = userMode ? userDetailTabs : detailTabs
   const matchId = useMemo(() => safeDecode(id), [id])
   const activeTab = toTabKey(tab)
   const [strategy, setStrategy] = useState<'CONSERVATIVE' | 'AGGRESSIVE'>('CONSERVATIVE')
@@ -215,7 +246,10 @@ export function MatchDetailRoute() {
     return () => window.clearInterval(interval)
   }, [loadDetail])
 
-  const title = marketRow?.eventName ?? evidence?.evidence.trackedEventId ?? (matchId ? `Match ${matchId}` : 'Match Detail')
+  const title = marketRow?.eventName
+    ?? (matchupIntel ? `${matchupIntel.player1.fullName} vs. ${matchupIntel.player2.fullName}` : null)
+    ?? evidence?.evidence.trackedEventId
+    ?? fallbackMatchTitle(matchId)
   const subtitle = marketRow
     ? `${marketRow.competitionName} | ${formatStart(marketRow.startTimeIso)}`
     : evidence
@@ -224,12 +258,12 @@ export function MatchDetailRoute() {
 
   return (
     <V3Shell
-      eyebrow="TTLElite Series 3.0"
-      title="Match Detail"
+      eyebrow={userMode ? 'Sportsbook Intelligence' : 'TTLElite Series 3.0'}
+      title={userMode ? 'Match Intelligence' : 'Match Detail'}
       description={subtitle}
       badges={
         <>
-          <Badge variant="accent">Match Detail</Badge>
+          <Badge variant="accent">{userMode ? 'Decision detail' : 'Match Detail'}</Badge>
           <Badge>{activeTab}</Badge>
         </>
       }
@@ -250,7 +284,7 @@ export function MatchDetailRoute() {
             Aggressive
           </Button>
           <Button variant="ghost" asChild>
-            <Link to="/live-board">Live Board</Link>
+            <Link to="/user">Live Markets</Link>
           </Button>
           <Button variant="secondary" onClick={() => void loadDetail(true)} disabled={loading || refreshing}>
             <RefreshCcw className={cn('size-4', refreshing && 'animate-spin')} />
@@ -278,8 +312,8 @@ export function MatchDetailRoute() {
           </div>
 
           <nav aria-label="Match detail tabs" className="grid gap-3 lg:grid-cols-4">
-            {detailTabs.map((item) => (
-              <TabLink key={item.key} active={activeTab === item.key} matchId={matchId} tab={item} />
+            {visibleTabs.map((item) => (
+              <TabLink key={item.key} active={activeTab === item.key} detailBase={detailBase} matchId={matchId} tab={item} />
             ))}
           </nav>
         </CardContent>
@@ -311,10 +345,12 @@ export function MatchDetailRoute() {
 
 function TabLink({
   active,
+  detailBase,
   matchId,
   tab,
 }: {
   active: boolean
+  detailBase: string
   matchId: string
   tab: TabDefinition
 }) {
@@ -328,7 +364,7 @@ function TabLink({
           ? 'border-[var(--accent-soft)] bg-[var(--accent-fade)] text-[var(--accent-ink)]'
           : 'border-[var(--line)] bg-[rgba(255,255,255,0.72)] text-[var(--ink-muted)] hover:border-[var(--accent-soft)] hover:text-[var(--ink-strong)]',
       )}
-      to={`/matches/${encodeURIComponent(matchId)}/${tab.key}`}
+      to={`${detailBase}/${encodeURIComponent(matchId)}/${tab.key}`}
     >
       <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl border border-[var(--line)] bg-[var(--panel)]">
         <Icon aria-hidden="true" className="size-4" />
@@ -995,6 +1031,9 @@ function resolveTimelineKey(
   if (row?.suggestedDedupeKey) {
     return stripDedupeSide(row.suggestedDedupeKey) ?? row.suggestedDedupeKey
   }
+  if (matchId.includes('|')) {
+    return matchId
+  }
   if (parseMatchKey(matchId)) {
     return null
   }
@@ -1109,6 +1148,11 @@ function safeDecode(value: string | undefined) {
   } catch {
     return value
   }
+}
+
+function fallbackMatchTitle(matchId: string) {
+  const parsed = parseMatchKey(matchId)
+  return parsed ? `Player ${parsed.player1Id} vs. Player ${parsed.player2Id}` : matchId ? `Match ${matchId}` : 'Match Detail'
 }
 
 function toTabKey(value: string | undefined): TabKey {

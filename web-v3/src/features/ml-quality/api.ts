@@ -1,4 +1,4 @@
-import type { MlQualityResponse } from '@/features/ml-quality/types'
+import type { MlQualityResponse, ModelLearningAudit, StakingPolicy } from '@/features/ml-quality/types'
 
 export type MlQualityQuery = {
   windowDays?: number
@@ -22,4 +22,41 @@ export async function fetchMlQuality(query: MlQualityQuery = {}, signal?: AbortS
     throw new Error(`ML quality request failed with ${response.status}`)
   }
   return (await response.json()) as MlQualityResponse
+}
+
+export async function fetchModelLearningAudit(windowDays = 180, signal?: AbortSignal): Promise<ModelLearningAudit> {
+  const response = await fetch(`/api/v3/ml/learning-audit?windowDays=${windowDays}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Model learning audit request failed with ${response.status}`)
+  }
+  return (await response.json()) as ModelLearningAudit
+}
+
+export async function fetchStakingPolicy(signal?: AbortSignal): Promise<StakingPolicy> {
+  const response = await fetch('/api/v3/ops/staking/policy', {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Staking policy request failed with ${response.status}`)
+  }
+  return (await response.json()) as StakingPolicy
+}
+
+export async function reloadStakingPolicy(): Promise<StakingPolicy> {
+  const response = await fetch('/api/v3/ops/staking/policy/reload', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ triggeredBy: 'admin-ui' }),
+  })
+  if (!response.ok) {
+    throw new Error(`Staking policy reload failed with ${response.status}`)
+  }
+  return (await response.json()) as StakingPolicy
 }

@@ -3,6 +3,7 @@ import {
   ArrowRight,
   CircleDollarSign,
   Gauge,
+  LineChart,
   ShieldCheck,
   Star,
   TrendingDown,
@@ -118,6 +119,8 @@ export function BettorMatchupPanel({
           </div>
         </section>
 
+        <OddsFlow history={history} row={row} />
+
         <section aria-labelledby="confidence-heading">
           <div className="flex items-end justify-between gap-3">
             <div>
@@ -173,6 +176,63 @@ export function BettorMatchupPanel({
         ) : null}
       </CardContent>
     </Card>
+  )
+}
+
+function OddsFlow({ history, row }: { history: LiveBoardHistoryPoint[]; row: LiveOddsRecommendation }) {
+  const points = history.length >= 2
+    ? history
+    : [
+        {
+          time: Math.floor(Date.now() / 1000) - 1,
+          player1Odds: row.decimalOddsPlayer1,
+          player2Odds: row.decimalOddsPlayer2,
+        },
+        {
+          time: Math.floor(Date.now() / 1000),
+          player1Odds: row.decimalOddsPlayer1,
+          player2Odds: row.decimalOddsPlayer2,
+        },
+      ]
+  const values = points.flatMap((point) => [point.player1Odds, point.player2Odds]).filter(Number.isFinite)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const spread = Math.max(max - min, 0.15)
+  const x = (index: number) => 14 + (index / Math.max(1, points.length - 1)) * 292
+  const y = (value: number) => 104 - ((value - min) / spread) * 74
+  const pathFor = (side: 'player1Odds' | 'player2Odds') =>
+    points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index).toFixed(1)} ${y(point[side]).toFixed(1)}`).join(' ')
+
+  return (
+    <section className="overflow-hidden rounded-[22px] border border-[var(--line)] bg-[linear-gradient(145deg,#0b2620,#0a1916)] p-4 text-white" aria-labelledby="odds-flow-heading">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300" id="odds-flow-heading">
+            <LineChart className="size-3.5" aria-hidden="true" />
+            Market pulse
+          </p>
+          <h3 className="mt-1 text-base font-semibold">Tracked Hard Rock price flow</h3>
+        </div>
+        <span className="text-right font-mono text-[10px] text-slate-400">{points.length} samples<br />8s refresh</span>
+      </div>
+      <svg className="mt-3 w-full" viewBox="0 0 320 122" role="img" aria-label={`Odds movement for ${row.player1Name} and ${row.player2Name}`}>
+        {[30, 67, 104].map((gridY) => <line key={gridY} x1="14" y1={gridY} x2="306" y2={gridY} stroke="rgba(148,163,184,.14)" strokeWidth="1" />)}
+        <path d={pathFor('player1Odds')} fill="none" stroke="#5ee7bd" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+        <path d={pathFor('player2Odds')} fill="none" stroke="#fbbf67" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+        <circle cx={x(points.length - 1)} cy={y(points.at(-1)?.player1Odds ?? row.decimalOddsPlayer1)} r="4" fill="#5ee7bd" stroke="#0b2620" strokeWidth="2" />
+        <circle cx={x(points.length - 1)} cy={y(points.at(-1)?.player2Odds ?? row.decimalOddsPlayer2)} r="4" fill="#fbbf67" stroke="#0b2620" strokeWidth="2" />
+      </svg>
+      <div className="grid grid-cols-2 gap-2 border-t border-white/10 pt-3 text-xs">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 truncate text-slate-300"><span className="size-2 rounded-full bg-emerald-300" />{row.player1Name}</p>
+          <p className="mt-1 font-mono font-bold">{row.decimalOddsPlayer1.toFixed(2)} <span className="font-sans font-normal text-slate-500">· {formatAmerican(row.americanOddsPlayer1)}</span></p>
+        </div>
+        <div className="min-w-0 text-right">
+          <p className="flex items-center justify-end gap-2 truncate text-slate-300">{row.player2Name}<span className="size-2 rounded-full bg-amber-300" /></p>
+          <p className="mt-1 font-mono font-bold">{row.decimalOddsPlayer2.toFixed(2)} <span className="font-sans font-normal text-slate-500">· {formatAmerican(row.americanOddsPlayer2)}</span></p>
+        </div>
+      </div>
+    </section>
   )
 }
 
