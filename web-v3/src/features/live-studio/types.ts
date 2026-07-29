@@ -158,6 +158,81 @@ export type LiveBoardHistoryPoint = {
   player2Odds: number
 }
 
+export type MatchupForm = {
+  recentMatches: number
+  recentWins: number
+  recentWinPct: number
+  averageSetMargin: number
+  streak: number
+  streakWin: boolean
+}
+
+export type MatchupRatings = {
+  elo: number
+  glicko: number
+  glickoDeviation: number
+  trueSkill2: number
+  wengLin: number
+  stability: number
+}
+
+export type MatchupAnalysis = {
+  player1: {
+    id: number
+    firstName: string
+    lastName: string
+    fullName: string
+  }
+  player2: {
+    id: number
+    firstName: string
+    lastName: string
+    fullName: string
+  }
+  headToHead: {
+    player1Name: string
+    player2Name: string
+    player1Wins: number
+    player2Wins: number
+    totalMatches: number
+    player1WinPct: number
+    player2WinPct: number
+  }
+  player1Form: MatchupForm
+  player2Form: MatchupForm
+  player1Last50: MatchupForm
+  player2Last50: MatchupForm
+  recentHeadToHead: {
+    matches: number
+    player1Wins: number
+    player2Wins: number
+  }
+  player1Ratings: MatchupRatings
+  player2Ratings: MatchupRatings
+  player1Probability: {
+    probability: number
+    confidenceLow: number
+    confidenceHigh: number
+    americanOdds: number
+  }
+  player2Probability: {
+    probability: number
+    confidenceLow: number
+    confidenceHigh: number
+    americanOdds: number
+  }
+  featureContributions: Array<{
+    feature: string
+    contribution: number
+  }>
+  modelComparison: {
+    baselineProbabilityPlayer1: number
+    eloProbabilityPlayer1: number
+    glickoProbabilityPlayer1: number
+  }
+  explanation: string
+}
+
 export type TrackedMatchObservation = {
   id: number | null
   sessionId: number | null

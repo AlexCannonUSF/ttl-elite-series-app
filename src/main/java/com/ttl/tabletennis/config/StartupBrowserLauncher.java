@@ -39,7 +39,7 @@ public class StartupBrowserLauncher {
     @Value("${app.openBrowserDelayMs:1200}")
     private long openBrowserDelayMs;
 
-    @Value("${app.webUiUrl:http://localhost:5174/v3/}")
+    @Value("${app.webUiUrl:http://127.0.0.1:5174/v3/}")
     private String webUiUrl;
 
     @Value("${app.autoStartWebUiDevServer:true}")
@@ -87,6 +87,7 @@ public class StartupBrowserLauncher {
 
         Thread opener = new Thread(() -> {
             String url = resolvePreferredUrl(backendUrl);
+            announceRuntime(url, port);
             openInBrowser(url, delay);
         }, "startup-browser-opener");
         opener.setDaemon(true);
@@ -112,6 +113,15 @@ public class StartupBrowserLauncher {
         } catch (Exception e) {
             log.warn("Could not open browser for {}", url, e);
         }
+    }
+
+    private void announceRuntime(String appUrl, int backendPort) {
+        log.info("============================================================");
+        log.info("TTLELITE READY");
+        log.info("App:     {}", appUrl);
+        log.info("Backend: http://localhost:{}", backendPort);
+        log.info("Owner:   this IntelliJ Run session (Stop ends the app)");
+        log.info("============================================================");
     }
 
     private String resolvePreferredUrl(String backendUrl) {

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-19T17:33:36.631Z",
+  "generatedAt": "2026-07-29T17:57:47.054Z",
   "budgets": {
     "initialJsGzKb": 450,
     "lcpMs": 2000,
@@ -7,42 +7,170 @@
   },
   "bundle": {
     "indexHtmlBytes": 563,
-    "indexHtmlGzBytes": 352,
-    "initialJsGzBytes": 202271,
-    "initialCssGzBytes": 7967,
+    "indexHtmlGzBytes": 348,
+    "initialJsGzBytes": 114325,
+    "initialCssGzBytes": 7994,
     "jsAssets": [
       {
-        "href": "/v3/assets/index-C7HJU_QH.js",
-        "file": "assets/index-C7HJU_QH.js",
-        "bytes": 678857,
-        "gzBytes": 202271
+        "href": "/v3/assets/index-CmO2AJk3.js",
+        "file": "assets/index-CmO2AJk3.js",
+        "bytes": 358199,
+        "gzBytes": 114325
       }
     ],
     "cssAssets": [
       {
-        "href": "/v3/assets/index-DZy59P6l.css",
-        "file": "assets/index-DZy59P6l.css",
-        "bytes": 38964,
-        "gzBytes": 7967
+        "href": "/v3/assets/index-CHbgC9F8.css",
+        "file": "assets/index-CHbgC9F8.css",
+        "bytes": 39112,
+        "gzBytes": 7994
       }
     ],
     "allAssets": [
       {
-        "file": "index-C7HJU_QH.js",
-        "bytes": 678857,
-        "gzBytes": 202271
+        "file": "index-CmO2AJk3.js",
+        "bytes": 358199,
+        "gzBytes": 114325
       },
       {
-        "file": "index-DZy59P6l.css",
-        "bytes": 38964,
-        "gzBytes": 7967
+        "file": "LiveBoardRoute-HgldDc3t.js",
+        "bytes": 189563,
+        "gzBytes": 61073
+      },
+      {
+        "file": "index-CHbgC9F8.css",
+        "bytes": 39112,
+        "gzBytes": 7994
+      },
+      {
+        "file": "MatchDetailRoute-G-KrVxSW.js",
+        "bytes": 27731,
+        "gzBytes": 7935
+      },
+      {
+        "file": "ReviewRoute-DcPZKOpb.js",
+        "bytes": 24350,
+        "gzBytes": 7863
+      },
+      {
+        "file": "OpsConsoleRoute-DKxoSvfE.js",
+        "bytes": 11681,
+        "gzBytes": 4070
+      },
+      {
+        "file": "ScrapeRoute-Bi8Vnd6l.js",
+        "bytes": 12941,
+        "gzBytes": 3978
+      },
+      {
+        "file": "OpsDiffsRoute-Z2ldxEkb.js",
+        "bytes": 12161,
+        "gzBytes": 3830
+      },
+      {
+        "file": "OpsFeedsRoute-DOT5uSoH.js",
+        "bytes": 11860,
+        "gzBytes": 3762
+      },
+      {
+        "file": "MlQualityRoute-DYwelIBu.js",
+        "bytes": 10508,
+        "gzBytes": 3565
+      },
+      {
+        "file": "OpsStreamsRoute-nrHX3MC5.js",
+        "bytes": 11202,
+        "gzBytes": 3456
+      },
+      {
+        "file": "OpsIngestRoute-CYtfGFHI.js",
+        "bytes": 9872,
+        "gzBytes": 3054
+      },
+      {
+        "file": "api-CYqFZpRN.js",
+        "bytes": 1124,
+        "gzBytes": 516
+      },
+      {
+        "file": "api-wfhLC4dg.js",
+        "bytes": 1432,
+        "gzBytes": 428
       },
       {
         "file": "index.html",
         "bytes": 563,
-        "gzBytes": 352
+        "gzBytes": 348
+      },
+      {
+        "file": "api-C9DPuymP.js",
+        "bytes": 467,
+        "gzBytes": 324
+      },
+      {
+        "file": "shield-alert-BK3m2Fkp.js",
+        "bytes": 354,
+        "gzBytes": 262
+      },
+      {
+        "file": "radio-BCTtLDkC.js",
+        "bytes": 375,
+        "gzBytes": 251
+      },
+      {
+        "file": "database-zap-CBcw6n-d.js",
+        "bytes": 340,
+        "gzBytes": 246
+      },
+      {
+        "file": "triangle-alert-B4zriUSs.js",
+        "bytes": 266,
+        "gzBytes": 215
+      },
+      {
+        "file": "timer-reset-0m9swzOm.js",
+        "bytes": 270,
+        "gzBytes": 210
+      },
+      {
+        "file": "chart-column-C7iQDJBS.js",
+        "bytes": 252,
+        "gzBytes": 195
+      },
+      {
+        "file": "chevron-right-BmxUsWsD.js",
+        "bytes": 213,
+        "gzBytes": 178
+      },
+      {
+        "file": "circle-check-kCRY5Ykn.js",
+        "bytes": 174,
+        "gzBytes": 166
+      },
+      {
+        "file": "clock-3-BrmhLISS.js",
+        "bytes": 165,
+        "gzBytes": 165
       }
     ]
   },
-  "runtime": null
+  "runtime": {
+    "samples": 3,
+    "lcpMs": 374,
+    "ttiMs": 61.60000002384186,
+    "fcpMs": 374,
+    "rawLcp": [
+      548,
+      200
+    ],
+    "rawTti": [
+      228.79999995231628,
+      54.39999997615814,
+      61.60000002384186
+    ],
+    "rawFcp": [
+      548,
+      200
+    ]
+  }
 }

@@ -18,8 +18,13 @@ import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchLiveBoard, fetchMatchTimeline } from '@/features/live-studio/api'
-import type { LiveOddsRecommendation, TrackedMatchObservation } from '@/features/live-studio/types'
+import { fetchLiveBoard, fetchMatchTimeline, fetchMatchupAnalysis } from '@/features/live-studio/api'
+import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
+import type {
+  LiveOddsRecommendation,
+  MatchupAnalysis,
+  TrackedMatchObservation,
+} from '@/features/live-studio/types'
 import { fetchPredictionPanel, parseMatchKey, type ParsedMatchKey } from '@/features/prediction/api'
 import type {
   PredictionContribution,
@@ -82,6 +87,8 @@ export function MatchDetailRoute() {
   const [strategy, setStrategy] = useState<'CONSERVATIVE' | 'AGGRESSIVE'>('CONSERVATIVE')
   const [evidence, setEvidence] = useState<ScoreTruthEvidenceResponse | null>(null)
   const [prediction, setPrediction] = useState<PredictionPanelResponse | null>(null)
+  const [matchupIntel, setMatchupIntel] = useState<MatchupAnalysis | null>(null)
+  const [intelError, setIntelError] = useState<string | null>(null)
   const [marketRow, setMarketRow] = useState<LiveOddsRecommendation | null>(null)
   const [timeline, setTimeline] = useState<TrackedMatchObservation[]>([])
   const [errors, setErrors] = useState<LoadErrors>({})
@@ -119,6 +126,8 @@ export function MatchDetailRoute() {
     let nextEvidence: ScoreTruthEvidenceResponse | null = null
     let nextTimeline: TrackedMatchObservation[] = []
     let nextPrediction: PredictionPanelResponse | null = null
+    let nextMatchupIntel: MatchupAnalysis | null = null
+    let nextIntelError: string | null = null
     let boardRows: LiveOddsRecommendation[] = []
 
     try {
@@ -152,18 +161,32 @@ export function MatchDetailRoute() {
 
     const predictionIdentity = resolvePredictionIdentity(matchId, nextMarketRow, nextTimeline)
     if (predictionIdentity) {
-      try {
-        nextPrediction = await fetchPredictionPanel({
+      const [predictionResult, intelResult] = await Promise.allSettled([
+        fetchPredictionPanel({
           player1Id: predictionIdentity.player1Id,
           player2Id: predictionIdentity.player2Id,
           asOfDate: predictionIdentity.asOfDate,
           topK: 6,
-        })
-      } catch (error) {
-        nextErrors.prediction = error instanceof Error ? error.message : 'Unable to load the prediction panel.'
+        }),
+        fetchMatchupAnalysis(predictionIdentity.player1Id, predictionIdentity.player2Id),
+      ])
+      if (predictionResult.status === 'fulfilled') {
+        nextPrediction = predictionResult.value
+      } else {
+        nextErrors.prediction = predictionResult.reason instanceof Error
+          ? predictionResult.reason.message
+          : 'Unable to load the prediction panel.'
+      }
+      if (intelResult.status === 'fulfilled') {
+        nextMatchupIntel = intelResult.value
+      } else {
+        nextIntelError = intelResult.reason instanceof Error
+          ? intelResult.reason.message
+          : 'Unable to load matchup intelligence.'
       }
     } else {
       nextErrors.prediction = 'This match id does not expose player ids yet, so prediction cannot be resolved.'
+      nextIntelError = 'This match does not expose a resolved player-id pair yet.'
     }
 
     if (!mountedRef.current) {
@@ -171,6 +194,8 @@ export function MatchDetailRoute() {
     }
     setEvidence(nextEvidence)
     setPrediction(nextPrediction)
+    setMatchupIntel(nextMatchupIntel)
+    setIntelError(nextIntelError)
     setMarketRow(nextMarketRow)
     setTimeline(nextTimeline)
     setErrors(nextErrors)
@@ -259,6 +284,17 @@ export function MatchDetailRoute() {
           </nav>
         </CardContent>
       </Card>
+
+      {marketRow ? (
+        <div className="mt-5">
+          <BettorMatchupPanel
+            analysis={matchupIntel}
+            intelError={intelError}
+            intelLoading={loading && !matchupIntel}
+            row={marketRow}
+          />
+        </div>
+      ) : null}
 
       <div className="mt-5">
         {loading && !evidence && !prediction && !marketRow ? (

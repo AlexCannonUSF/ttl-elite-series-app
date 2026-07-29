@@ -42,6 +42,15 @@ If you know the type of work you are doing, start here:
 
 ## Runbook
 
+IntelliJ (recommended):
+
+1. Select **TTL App - One Click** in the Run configuration menu.
+2. Press the green Run button once.
+3. The backend owns `http://localhost:8080`, the React UI starts at
+   `http://127.0.0.1:5174/v3/`, and the browser opens automatically.
+4. Press IntelliJ Stop before starting the application anywhere else. The
+   backend and the UI are managed as one run session.
+
 Backend:
 
 ```bash

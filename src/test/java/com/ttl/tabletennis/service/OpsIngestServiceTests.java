@@ -133,6 +133,41 @@ class OpsIngestServiceTests {
         assertNull(snapshot.partitions().get(0).lag());
     }
 
+    @Test
+    void emptyStreamStillReportsProvisionedConsumerGroup() throws IOException {
+        IngestDlqRepository dlqRepository = mock(IngestDlqRepository.class);
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        StreamOperations<String, Object, Object> streamOperations = mock(StreamOperations.class);
+        StreamInfo.XInfoGroups groups = mock(StreamInfo.XInfoGroups.class);
+        StreamInfo.XInfoGroup group = mock(StreamInfo.XInfoGroup.class);
+
+        when(redisTemplate.execute(any(RedisCallback.class))).thenReturn("PONG");
+        when(redisTemplate.opsForStream()).thenReturn(streamOperations);
+        when(streamOperations.size(anyString())).thenReturn(0L);
+        when(streamOperations.groups(anyString())).thenReturn(groups);
+        when(groups.isEmpty()).thenReturn(false);
+        when(groups.size()).thenReturn(1);
+        when(groups.stream()).thenAnswer(invocation -> Stream.of(group));
+        when(group.pendingCount()).thenReturn(0L);
+        when(group.getRaw()).thenReturn(Map.of("lag", 0L));
+
+        OpsIngestService service = new OpsIngestService(
+                featureCatalog("shadow"),
+                dlqRepository,
+                Optional.of(redisTemplate),
+                "ttl",
+                1000L,
+                10000L
+        );
+
+        OpsIngestDto snapshot = service.snapshot();
+
+        assertTrue(snapshot.partitions().stream().allMatch(partition -> partition.consumerGroups() == 1L));
+        assertTrue(snapshot.partitions().stream().allMatch(partition -> partition.pendingCount() == 0L));
+        assertTrue(snapshot.partitions().stream().allMatch(partition -> partition.lag() == 0L));
+    }
+
     private FeatureFlagCatalog featureCatalog(String state) throws IOException {
         Path catalogPath = tempDir.resolve("features-" + state + ".yaml");
         Files.writeString(catalogPath, """

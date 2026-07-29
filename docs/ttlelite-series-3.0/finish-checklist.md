@@ -1,6 +1,6 @@
 # TTLElite Series 3.0 — Finish Checklist
 
-_Working doc capturing everything between "the stack is up in shadow" and "3.0 is fully promoted and proven." Tick items as they land. Last updated 2026-05-19._
+_Working doc capturing everything between "the stack is up in shadow" and "3.0 is fully promoted and proven." Tick items as they land. Last updated 2026-07-29._
 
 ## Status today
 
@@ -9,7 +9,7 @@ _Working doc capturing everything between "the stack is up in shadow" and "3.0 i
 | v3 UI shell at `/v3/*` | Canonical |
 | v3 SettlementEngine (`score-truth=primary`) | Closing bets — first 14 closures observed, all `HOLD_OPEN` |
 | v3 staking layer (Phase 06) | Running unconditionally; metrics live |
-| Redis Streams bus | Shadow-mirroring (running alongside in-process bus) |
+| Redis Streams bus | Shadow-mirroring with the `ttl-app` consumer group healthy; 24-hour promotion observation began 2026-07-29 18:15 UTC |
 | `ttl-predict-py` (v3 blender service) | Up; Variant A/B artefacts load and `/metrics` reports `ttl_predict_blender_ready 1.0`; promotion gates still red |
 | Stream-CV | Off (no model artefacts or stream URLs staged) |
 | MinIO raw payload store | Up |
@@ -55,6 +55,11 @@ Soak each flag for at least 24h in shadow before promoting.
 **2026-05-19**: mechanical promotion sequence is now a runbook — `docs/ttlelite-series-3.0/runbooks/flag-promotion-runbook.md` — with the exact `sed + lint + restart + verify` commands for each flag. The runbook stays accurate as long as `features.yaml` keeps its current structure; CI's `--enforce-expiry` blocks any promotion attempt that would push past an expired flag.
 
 - `[ ]` `features.redis-streams`: shadow → **on** after 24h of clean shadow run (no DLQ pressure, no partition lag > threshold, no ingestion errors in the bus log). _Runbook §1._
+  - 2026-07-29 18:15 UTC: the typed `ttl-app` consumer-group bridge was
+    deployed in shadow mode. Baseline was `HEALTHY`, five groups provisioned,
+    pending `0`, lag `0`, DLQ `0`, and consumer poll failures `0`. This starts
+    the continuous 24-hour observation window; do not promote before
+    2026-07-30 18:15 UTC.
 - `[ ]` `features.stream-cv`: off → **shadow** after staging:
   - `[ ]` ROI templates committed for each tracked platform under `models/stream-cv/roi/`
   - `[ ]` `models/stream-cv/yolo/` + `models/stream-cv/ocr/` artefacts present

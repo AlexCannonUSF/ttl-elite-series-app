@@ -23,10 +23,30 @@ Staging uses the same Redis 7 image and append-only persistence. Override `TTL_R
 The backend keeps the in-process Spring event bus while `features.redis-streams=off`.
 
 - `off`: `ApplicationEventIngestionBus`
-- `shadow`: Spring events remain primary and events are also written to Redis Streams
-- `on`: `RedisStreamsBus`
+- `shadow`: Spring events remain primary; events are mirrored to Redis Streams,
+  decoded by the `ttl-app` consumer group, and acknowledged without redispatch
+- `on`: `RedisStreamsBus`; the `ttl-app` consumer group reconstructs the typed
+  event and dispatches it to the existing Spring event listeners before ACK
 
 Redis stream keys are topic families such as `ttl:odds`, `ttl:scores`, `ttl:results`, `ttl:health`, and `ttl:identity`.
+
+The consumer starts each missing group at `$`, so enabling shadow mode does not
+replay an old local backlog. It first drains records already pending for its
+consumer name, then reads new records. Decode or listener failures are written
+to `ingest_dlq`; a record is acknowledged only after successful handling or a
+successful DLQ write. Its poll loop runs on a dedicated scheduler thread, so a
+long scrape or settlement task cannot stall Redis consumption.
+
+```properties
+ttl.ingestion.redis.consumer.group=ttl-app
+ttl.ingestion.redis.consumer.name=ttl-app-1
+ttl.ingestion.redis.consumer.batchSize=100
+ttl.ingestion.redis.consumer.pollDelayMs=250
+```
+
+Use a unique consumer name per running backend replica. A flag promotion still
+requires a backend restart because the selected `IngestionBus` is a Spring bean
+created at application startup.
 
 ## Phase 04 producer cutover (item 3)
 
@@ -50,3 +70,7 @@ Routing: `RedisStreamsBus` maps each topic to a stream family — `*.odds` →
 `*.result | *.ledger` → `ttl:results`, `*.health` → `ttl:health`,
 `*.identity | *.ranking` → `ttl:identity`. Unknown topics fall back to
 `ttl:<sanitized-topic>`.
+
+`RedisIngestEventCodec` uses an explicit payload allow-list rather than Jackson
+polymorphic class loading. Keep that allow-list and its tests in sync whenever a
+new production `IngestEvent` payload type is introduced.

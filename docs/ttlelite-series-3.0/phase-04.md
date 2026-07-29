@@ -1,6 +1,6 @@
 # TTLElite Series 3.0 - Phase 04 Closeout
 
-_Status: implementation complete; runtime soak / release gate pending; updated on 2026-05-18_
+_Status: implementation complete, including the consumer-group bridge; runtime soak / release gate pending; updated on 2026-07-29_
 
 Phase 04 moved the 3.0 stack from local, in-process ingestion toward durable operation. Ingestion can now route through Redis Streams, raw payloads and CV audit evidence can land in MinIO, Tier C VLM fallback is behind budget controls, and the first v3 prediction shadow path is wired end to end with model artefacts and diff logging.
 
@@ -16,6 +16,17 @@ The implementation checklist is complete. The formal exit criteria still require
 - `shadow` keeps Spring application events primary while also writing to Redis Streams.
 - `on` promotes Redis Streams to the active delivery bus.
 - Stream keys use the configured prefix and known families: `ttl:odds`, `ttl:scores`, `ttl:results`, `ttl:health`, and `ttl:identity`.
+- `RedisStreamsConsumer` creates the `ttl-app` group for those five families,
+  drains pending records, and reads new records in bounded batches.
+- In `shadow`, the consumer validates and acknowledges the serialized contract
+  without redispatching events; in `on`, it publishes the reconstructed typed
+  event to the existing Spring listeners before acknowledging.
+- Decode or listener failures are persisted to `ingest_dlq`. If that persistence
+  fails, the Redis record remains pending for retry.
+- Consumer polling uses a dedicated scheduler thread, isolating stream lag from
+  long-running scrape and settlement jobs on Spring's default scheduler.
+- `RedisIngestEventCodec` explicitly allow-lists production payload classes,
+  preventing arbitrary class instantiation from Redis data.
 
 ### Redis Runtime
 
@@ -65,6 +76,10 @@ features.redis-streams=off|shadow|on
 features.predict-v3=off|shadow|on
 
 ttl.ingestion.redis.streamPrefix=ttl
+ttl.ingestion.redis.consumer.group=ttl-app
+ttl.ingestion.redis.consumer.name=ttl-app-1
+ttl.ingestion.redis.consumer.batchSize=100
+ttl.ingestion.redis.consumer.pollDelayMs=250
 ttl.ingestion.raw-store.enabled=false
 ttl.cv-audit.enabled=false
 ttl.streamCv.vlm.engine=disabled|gemini-flash|claude-haiku
@@ -112,7 +127,11 @@ Phase 04 was exercised through focused and full verification:
 - MinIO compose validation was performed during the MinIO implementation work.
 - Browser smoke: `/v3/ops/ingest` rendered against a real backend contract with no console errors.
 
-Representative test coverage includes Redis stream publication, shadow Redis behavior, raw payload storage, MinIO upload failure handling, CV audit evidence refs, VLM clients, VLM response parsing, budget governor behavior, VLM call recording, prediction shadow logging, and the new V3 ingest operations contract.
+Representative test coverage includes Redis stream publication, consumer
+decoding and dispatch, shadow validation, ACK ordering, DLQ persistence failure,
+raw payload storage, MinIO upload failure handling, CV audit evidence refs, VLM
+clients, VLM response parsing, budget governor behavior, VLM call recording,
+prediction shadow logging, and the new V3 ingest operations contract.
 
 ## Release Gate Status
 
@@ -127,7 +146,11 @@ Representative test coverage includes Redis stream publication, shadow Redis beh
 ## Residual Limits
 
 - Redis Streams is feature-flagged and default-off until the 7-day steady-state soak is complete.
-- No production consumer-group cutover should be treated as complete until partition lag is observed under live load.
+- The production consumer-group bridge is implemented, but its cutover should
+  not be treated as complete until partition lag and DLQ depth stay clean
+  through the live soak.
+- Use a unique consumer name for every backend replica. Feature-flag promotion
+  requires a backend restart because the bus bean is selected at startup.
 - VLM clients are wired, but paid usage should stay disabled unless API keys, caps, and alerts are confirmed in the target environment.
 - MinIO refs are evidence pointers, not settlement authority.
 - Blender Variant A remains shadow-only; it logs diffs but does not control staking or settlement.

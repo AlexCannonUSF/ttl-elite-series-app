@@ -21,19 +21,19 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
 
 import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchLiveBoard, fetchLiveSession, syncLiveSession } from '@/features/live-studio/api'
+import { fetchLiveBoard, fetchLiveSession, fetchMatchupAnalysis, syncLiveSession } from '@/features/live-studio/api'
+import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
 import { FlashOnChange } from '@/features/live-studio/FlashOnChange'
-import { OddsSparkChart } from '@/features/live-studio/OddsSparkChart'
 import { SessionRibbon } from '@/features/live-studio/SessionRibbon'
 import type {
   LiveBoardHistoryPoint,
   LiveOddsRecommendation,
+  MatchupAnalysis,
   PaperTradeBet,
   PaperTradingSession,
 } from '@/features/live-studio/types'
@@ -59,6 +59,9 @@ export function LiveBoardRoute() {
   const [history, setHistory] = useState<Record<string, LiveBoardHistoryPoint[]>>({})
   const [session, setSession] = useState<PaperTradingSession | null>(null)
   const [myPicksOnly, setMyPicksOnly] = useState(false)
+  const [matchupIntel, setMatchupIntel] = useState<MatchupAnalysis | null>(null)
+  const [intelError, setIntelError] = useState<string | null>(null)
+  const [intelLoading, setIntelLoading] = useState(false)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -107,12 +110,13 @@ export function LiveBoardRoute() {
           return current
         }
         const myLive = nextRows.find((row) => row.live && myPickKeys.has(rowKey(row)))
+        const firstLive = nextRows.find((row) => row.live)
         const myAny = nextRows.find((row) => myPickKeys.has(rowKey(row)))
         const preferred =
           myLive
+          ?? firstLive
           ?? myAny
           ?? nextRows.find((row) => row.recommended)
-          ?? nextRows.find((row) => row.live)
           ?? nextRows[0]
         return preferred ? rowKey(preferred) : null
       })
@@ -178,15 +182,16 @@ export function LiveBoardRoute() {
         return blob.includes(term)
       })
     }
-    // Pin "my picks" to the top, then live, then everything else.
     return [...base].sort((a, b) => {
-      const aMine = myPickByRow.has(rowKey(a)) ? 0 : 1
-      const bMine = myPickByRow.has(rowKey(b)) ? 0 : 1
-      if (aMine !== bMine) return aMine - bMine
       const aLive = a.live ? 0 : 1
       const bLive = b.live ? 0 : 1
       if (aLive !== bLive) return aLive - bLive
-      return 0
+      const startDifference = startTimeValue(a.startTimeIso) - startTimeValue(b.startTimeIso)
+      if (startDifference !== 0) return startDifference
+      const aMine = myPickByRow.has(rowKey(a)) ? 0 : 1
+      const bMine = myPickByRow.has(rowKey(b)) ? 0 : 1
+      if (aMine !== bMine) return aMine - bMine
+      return a.eventName.localeCompare(b.eventName)
     })
   }, [rows, search, myPicksOnly, myPickByRow])
 
@@ -199,6 +204,36 @@ export function LiveBoardRoute() {
 
   const diagnostics = useMemo(() => summarizeRows(rows), [rows])
   const selectedHistory = selectedRow ? history[rowKey(selectedRow)] ?? [] : []
+
+  useEffect(() => {
+    const player1Id = selectedRow?.player1Id
+    const player2Id = selectedRow?.player2Id
+    const controller = new AbortController()
+    if (!player1Id || !player2Id) {
+      setMatchupIntel(null)
+      setIntelError('Player identities are still resolving for this market.')
+      setIntelLoading(false)
+      return () => controller.abort()
+    }
+
+    setIntelLoading(true)
+    setIntelError(null)
+    void fetchMatchupAnalysis(player1Id, player2Id, controller.signal)
+      .then((analysis) => {
+        if (!controller.signal.aborted) {
+          setMatchupIntel(analysis)
+          setIntelLoading(false)
+        }
+      })
+      .catch((nextError) => {
+        if (!controller.signal.aborted) {
+          setMatchupIntel(null)
+          setIntelError(nextError instanceof Error ? nextError.message : 'Unable to load matchup intelligence.')
+          setIntelLoading(false)
+        }
+      })
+    return () => controller.abort()
+  }, [selectedRow?.player1Id, selectedRow?.player2Id])
 
   return (
     <V3Shell
@@ -248,15 +283,15 @@ export function LiveBoardRoute() {
         </div>
       ) : null}
 
-      <section className="mt-5 grid gap-5 xl:grid-cols-[1fr_0.92fr]">
+      <section className="mt-5 grid items-start gap-5 xl:grid-cols-[1.08fr_0.92fr]">
         <Card>
           <CardHeader>
             <Badge variant="accent" className="w-fit">
-              Board State
+              Live first · chronological
             </Badge>
-            <CardTitle>Value board with live movement</CardTitle>
+            <CardTitle>Live market watchlist</CardTitle>
             <CardDescription>
-              Current sportsbook rows, model edge, recommendation gates, and local odds history from the polling stream.
+              Live matches stay on top; upcoming matches follow in start-time order. Compare the live Hard Rock line with our fair price before acting.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
@@ -299,14 +334,14 @@ export function LiveBoardRoute() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="min-w-full border-separate border-spacing-y-3">
+              <table className="min-w-[820px] border-separate border-spacing-y-2">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-[0.2em] text-[var(--ink-muted)]">
                     <th className="px-3 pb-1 font-semibold">Match</th>
-                    <th className="px-3 pb-1 text-right font-semibold">Odds</th>
-                    <th className="px-3 pb-1 text-right font-semibold">Model</th>
+                    <th className="px-3 pb-1 text-right font-semibold">Hard Rock</th>
+                    <th className="px-3 pb-1 text-right font-semibold">TTLElite fair</th>
                     <th className="px-3 pb-1 text-right font-semibold">Edge</th>
-                    <th className="px-3 pb-1 font-semibold">Signal</th>
+                    <th className="px-3 pb-1 font-semibold">Bettor read</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -331,67 +366,22 @@ export function LiveBoardRoute() {
           </CardContent>
         </Card>
 
-        <div className="grid content-start gap-5">
-          {selectedRow && myPickByRow.has(rowKey(selectedRow)) ? (
-            <YourLiveBetCard row={selectedRow} bet={myPickByRow.get(rowKey(selectedRow))!} />
-          ) : null}
-
-          <Card>
-            <CardHeader>
-              <Badge className="w-fit">Odds Chart</Badge>
-              <CardTitle>{selectedRow ? selectedRow.eventName : 'Select a row'}</CardTitle>
-              <CardDescription>
-                {selectedRow
-                  ? `${selectedRow.player1Name} vs ${selectedRow.player2Name}`
-                  : 'The chart fills as the board refreshes.'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {selectedRow ? (
-                <>
-                  <OddsSparkChart
-                    player1Name={selectedRow.player1Name}
-                    player2Name={selectedRow.player2Name}
-                    points={selectedHistory}
-                  />
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <Metric label="Score" value={selectedRow.liveScore ?? 'N/A'} />
-                    <Metric label="Phase" value={selectedRow.matchPhase ?? (selectedRow.live ? 'Live' : 'Queued')} />
-                    <Metric label="Source" value={selectedRow.sourceType ?? selectedRow.source} />
-                  </div>
-                </>
-              ) : (
-                <div className="rounded-[20px] border border-dashed border-[var(--line-strong)] p-6 text-sm text-[var(--ink-muted)]">
-                  Waiting for board rows.
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
+        <div className="grid content-start gap-5 xl:sticky xl:top-5">
           {selectedRow ? (
+            <BettorMatchupPanel
+              analysis={matchupIntel}
+              bet={myPickByRow.get(rowKey(selectedRow)) ?? null}
+              detailHref={`/matches/${encodeURIComponent(matchDetailKey(selectedRow))}/evidence`}
+              history={selectedHistory}
+              intelError={intelError}
+              intelLoading={intelLoading}
+              row={selectedRow}
+            />
+          ) : (
             <Card>
-              <CardHeader>
-                <Badge variant={selectedRow.recommended ? 'accent' : 'neutral'} className="w-fit">
-                  {selectedRow.grade || 'Board Row'}
-                </Badge>
-                <CardTitle>{selectedRow.suggestedSide ?? 'No suggested side'}</CardTitle>
-                <CardDescription>{selectedRow.rationale || 'No rationale returned for this row yet.'}</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Metric label="Suggested Edge" value={formatSignedPct(selectedRow.suggestedEdge)} />
-                  <Metric label="Fair Odds" value={formatAmerican(selectedRow.suggestedFairAmericanOdds)} />
-                  <Metric label="Reliability" value={formatPct(selectedRow.overallReliability)} />
-                  <Metric label="Trigger" value={selectedRow.topTrigger ?? 'N/A'} />
-                </div>
-                <Button variant="secondary" asChild>
-                  <Link to={`/matches/${encodeURIComponent(matchDetailKey(selectedRow))}/evidence`}>
-                    Open Match Detail
-                  </Link>
-                </Button>
-              </CardContent>
+              <CardContent className="p-6 text-sm text-[var(--ink-muted)]">Waiting for board rows.</CardContent>
             </Card>
-          ) : null}
+          )}
         </div>
       </section>
     </V3Shell>
@@ -438,7 +428,7 @@ function BoardRow({
       onClick={onSelect}
       onKeyDown={handleKeyDown}
     >
-      <td className="rounded-l-[20px] px-3 py-4 align-top">
+      <td className="rounded-l-[20px] px-3 py-3 align-top">
         <div className="flex flex-wrap items-center gap-2">
           {myPick ? (
             <Badge variant="accent" className="border-amber-300 bg-amber-100 text-amber-900">
@@ -455,12 +445,12 @@ function BoardRow({
           />
           {row.recommended && !myPick ? <Badge variant="accent">Recommended</Badge> : null}
         </div>
-        <p className="mt-3 font-medium text-[var(--ink-strong)]">{row.eventName}</p>
+        <p className="mt-2 font-medium text-[var(--ink-strong)]">{row.eventName}</p>
         <p className="mt-1 max-w-[320px] truncate text-sm text-[var(--ink-muted)]">
           {row.competitionName} | {formatStart(row.startTimeIso)}
         </p>
       </td>
-      <td className="px-3 py-4 text-right align-top font-mono text-sm">
+      <td className="px-3 py-3 text-right align-top font-mono text-sm">
         <p className={cn('font-semibold', p1Suggested && 'text-emerald-700')}>
           <FlashOnChange value={row.decimalOddsPlayer1}>{formatAmerican(row.americanOddsPlayer1)}</FlashOnChange>
         </p>
@@ -468,11 +458,17 @@ function BoardRow({
           <FlashOnChange value={row.decimalOddsPlayer2}>{formatAmerican(row.americanOddsPlayer2)}</FlashOnChange>
         </p>
       </td>
-      <td className="px-3 py-4 text-right align-top text-sm">
-        <p>{row.player1Name}: {formatPct(row.modelProbabilityPlayer1)}</p>
-        <p className="mt-2">{row.player2Name}: {formatPct(row.modelProbabilityPlayer2)}</p>
+      <td className="px-3 py-3 text-right align-top font-mono text-sm">
+        <p className={cn('font-semibold', p1Suggested && 'text-emerald-700')}>
+          {formatAmerican(row.modelFairAmericanOddsPlayer1)}
+        </p>
+        <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">{formatPct(row.modelProbabilityPlayer1)}</p>
+        <p className={cn('mt-1.5 font-semibold', p2Suggested && 'text-emerald-700')}>
+          {formatAmerican(row.modelFairAmericanOddsPlayer2)}
+        </p>
+        <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">{formatPct(row.modelProbabilityPlayer2)}</p>
       </td>
-      <td className="px-3 py-4 text-right align-top font-mono text-sm">
+      <td className="px-3 py-3 text-right align-top font-mono text-sm">
         <p>
           <FlashOnChange value={row.edgePlayer1}>{formatSignedPct(row.edgePlayer1)}</FlashOnChange>
         </p>
@@ -480,7 +476,7 @@ function BoardRow({
           <FlashOnChange value={row.edgePlayer2}>{formatSignedPct(row.edgePlayer2)}</FlashOnChange>
         </p>
       </td>
-      <td className="rounded-r-[20px] px-3 py-4 align-top text-sm">
+      <td className="rounded-r-[20px] px-3 py-3 align-top text-sm">
         {myPick ? (
           <>
             <p className="font-semibold text-amber-900">
@@ -609,131 +605,6 @@ function matchOpenBet(row: LiveOddsRecommendation, openBets: PaperTradeBet[]): P
   return null
 }
 
-function YourLiveBetCard({ row, bet }: { row: LiveOddsRecommendation; bet: PaperTradeBet }) {
-  const isP1 = bet.sideName === row.player1Name
-  const currentDecimal: number = isP1 ? row.decimalOddsPlayer1 : row.decimalOddsPlayer2
-  const currentAmerican: number = isP1 ? row.americanOddsPlayer1 : row.americanOddsPlayer2
-  const currentModelProb: number | null = (isP1 ? row.modelProbabilityPlayer1 : row.modelProbabilityPlayer2) ?? null
-  const currentEdge: number | null = (isP1 ? row.edgePlayer1 : row.edgePlayer2) ?? null
-  const oddsDelta = Number.isFinite(currentDecimal) ? currentDecimal - bet.decimalOdds : null
-  const edgeDelta = currentEdge != null && Number.isFinite(currentEdge) ? currentEdge - bet.edge : null
-  const probDelta = currentModelProb != null && Number.isFinite(currentModelProb)
-    ? currentModelProb - bet.modelProbability
-    : null
-
-  // Live "are we winning the bet?" hint based on the score string.
-  const winSignal = inferWinSignal(row.liveScore, isP1 ? 'P1' : 'P2')
-
-  return (
-    <Card className="border-amber-300 bg-amber-50/60">
-      <CardHeader>
-        <Badge variant="accent" className="w-fit border-amber-300 bg-amber-100 text-amber-900">
-          <Star className="size-3" />
-          Your live bet
-        </Badge>
-        <CardTitle>
-          ${bet.stake.toFixed(2)} on {bet.sideName}
-        </CardTitle>
-        <CardDescription>
-          {row.player1Name} vs {row.player2Name} · {row.competitionName ?? ''}
-          {row.liveScore ? ` · score ${row.liveScore}` : ''}
-          {winSignal ? ` · ${winSignal}` : ''}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-3">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <MovementTile
-            label="Odds"
-            placed={bet.decimalOdds.toFixed(2)}
-            current={Number.isFinite(currentDecimal) ? currentDecimal.toFixed(2) : '—'}
-            delta={oddsDelta}
-            higherIsBetter
-          />
-          <MovementTile
-            label="Edge"
-            placed={`${(bet.edge * 100).toFixed(1)}%`}
-            current={currentEdge != null && Number.isFinite(currentEdge) ? `${(currentEdge * 100).toFixed(1)}%` : '—'}
-            delta={edgeDelta}
-            higherIsBetter
-            formatDelta={(d) => `${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}%`}
-          />
-          <MovementTile
-            label="Model prob."
-            placed={`${(bet.modelProbability * 100).toFixed(0)}%`}
-            current={currentModelProb != null && Number.isFinite(currentModelProb) ? `${(currentModelProb * 100).toFixed(0)}%` : '—'}
-            delta={probDelta}
-            higherIsBetter
-            formatDelta={(d) => `${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}%`}
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="American odds (placed)" value={formatAmerican(bet.americanOdds ?? null)} />
-          <Metric label="American odds (now)" value={formatAmerican(currentAmerican)} />
-          <Metric
-            label="Potential payout"
-            value={bet.potentialPayout != null ? `$${bet.potentialPayout.toFixed(2)}` : `$${(bet.stake * bet.decimalOdds).toFixed(2)}`}
-          />
-        </div>
-        <Button variant="secondary" asChild>
-          <Link to={`/matches/${encodeURIComponent(matchDetailKey(row))}/evidence`}>
-            Open match detail
-          </Link>
-        </Button>
-      </CardContent>
-    </Card>
-  )
-}
-
-function MovementTile({
-  label,
-  placed,
-  current,
-  delta,
-  higherIsBetter,
-  formatDelta,
-}: {
-  label: string
-  placed: string
-  current: string
-  delta: number | null
-  higherIsBetter?: boolean
-  formatDelta?: (d: number) => string
-}) {
-  const showDelta = delta != null && Number.isFinite(delta) && Math.abs(delta) > 0.0001
-  const goodWhenPositive = higherIsBetter ?? false
-  const good = showDelta && (goodWhenPositive ? delta! > 0 : delta! < 0)
-  const Icon = showDelta ? (good ? TrendingUp : TrendingDown) : null
-  const tone = good ? 'text-emerald-700' : 'text-rose-700'
-  return (
-    <div className="rounded-[18px] border border-amber-200 bg-white/70 p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--ink-muted)]">{label}</p>
-      <div className="mt-1 flex items-baseline gap-2">
-        <span className="font-mono text-lg font-semibold text-[var(--ink-strong)]">{current}</span>
-        {showDelta ? (
-          <span className={cn('inline-flex items-center gap-1 text-xs font-semibold', tone)}>
-            {Icon ? <Icon className="size-3" /> : null}
-            {formatDelta ? formatDelta(delta!) : `${delta! >= 0 ? '+' : ''}${delta!.toFixed(2)}`}
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-1 text-xs text-[var(--ink-muted)]">Placed @ {placed}</p>
-    </div>
-  )
-}
-
-function inferWinSignal(score: string | null, side: 'P1' | 'P2'): string | null {
-  if (!score) return null
-  const match = /^(\d+)-(\d+)/.exec(score.trim())
-  if (!match) return null
-  const p1 = Number.parseInt(match[1] ?? '', 10)
-  const p2 = Number.parseInt(match[2] ?? '', 10)
-  if (Number.isNaN(p1) || Number.isNaN(p2)) return null
-  if (p1 === p2) return 'tied'
-  const mine = side === 'P1' ? p1 : p2
-  const theirs = side === 'P1' ? p2 : p1
-  return mine > theirs ? 'leading' : 'trailing'
-}
-
 function DiagnosticTile({ icon: Icon, label, value }: { icon: typeof BarChart3; label: string; value: string }) {
   return (
     <div className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.72)] p-4">
@@ -746,15 +617,6 @@ function DiagnosticTile({ icon: Icon, label, value }: { icon: typeof BarChart3; 
           <p className="mt-1 font-serif text-2xl font-semibold tracking-[-0.04em] text-[var(--ink-strong)]">{value}</p>
         </div>
       </div>
-    </div>
-  )
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.70)] p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--ink-muted)]">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-[var(--ink-strong)]">{value}</p>
     </div>
   )
 }
@@ -820,6 +682,12 @@ function summarizeRows(rows: LiveOddsRecommendation[]) {
     recommendedRows: rows.filter((row) => row.recommended).length,
     totalRows: rows.length,
   }
+}
+
+function startTimeValue(value: string | null) {
+  if (!value) return Number.POSITIVE_INFINITY
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY
 }
 
 function rowKey(row: LiveOddsRecommendation) {

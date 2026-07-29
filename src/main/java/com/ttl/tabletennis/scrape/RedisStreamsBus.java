@@ -94,12 +94,10 @@ public class RedisStreamsBus implements IngestionBus {
         if (recordId == null) {
             throw new IllegalStateException("Redis did not return a stream record id for " + event.topic());
         }
-        // Cap stream length so the writer doesn't pile up indefinitely when
-        // running in shadow mode (no consumer group has been wired yet). The
-        // shadow streams aren't read by anyone — without this cap, ttl:health
-        // hits 300k+ entries in a single day and Redis starts pushing back on
-        // XADD, which surfaces as "scrape.errors" on the publisher side and
-        // a DEGRADED bus status on /api/v3/ops/ingest.
+        // Bound retained replay history independently of consumer ACK state.
+        // Without this cap, ttl:health can add 300k+ entries in a day and Redis
+        // eventually pushes back on XADD, surfacing as publisher-side scrape
+        // errors and a DEGRADED status on /api/v3/ops/ingest.
         if (maxStreamLength > 0 && publishCount.incrementAndGet() % TRIM_EVERY_N_PUBLISHES == 0) {
             try {
                 redisTemplate.opsForStream().trim(key, maxStreamLength, true);

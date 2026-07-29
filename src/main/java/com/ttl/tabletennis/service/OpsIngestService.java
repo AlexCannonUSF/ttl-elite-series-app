@@ -144,7 +144,10 @@ public class OpsIngestService {
             StreamOperations<String, Object, Object> streamOps = redisTemplate.get().opsForStream();
             long length = nullToZero(streamOps.size(key));
             StreamInfo.XInfoStream info = length > 0L ? streamInfo(streamOps, key) : null;
-            StreamInfo.XInfoGroups groups = length > 0L ? streamGroups(streamOps, key) : null;
+            // XGROUP CREATE ... MKSTREAM creates a legitimate group on a
+            // zero-length stream. Query groups regardless of XLEN so the ops
+            // surface reports that readiness instead of a false zero.
+            StreamInfo.XInfoGroups groups = streamGroups(streamOps, key);
             long groupCount = groups == null ? 0L : groups.size();
             long pending = pendingCount(groups);
             Long lag = lag(length, groups, pending);

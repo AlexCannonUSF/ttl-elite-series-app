@@ -1,16 +1,36 @@
+import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 
 import { HomeRoute } from '@/routes/HomeRoute'
-import { LiveBoardRoute } from '@/routes/LiveBoardRoute'
-import { MatchDetailRoute } from '@/routes/MatchDetailRoute'
-import { MlQualityRoute } from '@/routes/MlQualityRoute'
-import { OpsConsoleRoute } from '@/routes/OpsConsoleRoute'
-import { OpsDiffsRoute } from '@/routes/OpsDiffsRoute'
-import { OpsFeedsRoute } from '@/routes/OpsFeedsRoute'
-import { OpsIngestRoute } from '@/routes/OpsIngestRoute'
-import { OpsStreamsRoute } from '@/routes/OpsStreamsRoute'
-import { ReviewRoute } from '@/routes/ReviewRoute'
-import { ScrapeRoute } from '@/routes/ScrapeRoute'
+
+const LiveBoardRoute = lazy(() => import('@/routes/LiveBoardRoute').then((module) => ({ default: module.LiveBoardRoute })))
+const MatchDetailRoute = lazy(() => import('@/routes/MatchDetailRoute').then((module) => ({ default: module.MatchDetailRoute })))
+const MlQualityRoute = lazy(() => import('@/routes/MlQualityRoute').then((module) => ({ default: module.MlQualityRoute })))
+const OpsConsoleRoute = lazy(() => import('@/routes/OpsConsoleRoute').then((module) => ({ default: module.OpsConsoleRoute })))
+const OpsDiffsRoute = lazy(() => import('@/routes/OpsDiffsRoute').then((module) => ({ default: module.OpsDiffsRoute })))
+const OpsFeedsRoute = lazy(() => import('@/routes/OpsFeedsRoute').then((module) => ({ default: module.OpsFeedsRoute })))
+const OpsIngestRoute = lazy(() => import('@/routes/OpsIngestRoute').then((module) => ({ default: module.OpsIngestRoute })))
+const OpsStreamsRoute = lazy(() => import('@/routes/OpsStreamsRoute').then((module) => ({ default: module.OpsStreamsRoute })))
+const ReviewRoute = lazy(() => import('@/routes/ReviewRoute').then((module) => ({ default: module.ReviewRoute })))
+const ScrapeRoute = lazy(() => import('@/routes/ScrapeRoute').then((module) => ({ default: module.ScrapeRoute })))
+
+function lazyRoute(Route: LazyExoticComponent<ComponentType>) {
+  return (
+    <Suspense
+      fallback={(
+        <main
+          aria-busy="true"
+          aria-live="polite"
+          className="grid min-h-screen place-items-center bg-[var(--canvas)] text-sm text-[var(--muted)]"
+        >
+          Loading workspace…
+        </main>
+      )}
+    >
+      <Route />
+    </Suspense>
+  )
+}
 
 export const router = createBrowserRouter([
   {
@@ -19,47 +39,47 @@ export const router = createBrowserRouter([
   },
   {
     path: '/live-board',
-    element: <LiveBoardRoute />,
+    element: lazyRoute(LiveBoardRoute),
   },
   {
     path: '/ops',
-    element: <OpsConsoleRoute />,
+    element: lazyRoute(OpsConsoleRoute),
   },
   {
     path: '/ops/feeds',
-    element: <OpsFeedsRoute />,
+    element: lazyRoute(OpsFeedsRoute),
   },
   {
     path: '/ops/ingest',
-    element: <OpsIngestRoute />,
+    element: lazyRoute(OpsIngestRoute),
   },
   {
     path: '/ops/feeds/streams',
-    element: <OpsStreamsRoute />,
+    element: lazyRoute(OpsStreamsRoute),
   },
   {
     path: '/ops/diffs',
-    element: <OpsDiffsRoute />,
+    element: lazyRoute(OpsDiffsRoute),
   },
   {
     path: '/review',
-    element: <ReviewRoute />,
+    element: lazyRoute(ReviewRoute),
   },
   {
     path: '/ops/scrape',
-    element: <ScrapeRoute />,
+    element: lazyRoute(ScrapeRoute),
   },
   {
     path: '/matches/:id',
-    element: <MatchDetailRoute />,
+    element: lazyRoute(MatchDetailRoute),
   },
   {
     path: '/matches/:id/:tab',
-    element: <MatchDetailRoute />,
+    element: lazyRoute(MatchDetailRoute),
   },
   {
     path: '/ml/quality',
-    element: <MlQualityRoute />,
+    element: lazyRoute(MlQualityRoute),
   },
 ], {
   basename: import.meta.env.BASE_URL,

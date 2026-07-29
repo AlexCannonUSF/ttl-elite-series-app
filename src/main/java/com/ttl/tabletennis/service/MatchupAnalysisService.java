@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.service;
 
+import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.Player;
 import com.ttl.tabletennis.dto.HeadToHeadStatsDto;
 import com.ttl.tabletennis.dto.MatchupAnalysisDto;
@@ -49,6 +50,9 @@ public class MatchupAnalysisService {
 
         AdvancedPlayerStats p1Recent = advancedStatisticsService.last10(player1);
         AdvancedPlayerStats p2Recent = advancedStatisticsService.last10(player2);
+        AdvancedPlayerStats p1Last50 = advancedStatisticsService.last50(player1);
+        AdvancedPlayerStats p2Last50 = advancedStatisticsService.last50(player2);
+        List<Match> recentHeadToHeadMatches = statisticsService.getRecentMatchesBetweenPlayers(player1, player2, 10);
 
         double[] baseline = statisticsService.getAdvancedMatchupStatistics(player1, player2);
         MatchupFeatureVectorDto features = featureService.buildMatchupFeatureVector(player1Id, player2Id, null);
@@ -58,31 +62,13 @@ public class MatchupAnalysisService {
         double glickoP1 = features.glickoProbabilityPlayer1();
         double p1Final = clamp01(prediction.player1Probability());
         double p2Final = 1.0 - p1Final;
-        double p1RecentWinPct = features.player1().recentForm();
-        double p2RecentWinPct = features.player2().recentForm();
-
         double p1Low = clamp01(prediction.player1ConfidenceLow());
         double p1High = clamp01(prediction.player1ConfidenceHigh());
         double p2Low = clamp01(1.0 - p1High);
         double p2High = clamp01(1.0 - p1Low);
 
-        MatchupAnalysisDto.FormDto p1Form = new MatchupAnalysisDto.FormDto(
-                p1Recent.n,
-                p1Recent.wins,
-                p1RecentWinPct,
-                p1Recent.setDiffAvg,
-                p1Recent.streak,
-                p1Recent.streakWin
-        );
-
-        MatchupAnalysisDto.FormDto p2Form = new MatchupAnalysisDto.FormDto(
-                p2Recent.n,
-                p2Recent.wins,
-                p2RecentWinPct,
-                p2Recent.setDiffAvg,
-                p2Recent.streak,
-                p2Recent.streakWin
-        );
+        MatchupAnalysisDto.FormDto p1Form = toForm(p1Recent);
+        MatchupAnalysisDto.FormDto p2Form = toForm(p2Recent);
 
         MatchupAnalysisDto.ProbabilityDto p1Probability = new MatchupAnalysisDto.ProbabilityDto(
                 p1Final,
@@ -114,11 +100,60 @@ public class MatchupAnalysisService {
                 h2h,
                 p1Form,
                 p2Form,
+                toForm(p1Last50),
+                toForm(p2Last50),
+                recentHeadToHead(recentHeadToHeadMatches, player1Id, player2Id),
+                toRatings(features.player1()),
+                toRatings(features.player2()),
                 p1Probability,
                 p2Probability,
                 contributions,
                 new MatchupAnalysisDto.ModelComparisonDto(baseline[0], eloP1, glickoP1),
                 explanation
+        );
+    }
+
+    private MatchupAnalysisDto.FormDto toForm(AdvancedPlayerStats stats) {
+        double winPct = stats.n == 0 ? 0.0 : (double) stats.wins / stats.n;
+        return new MatchupAnalysisDto.FormDto(
+                stats.n,
+                stats.wins,
+                winPct,
+                stats.setDiffAvg,
+                stats.streak,
+                stats.streakWin
+        );
+    }
+
+    private MatchupAnalysisDto.RecentHeadToHeadDto recentHeadToHead(List<Match> matches,
+                                                                    Long player1Id,
+                                                                    Long player2Id) {
+        int completed = 0;
+        int player1Wins = 0;
+        int player2Wins = 0;
+        for (Match match : matches) {
+            if (!match.isComplete() || match.getWinnerPlayerId() == null) {
+                continue;
+            }
+            if (player1Id.equals(match.getWinnerPlayerId())) {
+                player1Wins++;
+                completed++;
+            } else if (player2Id.equals(match.getWinnerPlayerId())) {
+                player2Wins++;
+                completed++;
+            }
+        }
+        return new MatchupAnalysisDto.RecentHeadToHeadDto(completed, player1Wins, player2Wins);
+    }
+
+    private MatchupAnalysisDto.RatingDto toRatings(MatchupFeatureVectorDto.PlayerFeatureDto features) {
+        return new MatchupAnalysisDto.RatingDto(
+                features.eloRating(),
+                features.glickoRating(),
+                features.glickoRatingDeviation(),
+                features.trueSkill2Mu(),
+                features.wengLinRating(),
+                features.ratingStability()
         );
     }
 

@@ -1,9 +1,33 @@
 import type {
   LiveOddsRecommendation,
+  MatchupAnalysis,
   PaperTradingSession,
   PaperTradingSyncResult,
   TrackedMatchObservation,
 } from '@/features/live-studio/types'
+
+export async function fetchMatchupAnalysis(
+  player1Id: number,
+  player2Id: number,
+  signal?: AbortSignal,
+): Promise<MatchupAnalysis> {
+  const query = new URLSearchParams({
+    player1Id: String(player1Id),
+    player2Id: String(player2Id),
+  })
+  const response = await fetch(`/api/analytics/matchup?${query}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+    signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(`Matchup intelligence request failed with ${response.status}`)
+  }
+
+  return (await response.json()) as MatchupAnalysis
+}
 
 export async function fetchLiveSession(signal?: AbortSignal): Promise<PaperTradingSession> {
   const response = await fetch('/api/live-studio/session', {

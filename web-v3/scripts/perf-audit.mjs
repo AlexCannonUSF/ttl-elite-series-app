@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { gzipSync } from 'node:zlib'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 import { chromium } from 'playwright-core'
 
@@ -11,9 +12,11 @@ const BUDGETS = {
   ttiMs: 1500,
 }
 
+const scriptRoot = path.dirname(fileURLToPath(import.meta.url))
+const repositoryRoot = path.resolve(scriptRoot, '../..')
 const options = parseArgs(process.argv.slice(2))
 const distRoot = path.resolve(process.cwd(), options.dist ?? 'dist')
-const reportPath = options.out ?? path.resolve(process.cwd(), 'docs/ttlelite-series-3.0/reports/phase-07-perf-audit.md')
+const reportPath = options.out ?? path.resolve(repositoryRoot, 'docs/ttlelite-series-3.0/reports/phase-07-perf-audit.md')
 const jsonPath = options.json ?? reportPath.replace(/\.md$/i, '.json')
 const baseUrl = options.baseUrl ?? 'http://127.0.0.1:5188'
 
