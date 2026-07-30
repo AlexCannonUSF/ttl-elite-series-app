@@ -16,7 +16,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "settlement_evidence", indexes = {
         @Index(name = "idx_settlement_evidence_bet_asof", columnList = "bet_id, bundle_as_of"),
-        @Index(name = "idx_settlement_evidence_event_asof", columnList = "tracked_event_id, bundle_as_of")
+        @Index(name = "idx_settlement_evidence_event_asof", columnList = "tracked_event_id, bundle_as_of"),
+        @Index(name = "uq_settlement_evidence_fingerprint", columnList = "evidence_fingerprint", unique = true)
 })
 public class SettlementEvidenceRecord {
 
@@ -45,6 +46,30 @@ public class SettlementEvidenceRecord {
     @Lob
     @Column(name = "payload_json", nullable = false, columnDefinition = "LONGTEXT")
     private String payloadJson;
+
+    @Column(name = "evidence_fingerprint", length = 64)
+    private String evidenceFingerprint;
+
+    @Column(name = "score_evidence_quality", length = 24)
+    private String scoreEvidenceQuality;
+
+    @Column(name = "score_evidence_finality", length = 32)
+    private String scoreEvidenceFinality;
+
+    @Column(name = "score_evidence_confidence")
+    private Double scoreEvidenceConfidence;
+
+    @Column(name = "score_observation_count")
+    private Integer scoreObservationCount;
+
+    @Column(name = "score_source_count")
+    private Integer scoreSourceCount;
+
+    @Column(name = "score_completion_signal_count")
+    private Integer scoreCompletionSignalCount;
+
+    @Column(name = "score_inferred_winner_id")
+    private Long scoreInferredWinnerId;
 
     @Column(name = "correlation_id", length = 64)
     private String correlationId;
@@ -131,5 +156,69 @@ public class SettlementEvidenceRecord {
 
     public void setCorrelationId(String correlationId) {
         this.correlationId = correlationId;
+    }
+
+    public String getEvidenceFingerprint() {
+        return evidenceFingerprint;
+    }
+
+    public void setEvidenceFingerprint(String evidenceFingerprint) {
+        this.evidenceFingerprint = evidenceFingerprint;
+    }
+
+    public String getScoreEvidenceQuality() {
+        return scoreEvidenceQuality;
+    }
+
+    public void setScoreEvidenceQuality(String scoreEvidenceQuality) {
+        this.scoreEvidenceQuality = scoreEvidenceQuality;
+    }
+
+    public String getScoreEvidenceFinality() {
+        return scoreEvidenceFinality;
+    }
+
+    public void setScoreEvidenceFinality(String scoreEvidenceFinality) {
+        this.scoreEvidenceFinality = scoreEvidenceFinality;
+    }
+
+    public Double getScoreEvidenceConfidence() {
+        return scoreEvidenceConfidence;
+    }
+
+    public void setScoreEvidenceConfidence(Double scoreEvidenceConfidence) {
+        this.scoreEvidenceConfidence = scoreEvidenceConfidence;
+    }
+
+    public Integer getScoreObservationCount() {
+        return scoreObservationCount;
+    }
+
+    public void setScoreObservationCount(Integer scoreObservationCount) {
+        this.scoreObservationCount = scoreObservationCount;
+    }
+
+    public Integer getScoreSourceCount() {
+        return scoreSourceCount;
+    }
+
+    public void setScoreSourceCount(Integer scoreSourceCount) {
+        this.scoreSourceCount = scoreSourceCount;
+    }
+
+    public Integer getScoreCompletionSignalCount() {
+        return scoreCompletionSignalCount;
+    }
+
+    public void setScoreCompletionSignalCount(Integer scoreCompletionSignalCount) {
+        this.scoreCompletionSignalCount = scoreCompletionSignalCount;
+    }
+
+    public Long getScoreInferredWinnerId() {
+        return scoreInferredWinnerId;
+    }
+
+    public void setScoreInferredWinnerId(Long scoreInferredWinnerId) {
+        this.scoreInferredWinnerId = scoreInferredWinnerId;
     }
 }

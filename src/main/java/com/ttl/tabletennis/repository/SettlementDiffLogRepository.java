@@ -14,6 +14,8 @@ public interface SettlementDiffLogRepository extends JpaRepository<SettlementDif
 
     long countByDiffKind(String diffKind);
 
+    boolean existsByDiffFingerprint(String diffFingerprint);
+
     /** Used by the §11 soak monitor to count fresh contradictions since soak start. */
     long countByDiffKindAndDecidedAtAfter(String diffKind, LocalDateTime threshold);
 

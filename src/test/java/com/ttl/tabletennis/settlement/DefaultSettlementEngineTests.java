@@ -159,6 +159,46 @@ class DefaultSettlementEngineTests {
     }
 
     @Test
+    void settlesIdentityBoundTargetedCompletionWithoutWaitingForArchive() {
+        SettlementEvidence evidence = new SettlementEvidence(
+                33L,
+                new TrackedEventId("tracked-33"),
+                identityLock(Instant.parse("2026-04-19T12:00:00Z")),
+                List.of(new LiveObservation(
+                        SourceId.HR_TGT,
+                        Instant.parse("2026-04-19T12:29:00Z"),
+                        0.98,
+                        MatchPhase.FINISHED,
+                        new ScoreState(2, 1, 10, 9, ""),
+                        "targeted-terminal",
+                        true,
+                        "booker-1",
+                        "market-1",
+                        false,
+                        true
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                CoverageState.FULL,
+                List.of(),
+                0.0,
+                0.98,
+                Instant.parse("2026-04-19T12:30:00Z")
+        );
+
+        Settle settle = assertInstanceOf(
+                Settle.class,
+                engine.decide(evidence, SettlementPolicy.defaults())
+        );
+
+        assertEquals(10L, settle.winnerPlayerId());
+        assertEquals(SettlementReason.TARGETED_COMPLETION_SIGNAL, settle.reason());
+        assertEquals(0.98, settle.confidence(), 1e-9);
+    }
+
+    @Test
     void escalatesWhenCoverageIsDarkPastThreshold() {
         SettlementEvidence evidence = new SettlementEvidence(
                 4L,
@@ -194,7 +234,7 @@ class DefaultSettlementEngineTests {
                         Instant.parse("2026-04-19T16:10:00Z"),
                         0.92,
                         MatchPhase.LIVE_LATE,
-                        new ScoreState(2, 1, 10, 5, ""),
+                        new ScoreState(2, 1, 11, 5, ""),
                         "raw-live",
                         false,
                         "booker-5",
@@ -246,7 +286,7 @@ class DefaultSettlementEngineTests {
                         bundleAsOf,
                         0.92,
                         phase,
-                        new ScoreState(2, 1, 10, 5, ""),
+                        new ScoreState(2, 1, 11, 5, ""),
                         "raw-live",
                         false,
                         "booker-117",

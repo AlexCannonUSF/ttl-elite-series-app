@@ -21,6 +21,18 @@ public interface SettlementAuditRecordRepository extends JpaRepository<Settlemen
 
     Page<SettlementAuditRecord> findByDecisionOrderByDecidedAtDescIdDesc(String decision, Pageable pageable);
 
+    Page<SettlementAuditRecord> findByDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(String decision,
+                                                                                         String reviewStatus,
+                                                                                         Pageable pageable);
+
+    long countByDecisionAndReviewStatus(String decision, String reviewStatus);
+
+    boolean existsByDecisionFingerprint(String decisionFingerprint);
+
+    List<SettlementAuditRecord> findByBetIdAndDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(Long betId,
+                                                                                                 String decision,
+                                                                                                 String reviewStatus);
+
     List<SettlementAuditRecord> findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(Long betId,
                                                                                     Collection<String> decisions,
                                                                                     Pageable pageable);

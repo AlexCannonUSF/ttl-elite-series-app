@@ -17,7 +17,9 @@ import java.time.LocalDateTime;
 @Table(name = "settlement_audit", indexes = {
         @Index(name = "idx_settlement_audit_bet_decided", columnList = "bet_id, decided_at"),
         @Index(name = "idx_settlement_audit_event_decided", columnList = "tracked_event_id, decided_at"),
-        @Index(name = "idx_settlement_audit_decision", columnList = "decision, decided_at")
+        @Index(name = "idx_settlement_audit_decision", columnList = "decision, decided_at"),
+        @Index(name = "idx_settlement_audit_review", columnList = "decision, review_status, decided_at"),
+        @Index(name = "uq_settlement_audit_fingerprint", columnList = "decision_fingerprint", unique = true)
 })
 public class SettlementAuditRecord {
 
@@ -42,6 +44,15 @@ public class SettlementAuditRecord {
 
     @Column(name = "evidence_id")
     private Long evidenceId;
+
+    @Column(name = "decision_fingerprint", length = 64)
+    private String decisionFingerprint;
+
+    @Column(name = "review_status", length = 24)
+    private String reviewStatus;
+
+    @Column(name = "review_decision_id")
+    private Long reviewDecisionId;
 
     @Column(name = "decided_at", nullable = false)
     private LocalDateTime decidedAt;
@@ -126,6 +137,30 @@ public class SettlementAuditRecord {
 
     public void setEvidenceId(Long evidenceId) {
         this.evidenceId = evidenceId;
+    }
+
+    public String getDecisionFingerprint() {
+        return decisionFingerprint;
+    }
+
+    public void setDecisionFingerprint(String decisionFingerprint) {
+        this.decisionFingerprint = decisionFingerprint;
+    }
+
+    public String getReviewStatus() {
+        return reviewStatus;
+    }
+
+    public void setReviewStatus(String reviewStatus) {
+        this.reviewStatus = reviewStatus;
+    }
+
+    public Long getReviewDecisionId() {
+        return reviewDecisionId;
+    }
+
+    public void setReviewDecisionId(Long reviewDecisionId) {
+        this.reviewDecisionId = reviewDecisionId;
     }
 
     public LocalDateTime getDecidedAt() {

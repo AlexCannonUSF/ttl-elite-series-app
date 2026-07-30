@@ -90,9 +90,9 @@ class IntegrityServiceTests {
         assertEquals(12L, dto.boardObservations());
         assertEquals(7L, dto.scoreFeedObservations());
         assertEquals(3L, dto.trackedAfterCloseObservations());
-        // Score-backed = DECISIVE_LIVE_SCORE (2) or HEURISTIC_FALLBACK (1) → 3
-        assertEquals(3L, dto.scoreBackedSettlements());
-        // One bet has the TARGETED_MATCH_COMPLETED reason
+        // Categories are exclusive: the targeted completion and heuristic
+        // rows do not inflate the direct score-backed rate.
+        assertEquals(1L, dto.scoreBackedSettlements());
         assertEquals(1L, dto.targetedCompletionSettlements());
         assertEquals(1L, dto.officialResultSettlements());
         assertEquals(1L, dto.databaseSettlements());
@@ -111,6 +111,32 @@ class IntegrityServiceTests {
         assertFalse(IntegrityService.matchesSettlementSource(null, "OFFICIAL_RESULT"));
         assertFalse(IntegrityService.matchesSettlementSource(bet, ""));
         assertFalse(IntegrityService.matchesSettlementSource(bet, null));
+    }
+
+    @Test
+    void v3SettlementReasonsMapToExclusiveIntegrityCategories() {
+        PaperTradeBet scoreBacked = settledBet(
+                PaperTradeBet.STATUS_WON,
+                "SETTLED_FROM_SCORE_BACKED_V3",
+                "V3_PRIMARY_SCORE_BACKED_FINISHED"
+        );
+        assertTrue(IntegrityService.isScoreBackedSettlement(scoreBacked));
+        assertFalse(IntegrityService.isTargetedCompletionSettlement(scoreBacked));
+
+        PaperTradeBet targeted = settledBet(
+                PaperTradeBet.STATUS_WON,
+                "SETTLED_FROM_TARGETED_MATCH_COMPLETED_V3",
+                "V3_PRIMARY_TARGETED_COMPLETION_SIGNAL"
+        );
+        assertTrue(IntegrityService.isScoreBackedSettlement(targeted));
+        assertTrue(IntegrityService.isTargetedCompletionSettlement(targeted));
+
+        PaperTradeBet heuristic = settledBet(
+                PaperTradeBet.STATUS_WON,
+                "SETTLED_FROM_HEURISTIC_V3",
+                "V3_PRIMARY_LAST_SCORE_HEURISTIC"
+        );
+        assertFalse(IntegrityService.isScoreBackedSettlement(heuristic));
     }
 
     @Test

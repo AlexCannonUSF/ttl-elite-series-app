@@ -128,6 +128,7 @@ export function AdminHubRoute() {
   const sampleProgress = Math.min(100, (calibration?.rawSampleSize ?? 0))
   const effectiveProgress = Math.min(100, ((calibration?.effectiveSampleSize ?? 0) / 50) * 100)
   const posture = useMemo(() => systemPosture(snapshot), [snapshot])
+  const scorePosture = useMemo(() => scoreEvidencePosture(snapshot?.session), [snapshot?.session])
   const policy = snapshot?.policy?.config
 
   const saveScenario = () => {
@@ -196,6 +197,8 @@ export function AdminHubRoute() {
             <DarkMetric label="Effective sample" value={formatNumber(calibration?.effectiveSampleSize)} />
             <DarkMetric label="Calibration error" value={formatPct(calibration?.calibrationError)} />
             <DarkMetric label="Stake-weighted CLV" value={formatSignedPct(audit?.clv.stakeWeightedClvPct)} />
+            <DarkMetric label="Decision-grade scores" value={String(scorePosture.decisionGrade)} />
+            <DarkMetric label="Score-backed closure" value={formatPct(scorePosture.scoreBackedShare)} />
           </div>
         </div>
       </section>
@@ -437,6 +440,20 @@ function FactorTable({ factors }: { factors: LearningFactor[] }) {
       })}
     </div>
   )
+}
+
+function scoreEvidencePosture(session: PaperTradingSession | null | undefined) {
+  const bets = [...(session?.openBetsList ?? []), ...(session?.recentBets ?? [])]
+  const decisionGrade = bets.filter((bet) => bet.scoreEvidenceQuality === 'DECISION_GRADE').length
+  const settled = bets.filter((bet) => ['WON', 'LOST', 'PUSHED', 'VOIDED'].includes((bet.status ?? '').toUpperCase()))
+  const scoreBacked = settled.filter((bet) => {
+    const source = `${bet.settlementSource ?? ''} ${bet.settlementReason ?? ''}`.toUpperCase()
+    return source.includes('SCORE_BACKED') || source.includes('TARGETED') || source.includes('STREAM_CV')
+  }).length
+  return {
+    decisionGrade,
+    scoreBackedShare: settled.length ? scoreBacked / settled.length : 0,
+  }
 }
 
 function ScenarioSlider({ label, max, min, onChange, step, value, valueLabel }: {

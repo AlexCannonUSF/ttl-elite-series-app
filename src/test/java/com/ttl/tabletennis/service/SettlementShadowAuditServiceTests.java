@@ -14,6 +14,7 @@ import com.ttl.tabletennis.settlement.ContradictionKind;
 import com.ttl.tabletennis.settlement.CoverageState;
 import com.ttl.tabletennis.settlement.HoldOpen;
 import com.ttl.tabletennis.settlement.IdentityLock;
+import com.ttl.tabletennis.settlement.ManualReview;
 import com.ttl.tabletennis.settlement.Settle;
 import com.ttl.tabletennis.settlement.SettlementEvidence;
 import com.ttl.tabletennis.settlement.SettlementReason;
@@ -31,6 +32,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
@@ -59,6 +62,8 @@ class SettlementShadowAuditServiceTests {
         Settle settle = new Settle(evidence, 10L, SettlementReason.SCORE_BACKED_FINISHED, 0.91);
 
         when(evidenceRepository.findFirstByBetIdAndBundleAsOf(101L, LocalDateTime.of(2026, 4, 19, 16, 0)))
+                .thenReturn(Optional.empty());
+        when(evidenceRepository.findByEvidenceFingerprint(any()))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(existingEvidenceRecord(900L)));
         when(evidenceRepository.save(any(SettlementEvidenceRecord.class))).thenAnswer(invocation -> {
@@ -72,7 +77,7 @@ class SettlementShadowAuditServiceTests {
 
         service.recordAttempt(bet, evidence, new HoldOpen(evidence, SettlementReason.MANUAL_REVIEW_AWAITING, "still live"));
 
-        verify(evidenceRepository, times(2)).findFirstByBetIdAndBundleAsOf(101L, LocalDateTime.of(2026, 4, 19, 16, 0));
+        verify(evidenceRepository, times(1)).findFirstByBetIdAndBundleAsOf(101L, LocalDateTime.of(2026, 4, 19, 16, 0));
         verify(evidenceRepository, times(1)).save(any(SettlementEvidenceRecord.class));
         verify(contradictionRepository, times(1)).saveAll(anyList());
         verify(auditRepository, times(2)).save(any(SettlementAuditRecord.class));
@@ -97,6 +102,112 @@ class SettlementShadowAuditServiceTests {
         verify(auditRepository).save(any(SettlementAuditRecord.class));
         verify(serviceEvidenceRepository(service), never()).save(any(SettlementEvidenceRecord.class));
         verify(serviceContradictionRepository(service), never()).saveAll(anyList());
+    }
+
+    @Test
+    void repeatedSemanticDecisionDoesNotAppendAnotherAuditRow() {
+        SettlementEvidenceRecordRepository evidenceRepository = mock(SettlementEvidenceRecordRepository.class);
+        SettlementAuditRecordRepository auditRepository = mock(SettlementAuditRecordRepository.class);
+        SettlementShadowAuditService service = new SettlementShadowAuditService(
+                evidenceRepository,
+                mock(SettlementContradictionRecordRepository.class),
+                auditRepository,
+                new ObjectMapper()
+        );
+        PaperTradeBet bet = bet(303L);
+        SettlementEvidence evidence = evidence(303L, Instant.parse("2026-04-19T20:00:00Z"));
+        SettlementEvidenceRecord persistedEvidence = existingEvidenceRecord(930L);
+        persistedEvidence.setBetId(303L);
+        when(evidenceRepository.findByEvidenceFingerprint(any())).thenReturn(Optional.of(persistedEvidence));
+        when(auditRepository.existsByDecisionFingerprint(any())).thenReturn(true);
+
+        SettlementShadowAuditService.AuditWriteResult result = service.recordAttempt(
+                bet,
+                evidence,
+                new Settle(evidence, 10L, SettlementReason.SCORE_BACKED_FINISHED, 0.91)
+        );
+
+        assertFalse(result.recorded());
+        assertEquals(930L, result.evidenceId());
+        assertTrue(result.decisionFingerprint() != null && !result.decisionFingerprint().isBlank());
+        verify(auditRepository, never()).save(any(SettlementAuditRecord.class));
+    }
+
+    @Test
+    void backfillsScoreAssessmentOnPrePhaseTwoEvidenceRecord() {
+        SettlementEvidenceRecordRepository evidenceRepository = mock(SettlementEvidenceRecordRepository.class);
+        SettlementAuditRecordRepository auditRepository = mock(SettlementAuditRecordRepository.class);
+        SettlementShadowAuditService service = new SettlementShadowAuditService(
+                evidenceRepository,
+                mock(SettlementContradictionRecordRepository.class),
+                auditRepository,
+                new ObjectMapper()
+        );
+        PaperTradeBet bet = bet(353L);
+        SettlementEvidence evidence = evidence(353L, Instant.parse("2026-04-19T20:00:00Z"));
+        SettlementEvidenceRecord legacyRecord = existingEvidenceRecord(935L);
+        legacyRecord.setBetId(353L);
+        legacyRecord.setScoreEvidenceQuality(null);
+        legacyRecord.setScoreEvidenceFinality(null);
+        legacyRecord.setScoreEvidenceConfidence(null);
+        legacyRecord.setScoreObservationCount(null);
+        legacyRecord.setScoreSourceCount(null);
+        legacyRecord.setScoreCompletionSignalCount(null);
+
+        when(evidenceRepository.findByEvidenceFingerprint(any())).thenReturn(Optional.of(legacyRecord));
+        when(evidenceRepository.save(any(SettlementEvidenceRecord.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(auditRepository.existsByDecisionFingerprint(any())).thenReturn(true);
+
+        service.recordAttempt(
+                bet,
+                evidence,
+                new Settle(evidence, 10L, SettlementReason.SCORE_BACKED_FINISHED, 0.91)
+        );
+
+        verify(evidenceRepository).save(legacyRecord);
+        assertTrue(legacyRecord.getScoreEvidenceQuality() != null);
+        assertTrue(legacyRecord.getScoreEvidenceFinality() != null);
+        assertTrue(legacyRecord.getScoreEvidenceConfidence() != null);
+    }
+
+    @Test
+    void newManualReviewSupersedesEarlierOpenReview() {
+        SettlementEvidenceRecordRepository evidenceRepository = mock(SettlementEvidenceRecordRepository.class);
+        SettlementAuditRecordRepository auditRepository = mock(SettlementAuditRecordRepository.class);
+        SettlementShadowAuditService service = new SettlementShadowAuditService(
+                evidenceRepository,
+                mock(SettlementContradictionRecordRepository.class),
+                auditRepository,
+                new ObjectMapper()
+        );
+        PaperTradeBet bet = bet(404L);
+        SettlementEvidence evidence = evidence(404L, Instant.parse("2026-04-19T20:00:00Z"));
+        SettlementEvidenceRecord persistedEvidence = existingEvidenceRecord(940L);
+        persistedEvidence.setBetId(404L);
+        SettlementAuditRecord previousReview = new SettlementAuditRecord();
+        previousReview.setReviewStatus(SettlementShadowAuditService.REVIEW_OPEN);
+
+        when(evidenceRepository.findByEvidenceFingerprint(any())).thenReturn(Optional.of(persistedEvidence));
+        when(auditRepository.findByBetIdAndDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
+                404L,
+                SettlementShadowAuditService.DECISION_MANUAL_REVIEW,
+                SettlementShadowAuditService.REVIEW_OPEN
+        )).thenReturn(List.of(previousReview));
+        when(auditRepository.save(any(SettlementAuditRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.recordAttempt(
+                bet,
+                evidence,
+                new ManualReview(evidence, SettlementReason.MANUAL_REVIEW_AWAITING, evidence.contradictions())
+        );
+
+        assertEquals(SettlementShadowAuditService.REVIEW_SUPERSEDED, previousReview.getReviewStatus());
+        verify(auditRepository).saveAll(List.of(previousReview));
+        org.mockito.ArgumentCaptor<SettlementAuditRecord> auditCaptor =
+                org.mockito.ArgumentCaptor.forClass(SettlementAuditRecord.class);
+        verify(auditRepository).save(auditCaptor.capture());
+        assertEquals(SettlementShadowAuditService.REVIEW_OPEN, auditCaptor.getValue().getReviewStatus());
     }
 
     private PaperTradeBet bet(Long id) {
@@ -158,6 +269,12 @@ class SettlementShadowAuditServiceTests {
         record.setAmbiguityScore(0.2);
         record.setConfidence(0.91);
         record.setPayloadJson("{}");
+        record.setScoreEvidenceQuality("PARTIAL");
+        record.setScoreEvidenceFinality("LIVE_PROGRESS");
+        record.setScoreEvidenceConfidence(0.91);
+        record.setScoreObservationCount(1);
+        record.setScoreSourceCount(1);
+        record.setScoreCompletionSignalCount(0);
         return record;
     }
 

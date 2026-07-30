@@ -150,8 +150,8 @@ public class IntegrityService {
                 )
         );
         long scoreBacked = settledBets.stream()
-                .filter(bet -> matchesSettlementSource(bet, SETTLEMENT_SOURCE_DECISIVE_LIVE_SCORE)
-                        || matchesSettlementSource(bet, SETTLEMENT_SOURCE_HEURISTIC_FALLBACK))
+                .filter(IntegrityService::isScoreBackedSettlement)
+                .filter(bet -> !isTargetedCompletionSettlement(bet))
                 .count();
         long targetedCompletion = settledBets.stream()
                 .filter(IntegrityService::isTargetedCompletionSettlement)
@@ -188,14 +188,45 @@ public class IntegrityService {
         if (bet == null || !StringUtils.hasText(expectedSource)) {
             return false;
         }
-        return expectedSource.equalsIgnoreCase(safeText(bet.getSettlementSource(), ""));
+        String expected = expectedSource.trim().toUpperCase(Locale.ROOT);
+        String observed = (safeText(bet.getSettlementSource(), "") + " "
+                + safeText(bet.getSettlementReason(), "")).toUpperCase(Locale.ROOT);
+        if (expected.equals(safeText(bet.getSettlementSource(), "").toUpperCase(Locale.ROOT))) {
+            return true;
+        }
+        return switch (expected) {
+            case SETTLEMENT_SOURCE_DECISIVE_LIVE_SCORE ->
+                    observed.contains("DECISIVE_LIVE_SCORE")
+                            || observed.contains("FINISHED_LIVE_SCORE")
+                            || observed.contains("SCORE_BACKED")
+                            || observed.contains("TARGETED_MATCH_COMPLETED")
+                            || observed.contains("TARGETED_COMPLETION_SIGNAL")
+                            || observed.contains("STREAM_CV");
+            case SETTLEMENT_SOURCE_OFFICIAL_RESULT -> observed.contains("OFFICIAL");
+            case SETTLEMENT_SOURCE_DATABASE_RESULT -> observed.contains("DATABASE");
+            case SETTLEMENT_SOURCE_HEURISTIC_FALLBACK ->
+                    observed.contains("HEURISTIC")
+                            || observed.contains("LAST_SCORE")
+                            || observed.contains("NEAR_FINISH")
+                            || observed.contains("STALE_ONBOARD");
+            case SETTLEMENT_SOURCE_TIMEOUT_VOID -> observed.contains("VOID");
+            default -> false;
+        };
     }
 
     static boolean isTargetedCompletionSettlement(PaperTradeBet bet) {
-        if (bet == null || !StringUtils.hasText(bet.getSettlementReason())) {
+        if (bet == null) {
             return false;
         }
-        return bet.getSettlementReason().trim().toUpperCase(Locale.ROOT).contains("TARGETED_MATCH_COMPLETED");
+        String observed = (safeText(bet.getSettlementSource(), "") + " "
+                + safeText(bet.getSettlementReason(), "")).toUpperCase(Locale.ROOT);
+        return observed.contains("TARGETED_MATCH_COMPLETED")
+                || observed.contains("TARGETED_COMPLETION_SIGNAL");
+    }
+
+    static boolean isScoreBackedSettlement(PaperTradeBet bet) {
+        return matchesSettlementSource(bet, SETTLEMENT_SOURCE_DECISIVE_LIVE_SCORE)
+                && !matchesSettlementSource(bet, SETTLEMENT_SOURCE_HEURISTIC_FALLBACK);
     }
 
     private static LiveStudioIntegrityDto emptyIntegrity() {

@@ -1431,6 +1431,54 @@ public class PaperTradingService {
     }
 
     /**
+     * Refresh the score timeline for existing open bets without making any
+     * settlement decision. Score Truth primary calls this before it builds an
+     * evidence bundle, so a targeted completion row can be persisted and acted
+     * on in the same sync instead of waiting for stale-live recovery.
+     */
+    @Transactional
+    public int refreshOpenBetScoreEvidence(PaperTradeSession session,
+                                           List<LiveOddsRecommendationDto> rows) {
+        if (session == null || session.getId() == null || rows == null || rows.isEmpty()) {
+            return 0;
+        }
+        List<PaperTradeBet> openBets = betRepository.findBySessionIdAndStatusOrderByPlacedAtAsc(
+                session.getId(),
+                PaperTradeBet.STATUS_OPEN
+        );
+        if (openBets == null || openBets.isEmpty()) {
+            return 0;
+        }
+        RowLookup rowLookup = com.ttl.tabletennis.service.papertrade.RowLookupBuilder.build(rows);
+        LocalDateTime observedAt = LocalDateTime.now();
+        int refreshed = 0;
+        for (PaperTradeBet bet : openBets) {
+            if (bet == null || bet.getId() == null || bet.getPlayer1Id() == null || bet.getPlayer2Id() == null) {
+                continue;
+            }
+            LiveOddsRecommendationDto row = findCurrentRowForBet(bet, rowLookup, observedAt);
+            if (row == null) {
+                continue;
+            }
+            String normalizedScore = com.ttl.tabletennis.service.papertrade.ScoreNormalizer.normalizeScoreForBet(
+                    bet,
+                    row.liveScore(),
+                    row.player1Id(),
+                    row.player1Name(),
+                    row.player2Id(),
+                    row.player2Name()
+            );
+            boolean changed = updateLastObservedFromRow(bet, row, normalizedScore, observedAt);
+            recordObservation(session.getId(), bet, row, normalizedScore, observedAt);
+            if (changed) {
+                saveBet(bet);
+            }
+            refreshed++;
+        }
+        return refreshed;
+    }
+
+    /**
      * #130 — True once a bet has been open past the hard void cap measured
      * from match start (falling back to placement time). Past this, we give
      * up waiting for an official result and void.
@@ -1500,6 +1548,10 @@ public class PaperTradingService {
         }
 
         bet.setProfitLoss(pnl);
+        bet.setSettlementObservedAt(now);
+        LearningSampleQuality.Assessment settlementQuality = LearningSampleQuality.assess(bet);
+        bet.setSettlementConfidence(settlementQuality.confidence());
+        captureClosingLineOnBet(bet);
         session.setTotalReturned(round2(session.getTotalReturned() + returned));
         session.setRealizedPnl(round2(session.getRealizedPnl() + pnl));
         session.setCurrentBankroll(round2(session.getCurrentBankroll() + returned));
@@ -3967,6 +4019,12 @@ public class PaperTradingService {
         sample.setFeatureContributions(bet.getFeatureContributions());
         sample.setPlacedAt(bet.getPlacedAt());
         sample.setSettledAt(bet.getSettledAt() == null ? LocalDateTime.now() : bet.getSettledAt());
+        if (bet.getClosingDecimalOdds() != null) {
+            sample.setClosingDecimalOdds(bet.getClosingDecimalOdds());
+            sample.setClosingObservedAt(bet.getClosingObservedAt());
+            sample.setClosingSource(bet.getClosingSource());
+            sample.setClosingMarketState(bet.getClosingMarketState());
+        }
         if (sample.getClosingDecimalOdds() == null) {
             attachClosingLine(bet, sample);
         }
@@ -3982,9 +4040,27 @@ public class PaperTradingService {
             closingLineLookupService.findFor(bet).ifPresent(line -> {
                 sample.setClosingDecimalOdds(line.decimalOdds());
                 sample.setClosingObservedAt(line.observedAt());
+                sample.setClosingSource(line.sourceId());
+                sample.setClosingMarketState(line.marketState());
             });
         } catch (RuntimeException ex) {
             log.warn("[paper] closing-line lookup failed for bet {}: {}", bet.getId(), ex.getMessage());
+        }
+    }
+
+    private void captureClosingLineOnBet(PaperTradeBet bet) {
+        if (closingLineLookupService == null || bet == null || bet.getClosingDecimalOdds() != null) {
+            return;
+        }
+        try {
+            closingLineLookupService.findFor(bet).ifPresent(line -> {
+                bet.setClosingDecimalOdds(line.decimalOdds());
+                bet.setClosingObservedAt(line.observedAt());
+                bet.setClosingSource(line.sourceId());
+                bet.setClosingMarketState(line.marketState());
+            });
+        } catch (RuntimeException ex) {
+            log.warn("[paper] closing-line capture failed for bet {}: {}", bet.getId(), ex.getMessage());
         }
     }
 

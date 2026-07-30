@@ -2,6 +2,7 @@ package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.config.FeatureFlagCatalog;
 import com.ttl.tabletennis.domain.PaperTradeBet;
+import com.ttl.tabletennis.prediction.staking.ClosingLineLookupService;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
 import com.ttl.tabletennis.scrape.SourceId;
 import com.ttl.tabletennis.settlement.BetSettlementPolicyCatalog;
@@ -36,6 +37,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -71,7 +73,49 @@ class ScoreTruthPrimaryServiceTests {
         assertEquals(10L, bet.getWinnerPlayerId());
         assertEquals(100.0 * (1.8 - 1.0), bet.getProfitLoss(), 1e-9);
         assertNotNull(bet.getSettledAt());
+        assertEquals(0.95, bet.getSettlementConfidence(), 1e-9);
+        assertNotNull(bet.getSettlementEvidenceFingerprint());
+        assertEquals(1, bet.getSettlementEvidenceSourceCount());
+        assertEquals(CoverageState.FULL.name(), bet.getSettlementCoverageState());
+        assertEquals(0.1, bet.getSettlementAmbiguityScore(), 1e-9);
+        assertEquals(LocalDateTime.ofInstant(BUNDLE_AS_OF, ZoneId.systemDefault()), bet.getSettlementObservedAt());
         verify(setup.betRepository).save(bet);
+    }
+
+    @Test
+    void capturesEvidenceAndClosingPriceProvenanceBeforePersistingOutcome() throws Exception {
+        Setup setup = setup("primary");
+        PaperTradeBet bet = openBet(11L, 10L, 40.0, 2.1);
+        SettlementEvidence evidence = evidence(bet.getId());
+        Settle settle = new Settle(evidence, 10L, SettlementReason.SCORE_BACKED_FINISHED, 0.94);
+        when(setup.evidenceBuilder.buildForBet(bet)).thenReturn(Optional.of(evidence));
+        when(setup.engine.decide(any(), any())).thenReturn(settle);
+        when(setup.auditService.recordAttempt(bet, evidence, settle)).thenReturn(
+                new SettlementShadowAuditService.AuditWriteResult(
+                        true,
+                        701L,
+                        501L,
+                        "evidence-fingerprint",
+                        "decision-fingerprint"
+                )
+        );
+        when(setup.closingLineLookupService.findFor(bet)).thenReturn(Optional.of(
+                new ClosingLineLookupService.ClosingLine(
+                        1.92,
+                        LocalDateTime.of(2026, 5, 18, 19, 59),
+                        "CLOSED",
+                        "HR_MKT"
+                )
+        ));
+
+        setup.service.closeOpenBets(List.of(bet));
+
+        assertEquals(501L, bet.getSettlementEvidenceId());
+        assertEquals("evidence-fingerprint", bet.getSettlementEvidenceFingerprint());
+        assertEquals(1.92, bet.getClosingDecimalOdds(), 1e-9);
+        assertEquals(LocalDateTime.of(2026, 5, 18, 19, 59), bet.getClosingObservedAt());
+        assertEquals("HR_MKT", bet.getClosingSource());
+        assertEquals("CLOSED", bet.getClosingMarketState());
     }
 
     @Test
@@ -90,13 +134,7 @@ class ScoreTruthPrimaryServiceTests {
     }
 
     @Test
-    void voidDecisionIsDeferredToLegacySoBetStaysOpen() throws Exception {
-        // The v3 engine returning VoidDecision means it can't see enough
-        // observation evidence to settle. We intentionally do NOT apply the
-        // void here — the bet stays OPEN so the legacy fallthrough in
-        // SettlementFacade can take a swing at the lastObservedScore via
-        // ScoreWinnerResolver. Legacy will void on its own
-        // (VOIDED_MISSING_BOARD_TIMEOUT) if even that can't read a winner.
+    void voidDecisionIsAppliedByPrimaryWithoutLegacyFallthrough() throws Exception {
         Setup setup = setup("primary");
         PaperTradeBet bet = openBet(3L, 10L, 25.0, 2.0);
         when(setup.evidenceBuilder.buildForBet(bet)).thenReturn(Optional.of(evidence(bet.getId())));
@@ -104,9 +142,12 @@ class ScoreTruthPrimaryServiceTests {
 
         ScoreTruthPrimaryService.ClosureStats stats = setup.service.closeOpenBets(List.of(bet));
 
-        assertEquals(0, stats.voided());
-        assertEquals(1, stats.held());
-        assertEquals(PaperTradeBet.STATUS_OPEN, bet.getStatus());
+        assertEquals(1, stats.voided());
+        assertEquals(0, stats.held());
+        assertEquals(PaperTradeBet.STATUS_VOIDED, bet.getStatus());
+        assertEquals(0.0, bet.getProfitLoss(), 1e-9);
+        assertEquals("V3_PRIMARY_VOID", bet.getSettlementSource());
+        verify(setup.betRepository).save(bet);
     }
 
     @Test
@@ -121,12 +162,13 @@ class ScoreTruthPrimaryServiceTests {
         assertEquals(0, stats.settled());
         assertEquals(1, stats.held());
         assertEquals(PaperTradeBet.STATUS_OPEN, bet.getStatus());
-        verify(setup.betRepository, never()).save(any());
+        assertEquals("DECISION_GRADE", bet.getScoreEvidenceQuality());
+        verify(setup.betRepository).save(bet);
     }
 
     @Test
     void scoreBackedPrimaryCloseRequiresStreamCvWhenTrackedAfterClose() throws Exception {
-        Setup setup = setup("primary");
+        Setup setup = setup("primary", "on");
         PaperTradeBet bet = openBet(41L, 10L, 30.0, 1.7);
         bet.setTrackedAfterClose(true);
         SettlementEvidence settlementEvidence = evidence(bet.getId());
@@ -139,7 +181,7 @@ class ScoreTruthPrimaryServiceTests {
         assertEquals(0, stats.settled());
         assertEquals(1, stats.held());
         assertEquals(PaperTradeBet.STATUS_OPEN, bet.getStatus());
-        verify(setup.betRepository, never()).save(any());
+        verify(setup.betRepository).save(bet);
 
         ArgumentCaptor<Decision> decisionCaptor = ArgumentCaptor.forClass(Decision.class);
         verify(setup.auditService).recordAttempt(Mockito.eq(bet), Mockito.eq(settlementEvidence), decisionCaptor.capture());
@@ -150,8 +192,25 @@ class ScoreTruthPrimaryServiceTests {
     }
 
     @Test
+    void streamCvOffDoesNotBlockTrustedTargetedCompletion() throws Exception {
+        Setup setup = setup("primary", "off");
+        PaperTradeBet bet = openBet(44L, 10L, 30.0, 1.7);
+        bet.setTrackedAfterClose(true);
+        SettlementEvidence settlementEvidence = evidence(bet.getId());
+        when(setup.evidenceBuilder.buildForBet(bet)).thenReturn(Optional.of(settlementEvidence));
+        when(setup.engine.decide(any(), any())).thenReturn(
+                new Settle(settlementEvidence, 10L, SettlementReason.TARGETED_COMPLETION_SIGNAL, 0.98));
+
+        ScoreTruthPrimaryService.ClosureStats stats = setup.service.closeOpenBets(List.of(bet));
+
+        assertEquals(1, stats.settled());
+        assertEquals(0, stats.held());
+        assertEquals(PaperTradeBet.STATUS_WON, bet.getStatus());
+    }
+
+    @Test
     void streamCvEvidenceAllowsTrackedAfterCloseScoreBackedClosure() throws Exception {
-        Setup setup = setup("primary");
+        Setup setup = setup("primary", "on");
         PaperTradeBet bet = openBet(42L, 10L, 30.0, 1.7);
         bet.setTrackedAfterClose(true);
         SettlementEvidence settlementEvidence = evidenceWithStream(bet.getId());
@@ -169,7 +228,7 @@ class ScoreTruthPrimaryServiceTests {
 
     @Test
     void officialResultCanCloseTrackedAfterCloseWithoutStreamCv() throws Exception {
-        Setup setup = setup("primary");
+        Setup setup = setup("primary", "on");
         PaperTradeBet bet = openBet(43L, 10L, 30.0, 1.7);
         bet.setTrackedAfterClose(true);
         SettlementEvidence settlementEvidence = evidence(bet.getId());
@@ -326,6 +385,10 @@ class ScoreTruthPrimaryServiceTests {
     }
 
     private FeatureFlagCatalog catalogFor(String state) throws Exception {
+        return catalogFor(state, "off");
+    }
+
+    private FeatureFlagCatalog catalogFor(String state, String streamCvState) throws Exception {
         Path catalogPath = tempDir.resolve("features-" + state + ".yaml");
         Files.writeString(catalogPath, """
                 schema_version: 1
@@ -340,26 +403,40 @@ class ScoreTruthPrimaryServiceTests {
                       - "shadow"
                       - "advisory"
                       - "primary"
-                """.formatted(state));
+                  "features.stream-cv":
+                    owner: "Alex"
+                    expires_on: "2026-12-31"
+                    state: "%s"
+                    description: "Controls Stream-CV enforcement."
+                    allowed_states:
+                      - "off"
+                      - "shadow"
+                      - "on"
+                """.formatted(state, streamCvState));
         return new FeatureFlagCatalog(catalogPath.toString());
     }
 
     private Setup setup(String state) throws Exception {
-        FeatureFlagCatalog catalog = catalogFor(state);
+        return setup(state, "off");
+    }
+
+    private Setup setup(String state, String streamCvState) throws Exception {
+        FeatureFlagCatalog catalog = catalogFor(state, streamCvState);
         SettlementEvidenceBuilder evidenceBuilder = Mockito.mock(SettlementEvidenceBuilder.class);
         SettlementEngine engine = Mockito.mock(SettlementEngine.class);
         SettlementShadowAuditService auditService = Mockito.mock(SettlementShadowAuditService.class);
         BetSettlementPolicyCatalog policyCatalog = Mockito.mock(BetSettlementPolicyCatalog.class);
         when(policyCatalog.currentPolicy()).thenReturn(SettlementPolicy.defaults());
         PaperTradeBetRepository betRepository = Mockito.mock(PaperTradeBetRepository.class);
+        ClosingLineLookupService closingLineLookupService = Mockito.mock(ClosingLineLookupService.class);
         when(betRepository.save(any(PaperTradeBet.class))).thenAnswer(inv -> inv.getArgument(0));
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
         ScoreTruthPrimaryService service = new ScoreTruthPrimaryService(
                 catalog, evidenceBuilder, engine, auditService, policyCatalog, betRepository,
-                meterRegistry, CLOCK);
+                closingLineLookupService, meterRegistry, CLOCK);
         return new Setup(service, evidenceBuilder, engine, auditService, policyCatalog, betRepository,
-                meterRegistry);
+                closingLineLookupService, meterRegistry);
     }
 
     private record Setup(ScoreTruthPrimaryService service,
@@ -368,5 +445,6 @@ class ScoreTruthPrimaryServiceTests {
                           SettlementShadowAuditService auditService,
                           BetSettlementPolicyCatalog policyCatalog,
                           PaperTradeBetRepository betRepository,
+                          ClosingLineLookupService closingLineLookupService,
                           SimpleMeterRegistry meterRegistry) { }
 }

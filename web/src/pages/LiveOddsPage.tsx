@@ -127,12 +127,47 @@ function scoreSourceLabel(source: string | null | undefined, trackedAfterClose: 
 
 function settlementSourceLabel(source: string | null | undefined, reason: string | null | undefined): string {
   const normalized = (source ?? '').trim().toUpperCase()
-  if (normalized === 'DECISIVE_LIVE_SCORE') return 'DECISIVE LIVE SCORE'
-  if (normalized === 'OFFICIAL_RESULT') return 'OFFICIAL RESULT'
-  if (normalized === 'DATABASE_RESULT') return 'DATABASE MATCH'
-  if (normalized === 'HEURISTIC_FALLBACK') return 'HEURISTIC FALLBACK'
-  if (normalized === 'TIMEOUT_VOID') return 'TIMEOUT VOID'
+  if (normalized === 'DECISIVE_LIVE_SCORE' || normalized.includes('SCORE_BACKED'))
+    return 'DECISIVE LIVE SCORE'
+  if (normalized === 'OFFICIAL_RESULT' || normalized.includes('OFFICIAL_RESULT')) return 'OFFICIAL RESULT'
+  if (normalized === 'DATABASE_RESULT' || normalized.includes('DATABASE_RESULT')) return 'DATABASE MATCH'
+  if (normalized === 'HEURISTIC_FALLBACK' || normalized.includes('HEURISTIC')) return 'HEURISTIC FALLBACK'
+  if (normalized === 'TIMEOUT_VOID' || normalized.includes('PRIMARY_VOID')) return 'V3 VOID'
   return reason?.trim() || 'Pending result'
+}
+
+function settlementEvidenceLabel(bet: {
+  settlementConfidence: number | null
+  settlementEvidenceSourceCount: number | null
+  settlementCoverageState: string | null
+  settlementAmbiguityScore: number | null
+}): string | null {
+  const parts: string[] = []
+  if (bet.settlementConfidence != null) {
+    parts.push(`${(bet.settlementConfidence * 100).toFixed(0)}% confidence`)
+  }
+  if (bet.settlementEvidenceSourceCount != null) {
+    const count = bet.settlementEvidenceSourceCount
+    parts.push(`${count} evidence source${count === 1 ? '' : 's'}`)
+  }
+  if (bet.settlementCoverageState) {
+    parts.push(`${bet.settlementCoverageState.toLowerCase()} coverage`)
+  }
+  if (bet.settlementAmbiguityScore != null && bet.settlementAmbiguityScore > 0) {
+    parts.push(`${(bet.settlementAmbiguityScore * 100).toFixed(0)}% ambiguity`)
+  }
+  return parts.length ? parts.join(' • ') : null
+}
+
+function closingLineLabel(bet: {
+  closingDecimalOdds: number | null
+  closingSource: string | null
+  closingMarketState: string | null
+}): string | null {
+  if (bet.closingDecimalOdds == null) return null
+  const source = bet.closingSource?.trim() || 'market'
+  const state = bet.closingMarketState?.trim().toLowerCase()
+  return `Close ${bet.closingDecimalOdds.toFixed(2)} • ${source}${state ? ` • ${state}` : ''}`
 }
 
 function trackingStateMeta(trackingState: string | null | undefined): {
@@ -2053,6 +2088,16 @@ export function LiveOddsPage() {
                             {settlementSourceLabel(bet.settlementSource, bet.settlementReason)}
                             {bet.lastObservedAt ? ` • ${asLocalDate(bet.lastObservedAt)}` : ''}
                           </Typography>
+                          {settlementEvidenceLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {settlementEvidenceLabel(bet)}
+                            </Typography>
+                          ) : null}
+                          {closingLineLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {closingLineLabel(bet)}
+                            </Typography>
+                          ) : null}
                           {bet.lastMatchCompleted || bet.lastSourceFeedEventId ? (
                             <Typography color="text.secondary" variant="caption">
                               {feedEvidenceLabel(
@@ -2253,6 +2298,16 @@ export function LiveOddsPage() {
                           <Typography color="text.secondary" variant="caption">
                             {settlementSourceLabel(bet.settlementSource, bet.settlementReason)}
                           </Typography>
+                          {settlementEvidenceLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {settlementEvidenceLabel(bet)}
+                            </Typography>
+                          ) : null}
+                          {closingLineLabel(bet) ? (
+                            <Typography color="text.secondary" variant="caption">
+                              {closingLineLabel(bet)}
+                            </Typography>
+                          ) : null}
                           {bet.lastMatchCompleted || bet.lastSourceFeedEventId ? (
                             <Typography color="text.secondary" variant="caption">
                               {feedEvidenceLabel(

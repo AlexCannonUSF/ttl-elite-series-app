@@ -462,6 +462,28 @@ export interface PaperTradeBetDto {
   trackingState: string | null
   settlementReason: string | null
   settlementSource: string | null
+  settlementConfidence: number | null
+  settlementEvidenceId: number | null
+  settlementEvidenceFingerprint: string | null
+  settlementEvidenceSourceCount: number | null
+  settlementCoverageState: string | null
+  settlementAmbiguityScore: number | null
+  settlementObservedAt: string | null
+  scoreEvidenceQuality: string | null
+  scoreEvidenceFinality: string | null
+  scoreEvidenceConfidence: number | null
+  scoreEvidenceObservationCount: number | null
+  scoreEvidenceSourceCount: number | null
+  scoreEvidenceAgreeingSources: number | null
+  scoreEvidenceCompletionSignals: number | null
+  scoreEvidenceInferredWinnerId: number | null
+  scoreEvidenceLatestScore: string | null
+  scoreEvidenceLatestPhase: string | null
+  scoreEvidenceContradictory: boolean
+  closingDecimalOdds: number | null
+  closingObservedAt: string | null
+  closingSource: string | null
+  closingMarketState: string | null
   lastObservedAt: string | null
   placedAt: string
   settledAt: string | null

@@ -8,12 +8,14 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class SettlementFacadeTests {
@@ -123,5 +125,41 @@ class SettlementFacadeTests {
         verify(advisoryService).recordAdvisoryDecisions(trackedBets);
         verify(settlementDiffLogService).recordScoreTruthReplay(trackedBets, false);
         assertEquals(1.0, meterRegistry.get("ttl.score_truth.advisory.rows.logged").counter().count());
+    }
+
+    @Test
+    void primarySettlementRunsWhenShadowDiffIsDisabledAndNeverCallsLegacy() {
+        PaperTradingService paperTradingService = mock(PaperTradingService.class);
+        PaperTradeBetRepository betRepository = mock(PaperTradeBetRepository.class);
+        SettlementDiffLogService settlementDiffLogService = mock(SettlementDiffLogService.class);
+        ScoreTruthPrimaryService primaryService = mock(ScoreTruthPrimaryService.class);
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        SettlementFacade settlementFacade = new SettlementFacade(
+                paperTradingService,
+                meterRegistry,
+                betRepository,
+                settlementDiffLogService,
+                null,
+                Optional.of(primaryService),
+                false
+        );
+
+        PaperTradeSession session = mock(PaperTradeSession.class);
+        when(session.getId()).thenReturn(77L);
+        List<PaperTradeBet> openBets = List.of(mock(PaperTradeBet.class));
+        when(primaryService.active()).thenReturn(true);
+        when(betRepository.findBySessionIdAndStatusOrderByPlacedAtAsc(77L, PaperTradeBet.STATUS_OPEN))
+                .thenReturn(openBets);
+        when(primaryService.closeOpenBets(openBets))
+                .thenReturn(new ScoreTruthPrimaryService.ClosureStats(2, 1, 0, 0, 0));
+
+        PaperTradingService.SettlementStats stats = settlementFacade.settleOpenBets(session, List.of());
+
+        assertEquals(2, stats.settled());
+        assertEquals(1, stats.voided());
+        verify(paperTradingService).refreshOpenBetScoreEvidence(session, List.of());
+        verify(primaryService).closeOpenBets(openBets);
+        verify(paperTradingService, never()).settleOpenBetsLegacy(session, List.of());
+        verifyNoInteractions(settlementDiffLogService);
     }
 }

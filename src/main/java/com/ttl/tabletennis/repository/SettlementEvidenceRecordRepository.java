@@ -12,6 +12,8 @@ public interface SettlementEvidenceRecordRepository extends JpaRepository<Settle
 
     Optional<SettlementEvidenceRecord> findFirstByBetIdAndBundleAsOf(Long betId, LocalDateTime bundleAsOf);
 
+    Optional<SettlementEvidenceRecord> findByEvidenceFingerprint(String evidenceFingerprint);
+
     Optional<SettlementEvidenceRecord> findTopByBetIdOrderByBundleAsOfDesc(Long betId);
 
     List<SettlementEvidenceRecord> findByTrackedEventIdOrderByBundleAsOfDesc(String trackedEventId, Pageable pageable);

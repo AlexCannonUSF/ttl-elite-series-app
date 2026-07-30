@@ -16,7 +16,8 @@ import java.time.LocalDateTime;
 @Table(name = "settlement_diff_log", indexes = {
         @Index(name = "idx_settlement_diff_bet_decided", columnList = "bet_id, decided_at"),
         @Index(name = "idx_settlement_diff_decided", columnList = "decided_at"),
-        @Index(name = "idx_settlement_diff_kind", columnList = "diff_kind")
+        @Index(name = "idx_settlement_diff_kind", columnList = "diff_kind"),
+        @Index(name = "uq_settlement_diff_fingerprint", columnList = "diff_fingerprint", unique = true)
 })
 public class SettlementDiffLog {
 
@@ -49,6 +50,9 @@ public class SettlementDiffLog {
 
     @Column(name = "decided_at", nullable = false)
     private LocalDateTime decidedAt;
+
+    @Column(name = "diff_fingerprint", length = 64)
+    private String diffFingerprint;
 
     @Column(name = "correlation_id", length = 64)
     private String correlationId;
@@ -129,5 +133,13 @@ public class SettlementDiffLog {
 
     public void setCorrelationId(String correlationId) {
         this.correlationId = correlationId;
+    }
+
+    public String getDiffFingerprint() {
+        return diffFingerprint;
+    }
+
+    public void setDiffFingerprint(String diffFingerprint) {
+        this.diffFingerprint = diffFingerprint;
     }
 }

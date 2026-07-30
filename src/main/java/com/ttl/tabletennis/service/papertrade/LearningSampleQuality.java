@@ -38,17 +38,28 @@ public final class LearningSampleQuality {
             confidence = 1.0;
         } else if (source.contains("DATABASE") || reason.contains("DATABASE")) {
             confidence = bet.getResultMatchId() == null ? 0.82 : 0.96;
-        } else if (source.contains("DECISIVE_LIVE_SCORE")
-                || reason.contains("FINISHED_LIVE_SCORE")
-                || reason.contains("TARGETED_MATCH_COMPLETED")) {
-            confidence = Math.max(0.88, finiteOrZero(bet.getLastScoreConfidence()));
+        } else if (source.contains("TARGETED_MATCH_COMPLETED")
+                || reason.contains("TARGETED_MATCH_COMPLETED")
+                || reason.contains("TARGETED_COMPLETION_SIGNAL")) {
+            confidence = scoreLabelConfidence(bet, true);
         } else if (source.contains("HEURISTIC")
                 || reason.contains("LAST_SCORE")
                 || reason.contains("NEAR_FINISH")
                 || reason.contains("STALE_ONBOARD")) {
             confidence = Math.min(0.70, Math.max(0.45, finiteOrZero(bet.getLastScoreConfidence())));
+        } else if (source.contains("DECISIVE_LIVE_SCORE")
+                || source.contains("SCORE_BACKED")
+                || source.contains("STREAM_CV")
+                || reason.contains("FINISHED_LIVE_SCORE")
+                || reason.contains("DECISIVE_LIVE_SCORE")
+                || reason.contains("SCORE_BACKED")
+                || reason.contains("STREAM_CV")) {
+            confidence = scoreLabelConfidence(bet, false);
         } else {
             confidence = 0.35;
+        }
+        if (bet.getSettlementConfidence() != null && Double.isFinite(bet.getSettlementConfidence())) {
+            confidence = Math.min(confidence, clamp01(bet.getSettlementConfidence()));
         }
 
         boolean eligible = resolved && validWinner && validSide && confidence >= 0.90;
@@ -58,6 +69,34 @@ public final class LearningSampleQuality {
                 : !validSide ? "INVALID_SIDE_IDENTITY"
                 : "LOW_CONFIDENCE_SETTLEMENT";
         return new Assessment(round4(confidence), eligible, exclusion);
+    }
+
+    /**
+     * Score evidence can be strong enough to close a position before it is
+     * strong enough to become a model label. Calibration requires two
+     * agreeing sources (or the equivalent legacy evidence count), a
+     * decision-grade score assessment, and no recorded contradiction.
+     */
+    private static double scoreLabelConfidence(PaperTradeBet bet, boolean targeted) {
+        int supportingSources = Math.max(
+                integerOrZero(bet.getScoreEvidenceAgreeingSources()),
+                integerOrZero(bet.getSettlementEvidenceSourceCount())
+        );
+        boolean independentlySupported = supportingSources >= 2;
+        boolean decisionGrade = "DECISION_GRADE".equals(upper(bet.getScoreEvidenceQuality()))
+                || bet.getScoreEvidenceQuality() == null;
+        boolean trustedForLearning = independentlySupported
+                && decisionGrade
+                && !bet.isScoreEvidenceContradictory();
+        double observedConfidence = Math.max(
+                finiteOrZero(bet.getLastScoreConfidence()),
+                finiteOrZero(bet.getScoreEvidenceConfidence())
+        );
+        if (trustedForLearning) {
+            return Math.max(0.90, observedConfidence);
+        }
+        double floor = targeted ? 0.88 : 0.82;
+        return Math.min(0.89, Math.max(floor, observedConfidence));
     }
 
     public static String priceRegime(double impliedProbability) {
@@ -76,6 +115,14 @@ public final class LearningSampleQuality {
 
     private static double finiteOrZero(Double value) {
         return value != null && Double.isFinite(value) ? Math.max(0.0, Math.min(1.0, value)) : 0.0;
+    }
+
+    private static int integerOrZero(Integer value) {
+        return value == null ? 0 : Math.max(0, value);
+    }
+
+    private static double clamp01(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
     }
 
     private static double round4(double value) {

@@ -171,28 +171,11 @@ public class DefaultSettlementEngine implements SettlementEngine {
             }
         }
 
-        ScoreState score = observation.score();
-        Integer gamesP1 = score.gamesP1();
-        Integer gamesP2 = score.gamesP2();
-        if (observation.completionSignal() || observation.phase().isFinished() || reachedWinningSets(gamesP1, gamesP2)) {
-            if (gamesP1 != null && gamesP2 != null && !gamesP1.equals(gamesP2)) {
-                return gamesP1 > gamesP2 ? Outcome.PLAYER1_WINS : Outcome.PLAYER2_WINS;
-            }
-            if (score.pointsP1() != null && score.pointsP2() != null && !score.pointsP1().equals(score.pointsP2())) {
-                return score.pointsP1() > score.pointsP2() ? Outcome.PLAYER1_WINS : Outcome.PLAYER2_WINS;
-            }
-        }
-
-        if (isDecisiveInProgressScore(score)) {
-            if (gamesP1 != null && gamesP2 != null && !gamesP1.equals(gamesP2)) {
-                return gamesP1 > gamesP2 ? Outcome.PLAYER1_WINS : Outcome.PLAYER2_WINS;
-            }
-            if (score.pointsP1() != null && score.pointsP2() != null && !score.pointsP1().equals(score.pointsP2())) {
-                return score.pointsP1() > score.pointsP2() ? Outcome.PLAYER1_WINS : Outcome.PLAYER2_WINS;
-            }
-        }
-
-        return Outcome.NOT_FINISHED;
+        return ScoreEvidenceAnalyzer.claim(observation, identityLock)
+                .map(claim -> claim.winnerPlayerId() == identityLock.player1Id()
+                        ? Outcome.PLAYER1_WINS
+                        : Outcome.PLAYER2_WINS)
+                .orElse(Outcome.NOT_FINISHED);
     }
 
     private Long explicitWinner(Observation observation) {
@@ -337,20 +320,6 @@ public class DefaultSettlementEngine implements SettlementEngine {
 
     private boolean reachedWinningSets(Integer gamesP1, Integer gamesP2) {
         return (gamesP1 != null && gamesP1 >= 3) || (gamesP2 != null && gamesP2 >= 3);
-    }
-
-    private boolean isDecisiveInProgressScore(ScoreState score) {
-        Integer gamesP1 = score.gamesP1();
-        Integer gamesP2 = score.gamesP2();
-        Integer pointsP1 = score.pointsP1();
-        Integer pointsP2 = score.pointsP2();
-        if (gamesP1 == null || gamesP2 == null || pointsP1 == null || pointsP2 == null || gamesP1.equals(gamesP2)) {
-            return false;
-        }
-        int leaderSets = Math.max(gamesP1, gamesP2);
-        int leaderPoints = gamesP1 > gamesP2 ? pointsP1 : pointsP2;
-        int trailerPoints = gamesP1 > gamesP2 ? pointsP2 : pointsP1;
-        return leaderSets >= 2 && leaderPoints >= 8 && (leaderPoints - trailerPoints) >= 3;
     }
 
     private double clamp(double value) {

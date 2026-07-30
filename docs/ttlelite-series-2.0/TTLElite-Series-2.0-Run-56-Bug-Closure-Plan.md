@@ -7,6 +7,15 @@
 - Feed-identity settlement now refuses conflicting duplicate candidates instead of silently picking one.
 - Strong late live-score leaders now block later-date archive auto-settlement when the archive winner conflicts.
 - Replay coverage now includes same-day duplicate official results and contradictory later-date archive candidates.
+- Phase 2 is now implemented in code.
+- Score evidence is classified per bet by finality, confidence, source agreement, completion signals, inferred winner, and contradiction state.
+- Unfinished commanding scores remain telemetry only; mathematical finals, effective finals, and identity-locked targeted completions can become settlement claims.
+- Primary settlement refreshes the current score row before building evidence, so a targeted completion can close in the same sync.
+- Targeted completion can settle from one identity-locked high-confidence feed, while model calibration still requires independent agreeing support.
+- Score-backed, targeted, heuristic, official, database, and void paths are reported as exclusive integrity categories.
+- The active v3 bettor and admin surfaces expose score-evidence strength, settlement trust, and score-backed closure share.
+- Flyway migrations `V20260729001` and `V20260729002` preserve the Phase 1 and Phase 2 evidence fields on upgrade.
+- Verification on 2026-07-29: 813 backend tests passed; both `web-v3` and legacy `web` production builds passed.
 
 ## Purpose
 

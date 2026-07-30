@@ -15,11 +15,15 @@ import com.ttl.tabletennis.scrape.TtSeriesScraper;
 import com.ttl.tabletennis.service.SettlementShadowAuditService;
 import com.ttl.tabletennis.settlement.BetSettlementPolicyCatalog;
 import com.ttl.tabletennis.settlement.Decision;
+import com.ttl.tabletennis.settlement.Escalate;
+import com.ttl.tabletennis.settlement.HoldOpen;
+import com.ttl.tabletennis.settlement.ManualReview;
 import com.ttl.tabletennis.settlement.Settle;
 import com.ttl.tabletennis.settlement.SettlementEngine;
 import com.ttl.tabletennis.settlement.SettlementEvidence;
 import com.ttl.tabletennis.settlement.SettlementEvidenceBuilder;
 import com.ttl.tabletennis.settlement.SettlementPolicy;
+import com.ttl.tabletennis.settlement.SettlementReason;
 import com.ttl.tabletennis.settlement.VoidDecision;
 import com.ttl.tabletennis.util.CorrelationContext;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -55,6 +59,7 @@ public class StaleLiveRecoveryService {
     public static final String TOPIC_STALE_LIVE_DETECTED = "stale.live.detected";
     public static final String TRACKING_MARKET_CLOSED_SCORE_TRACKED = "MARKET_CLOSED_SCORE_TRACKED";
     public static final String TRACKING_OPEN_SCORE_VISIBLE = "OPEN_SCORE_VISIBLE";
+    public static final String STALE_OPEN_REVIEW_REQUIRED = "STALE_OPEN_REVIEW_REQUIRED";
 
     private static final Logger log = LoggerFactory.getLogger(StaleLiveRecoveryService.class);
     private static final Duration RETRY_COOLDOWN = Duration.ofMinutes(5);
@@ -246,9 +251,19 @@ public class StaleLiveRecoveryService {
                     : settlementEvidenceBuilder.buildForBet(bet);
             if (evidence.isPresent() && settlementEngine != null) {
                 Decision decision = settlementEngine.decide(evidence.get(), policy);
+                if (officialWindowExpired(evidence.get(), policy)
+                        && (decision instanceof HoldOpen || decision instanceof Escalate)) {
+                    decision = new ManualReview(
+                            evidence.get(),
+                            SettlementReason.MANUAL_REVIEW_AWAITING,
+                            evidence.get().contradictions()
+                    );
+                }
                 if (recordRecoverableDecision(bet, evidence.get(), decision, policy)) {
                     decisionRecorded = true;
                 }
+            } else if (officialWindowExpired(bet, now, policy)) {
+                decisionRecorded = escalateNoEvidence(bet, now);
             } else if (allEscalationSourcesCoolingDown(bet.getId(), policy.staleLiveRecovery().escalationOrder(), now)) {
                 officialJobScheduled = scheduleOfficialRecoveryIfAbsent(bet.getId(), now);
             }
@@ -531,14 +546,50 @@ public class StaleLiveRecoveryService {
         if (decision instanceof VoidDecision && !officialWindowExpired(evidence, policy)) {
             return false;
         }
-        settlementShadowAuditService.recordAttempt(bet, evidence, decision);
+        if (decision instanceof ManualReview) {
+            markReviewRequired(bet, "Trusted settlement evidence remains ambiguous", clock.instant());
+        }
+        SettlementShadowAuditService.AuditWriteResult write =
+                settlementShadowAuditService.recordAttempt(bet, evidence, decision);
         increment("ttl.score_truth.stale_live.decisions", "decision", decisionType(decision));
-        return true;
+        return write == null || write.recorded();
     }
 
     private boolean officialWindowExpired(SettlementEvidence evidence, SettlementPolicy policy) {
         long minutesSincePlacement = Duration.between(evidence.identityLock().placementTime(), evidence.bundleAsOf()).toMinutes();
         return minutesSincePlacement >= policy.staleLiveRecovery().officialWindowMinutes();
+    }
+
+    private boolean officialWindowExpired(PaperTradeBet bet, Instant now, SettlementPolicy policy) {
+        if (bet == null || bet.getPlacedAt() == null || now == null) {
+            return false;
+        }
+        long minutesSincePlacement = Duration.between(toInstant(bet.getPlacedAt()), now).toMinutes();
+        return minutesSincePlacement >= policy.staleLiveRecovery().officialWindowMinutes();
+    }
+
+    private boolean escalateNoEvidence(PaperTradeBet bet, Instant now) {
+        if (settlementShadowAuditService == null) {
+            return false;
+        }
+        markReviewRequired(bet, "Official recovery window expired without settlement evidence", now);
+        SettlementShadowAuditService.AuditWriteResult write =
+                settlementShadowAuditService.recordNoEvidenceAttempt(bet, STALE_OPEN_REVIEW_REQUIRED);
+        increment("ttl.score_truth.stale_live.decisions", "decision", "MANUAL_REVIEW");
+        return write == null || write.recorded();
+    }
+
+    private void markReviewRequired(PaperTradeBet bet, String note, Instant now) {
+        if (bet == null) {
+            return;
+        }
+        bet.setPendingEvidenceReason(STALE_OPEN_REVIEW_REQUIRED);
+        bet.setPendingEvidenceNote(note);
+        bet.setPendingEvidenceNextPollAt(null);
+        bet.setPendingEvidenceUpdatedAt(LocalDateTime.ofInstant(now, ZoneId.systemDefault()));
+        if (betRepository != null) {
+            betRepository.save(bet);
+        }
     }
 
     private SettlementPolicy currentPolicy() {

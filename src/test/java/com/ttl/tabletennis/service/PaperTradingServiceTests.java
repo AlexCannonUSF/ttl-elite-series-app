@@ -4264,7 +4264,7 @@ class PaperTradingServiceTests {
 
         LiveStudioIntegrityDto integrity = paperTradingService.getLiveStudioIntegrity();
         assertEquals(1, integrity.targetedCompletionSettlements());
-        assertEquals(1, integrity.scoreBackedSettlements());
+        assertEquals(0, integrity.scoreBackedSettlements());
         assertEquals(1, integrity.trackedAfterCloseObservations());
         assertEquals(1, integrity.scoreFeedObservations());
     }

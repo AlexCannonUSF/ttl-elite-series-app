@@ -70,6 +70,8 @@ public class ClosingLineBackfillService {
             }
             sample.setClosingDecimalOdds(line.get().decimalOdds());
             sample.setClosingObservedAt(line.get().observedAt());
+            sample.setClosingSource(line.get().sourceId());
+            sample.setClosingMarketState(line.get().marketState());
             learningSampleRepository.save(sample);
             filled++;
         }

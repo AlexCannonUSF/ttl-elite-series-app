@@ -53,6 +53,74 @@ class LearningSampleQualityTests {
     }
 
     @Test
+    void explicitSettlementConfidencePreventsWeakEvidenceFromEnteringCalibration() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("SETTLED_FROM_OFFICIAL_RESULT_V3");
+        bet.setSettlementConfidence(0.84);
+
+        LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
+
+        assertEquals(0.84, assessment.confidence());
+        assertFalse(assessment.calibrationEligible());
+        assertEquals("LOW_CONFIDENCE_SETTLEMENT", assessment.exclusionReason());
+    }
+
+    @Test
+    void targetedCompletionRequiresIndependentSupportForCalibration() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementReason("V3_PRIMARY_TARGETED_COMPLETION_SIGNAL");
+        bet.setLastScoreConfidence(0.89);
+        bet.setScoreEvidenceQuality("DECISION_GRADE");
+        bet.setSettlementEvidenceSourceCount(1);
+
+        assertFalse(LearningSampleQuality.assess(bet).calibrationEligible());
+
+        bet.setSettlementEvidenceSourceCount(2);
+        LearningSampleQuality.Assessment supported = LearningSampleQuality.assess(bet);
+        assertEquals(0.90, supported.confidence());
+        assertTrue(supported.calibrationEligible());
+    }
+
+    @Test
+    void v3ScoreBackedOutcomeRequiresDecisionGradeAgreementForCalibration() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("SETTLED_FROM_SCORE_BACKED_V3");
+        bet.setSettlementReason("V3_PRIMARY_SCORE_BACKED_FINISHED");
+        bet.setScoreEvidenceConfidence(0.97);
+        bet.setScoreEvidenceQuality("DECISION_GRADE");
+        bet.setScoreEvidenceAgreeingSources(1);
+
+        LearningSampleQuality.Assessment singleSource = LearningSampleQuality.assess(bet);
+        assertEquals(0.89, singleSource.confidence());
+        assertFalse(singleSource.calibrationEligible());
+
+        bet.setScoreEvidenceAgreeingSources(2);
+        LearningSampleQuality.Assessment agreed = LearningSampleQuality.assess(bet);
+        assertEquals(0.97, agreed.confidence());
+        assertTrue(agreed.calibrationEligible());
+
+        bet.setScoreEvidenceContradictory(true);
+        LearningSampleQuality.Assessment contradicted = LearningSampleQuality.assess(bet);
+        assertEquals(0.89, contradicted.confidence());
+        assertFalse(contradicted.calibrationEligible());
+    }
+
+    @Test
+    void heuristicReasonCannotBecomeTrustedBecauseSourceSaysScoreBacked() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("SETTLED_FROM_SCORE_BACKED_V3");
+        bet.setSettlementReason("V3_PRIMARY_LAST_SCORE_HEURISTIC");
+        bet.setScoreEvidenceConfidence(0.99);
+        bet.setScoreEvidenceQuality("DECISION_GRADE");
+        bet.setScoreEvidenceAgreeingSources(2);
+
+        LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
+
+        assertEquals(0.45, assessment.confidence());
+        assertFalse(assessment.calibrationEligible());
+    }
+
+    @Test
     void outcomeIdentityMustMatchTheTrackedPlayers() {
         PaperTradeBet bet = resolvedBet();
         bet.setSettlementSource("OFFICIAL_RESULT");

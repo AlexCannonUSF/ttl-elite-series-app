@@ -203,6 +203,72 @@ public class PaperTradeBet {
     @Column(name = "settlement_source", length = 48)
     private String settlementSource;
 
+    @Column(name = "settlement_confidence")
+    private Double settlementConfidence;
+
+    @Column(name = "settlement_evidence_id")
+    private Long settlementEvidenceId;
+
+    @Column(name = "settlement_evidence_fingerprint", length = 64)
+    private String settlementEvidenceFingerprint;
+
+    @Column(name = "settlement_evidence_source_count")
+    private Integer settlementEvidenceSourceCount;
+
+    @Column(name = "settlement_coverage_state", length = 16)
+    private String settlementCoverageState;
+
+    @Column(name = "settlement_ambiguity_score")
+    private Double settlementAmbiguityScore;
+
+    @Column(name = "settlement_observed_at")
+    private LocalDateTime settlementObservedAt;
+
+    @Column(name = "score_evidence_quality", length = 24)
+    private String scoreEvidenceQuality;
+
+    @Column(name = "score_evidence_finality", length = 32)
+    private String scoreEvidenceFinality;
+
+    @Column(name = "score_evidence_confidence")
+    private Double scoreEvidenceConfidence;
+
+    @Column(name = "score_evidence_observation_count")
+    private Integer scoreEvidenceObservationCount;
+
+    @Column(name = "score_evidence_source_count")
+    private Integer scoreEvidenceSourceCount;
+
+    @Column(name = "score_evidence_agreeing_sources")
+    private Integer scoreEvidenceAgreeingSources;
+
+    @Column(name = "score_evidence_completion_signals")
+    private Integer scoreEvidenceCompletionSignals;
+
+    @Column(name = "score_evidence_inferred_winner_id")
+    private Long scoreEvidenceInferredWinnerId;
+
+    @Column(name = "score_evidence_latest_score", length = 64)
+    private String scoreEvidenceLatestScore;
+
+    @Column(name = "score_evidence_latest_phase", length = 32)
+    private String scoreEvidenceLatestPhase;
+
+    @Column(name = "score_evidence_contradictory", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean scoreEvidenceContradictory;
+
+    @Column(name = "closing_decimal_odds")
+    private Double closingDecimalOdds;
+
+    @Column(name = "closing_observed_at")
+    private LocalDateTime closingObservedAt;
+
+    @Column(name = "closing_source", length = 16)
+    private String closingSource;
+
+    @Column(name = "closing_market_state", length = 24)
+    private String closingMarketState;
+
     @Column(name = "last_observed_at")
     private LocalDateTime lastObservedAt;
 
@@ -726,6 +792,182 @@ public class PaperTradeBet {
 
     public void setSettlementSource(String settlementSource) {
         this.settlementSource = settlementSource;
+    }
+
+    public Double getSettlementConfidence() {
+        return settlementConfidence;
+    }
+
+    public void setSettlementConfidence(Double settlementConfidence) {
+        this.settlementConfidence = settlementConfidence;
+    }
+
+    public Long getSettlementEvidenceId() {
+        return settlementEvidenceId;
+    }
+
+    public void setSettlementEvidenceId(Long settlementEvidenceId) {
+        this.settlementEvidenceId = settlementEvidenceId;
+    }
+
+    public String getSettlementEvidenceFingerprint() {
+        return settlementEvidenceFingerprint;
+    }
+
+    public void setSettlementEvidenceFingerprint(String settlementEvidenceFingerprint) {
+        this.settlementEvidenceFingerprint = settlementEvidenceFingerprint;
+    }
+
+    public Integer getSettlementEvidenceSourceCount() {
+        return settlementEvidenceSourceCount;
+    }
+
+    public void setSettlementEvidenceSourceCount(Integer settlementEvidenceSourceCount) {
+        this.settlementEvidenceSourceCount = settlementEvidenceSourceCount;
+    }
+
+    public String getSettlementCoverageState() {
+        return settlementCoverageState;
+    }
+
+    public void setSettlementCoverageState(String settlementCoverageState) {
+        this.settlementCoverageState = settlementCoverageState;
+    }
+
+    public Double getSettlementAmbiguityScore() {
+        return settlementAmbiguityScore;
+    }
+
+    public void setSettlementAmbiguityScore(Double settlementAmbiguityScore) {
+        this.settlementAmbiguityScore = settlementAmbiguityScore;
+    }
+
+    public LocalDateTime getSettlementObservedAt() {
+        return settlementObservedAt;
+    }
+
+    public void setSettlementObservedAt(LocalDateTime settlementObservedAt) {
+        this.settlementObservedAt = settlementObservedAt;
+    }
+
+    public String getScoreEvidenceQuality() {
+        return scoreEvidenceQuality;
+    }
+
+    public void setScoreEvidenceQuality(String scoreEvidenceQuality) {
+        this.scoreEvidenceQuality = scoreEvidenceQuality;
+    }
+
+    public String getScoreEvidenceFinality() {
+        return scoreEvidenceFinality;
+    }
+
+    public void setScoreEvidenceFinality(String scoreEvidenceFinality) {
+        this.scoreEvidenceFinality = scoreEvidenceFinality;
+    }
+
+    public Double getScoreEvidenceConfidence() {
+        return scoreEvidenceConfidence;
+    }
+
+    public void setScoreEvidenceConfidence(Double scoreEvidenceConfidence) {
+        this.scoreEvidenceConfidence = scoreEvidenceConfidence;
+    }
+
+    public Integer getScoreEvidenceObservationCount() {
+        return scoreEvidenceObservationCount;
+    }
+
+    public void setScoreEvidenceObservationCount(Integer scoreEvidenceObservationCount) {
+        this.scoreEvidenceObservationCount = scoreEvidenceObservationCount;
+    }
+
+    public Integer getScoreEvidenceSourceCount() {
+        return scoreEvidenceSourceCount;
+    }
+
+    public void setScoreEvidenceSourceCount(Integer scoreEvidenceSourceCount) {
+        this.scoreEvidenceSourceCount = scoreEvidenceSourceCount;
+    }
+
+    public Integer getScoreEvidenceAgreeingSources() {
+        return scoreEvidenceAgreeingSources;
+    }
+
+    public void setScoreEvidenceAgreeingSources(Integer scoreEvidenceAgreeingSources) {
+        this.scoreEvidenceAgreeingSources = scoreEvidenceAgreeingSources;
+    }
+
+    public Integer getScoreEvidenceCompletionSignals() {
+        return scoreEvidenceCompletionSignals;
+    }
+
+    public void setScoreEvidenceCompletionSignals(Integer scoreEvidenceCompletionSignals) {
+        this.scoreEvidenceCompletionSignals = scoreEvidenceCompletionSignals;
+    }
+
+    public Long getScoreEvidenceInferredWinnerId() {
+        return scoreEvidenceInferredWinnerId;
+    }
+
+    public void setScoreEvidenceInferredWinnerId(Long scoreEvidenceInferredWinnerId) {
+        this.scoreEvidenceInferredWinnerId = scoreEvidenceInferredWinnerId;
+    }
+
+    public String getScoreEvidenceLatestScore() {
+        return scoreEvidenceLatestScore;
+    }
+
+    public void setScoreEvidenceLatestScore(String scoreEvidenceLatestScore) {
+        this.scoreEvidenceLatestScore = scoreEvidenceLatestScore;
+    }
+
+    public String getScoreEvidenceLatestPhase() {
+        return scoreEvidenceLatestPhase;
+    }
+
+    public void setScoreEvidenceLatestPhase(String scoreEvidenceLatestPhase) {
+        this.scoreEvidenceLatestPhase = scoreEvidenceLatestPhase;
+    }
+
+    public boolean isScoreEvidenceContradictory() {
+        return scoreEvidenceContradictory;
+    }
+
+    public void setScoreEvidenceContradictory(boolean scoreEvidenceContradictory) {
+        this.scoreEvidenceContradictory = scoreEvidenceContradictory;
+    }
+
+    public Double getClosingDecimalOdds() {
+        return closingDecimalOdds;
+    }
+
+    public void setClosingDecimalOdds(Double closingDecimalOdds) {
+        this.closingDecimalOdds = closingDecimalOdds;
+    }
+
+    public LocalDateTime getClosingObservedAt() {
+        return closingObservedAt;
+    }
+
+    public void setClosingObservedAt(LocalDateTime closingObservedAt) {
+        this.closingObservedAt = closingObservedAt;
+    }
+
+    public String getClosingSource() {
+        return closingSource;
+    }
+
+    public void setClosingSource(String closingSource) {
+        this.closingSource = closingSource;
+    }
+
+    public String getClosingMarketState() {
+        return closingMarketState;
+    }
+
+    public void setClosingMarketState(String closingMarketState) {
+        this.closingMarketState = closingMarketState;
     }
 
     public LocalDateTime getLastObservedAt() {

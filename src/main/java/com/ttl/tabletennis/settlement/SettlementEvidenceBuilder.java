@@ -61,10 +61,17 @@ public class SettlementEvidenceBuilder {
                     trackedObservation.getLiveScore());
             ScoreState scoreState = parseScoreState(trackedObservation.getLiveScore(), trackedObservation.getScoreDetail());
             Instant observedAt = toInstant(trackedObservation.getObservedAt(), bet.getPlacedAt());
-            double confidence = clamp(trackedObservation.getSourceConfidence(), 0.0, 1.0);
             boolean completionSignal = trackedObservation.isMatchCompleted()
                     || trackedObservation.isResulted()
                     || phase.isFinished();
+            double confidence = effectiveObservationConfidence(
+                    bet,
+                    trackedObservation,
+                    sourceId,
+                    phase,
+                    scoreState,
+                    completionSignal
+            );
             trackedAfterClose = trackedAfterClose || trackedObservation.isTrackedAfterClose();
 
             if (sourceId.tier() == TrustTier.T2_MIRROR) {
@@ -292,6 +299,70 @@ public class SettlementEvidenceBuilder {
             return SourceId.HR_TGT;
         }
         return SourceId.HR_MKT;
+    }
+
+    /**
+     * A targeted Hard Rock terminal row is stronger than its generic polling
+     * confidence. The uplift is allowed only after the row has survived the
+     * locked event/player identity checks used when observations are recorded.
+     * This lets the explicit completion endpoint settle immediately while a
+     * merely commanding in-play score remains below the automatic threshold.
+     */
+    private double effectiveObservationConfidence(PaperTradeBet bet,
+                                                  TrackedMatchObservation observation,
+                                                  SourceId sourceId,
+                                                  MatchPhase phase,
+                                                  ScoreState score,
+                                                  boolean completionSignal) {
+        double base = clamp(observation.getSourceConfidence(), 0.0, 1.0);
+        if (!completionSignal || !identityAligned(bet, observation) || !hasWinnerShape(score)) {
+            return base;
+        }
+        if (sourceId == SourceId.HR_TGT
+                && (observation.isResulted() || observation.isMatchCompleted())
+                && phase.isFinished()) {
+            return Math.max(base, 0.98);
+        }
+        if (sourceId == SourceId.HR_TGT) {
+            return Math.max(base, 0.96);
+        }
+        if (sourceId.tier() == TrustTier.T2_MIRROR || sourceId.tier() == TrustTier.T3_STREAM_CV) {
+            return Math.max(base, 0.94);
+        }
+        return Math.max(base, 0.92);
+    }
+
+    private boolean identityAligned(PaperTradeBet bet, TrackedMatchObservation observation) {
+        if (bet == null || observation == null) {
+            return false;
+        }
+        boolean playersMatch = java.util.Objects.equals(bet.getPlayer1Id(), observation.getPlayer1Id())
+                && java.util.Objects.equals(bet.getPlayer2Id(), observation.getPlayer2Id());
+        String lockedEventId = firstText(
+                bet.getLockedExternalEventId(),
+                bet.getExternalEventId(),
+                bet.getLockedSourceFeedEventId()
+        );
+        String observedEventId = firstText(
+                observation.getExternalEventId(),
+                observation.getSourceFeedEventId()
+        );
+        boolean eventMatch = StringUtils.hasText(lockedEventId)
+                && StringUtils.hasText(observedEventId)
+                && lockedEventId.equalsIgnoreCase(observedEventId);
+        return playersMatch && (eventMatch || StringUtils.hasText(bet.getEventKey()));
+    }
+
+    private boolean hasWinnerShape(ScoreState score) {
+        if (score == null) {
+            return false;
+        }
+        if (score.gamesP1() != null && score.gamesP2() != null
+                && !score.gamesP1().equals(score.gamesP2())) {
+            return true;
+        }
+        return score.pointsP1() != null && score.pointsP2() != null
+                && !score.pointsP1().equals(score.pointsP2());
     }
 
     private MatchPhase toMatchPhase(String rawPhase, boolean live, boolean completionSignal, String liveScore) {

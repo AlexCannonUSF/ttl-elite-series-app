@@ -30,17 +30,26 @@ import static org.mockito.Mockito.when;
 class ScoreTruthReviewServiceTests {
 
     @Test
-    void queuePaginatesManualReviewDecisionsAndMarksLatestAction() {
+    void queuePaginatesOnlyOpenReviewsAndShowsLatestComment() {
         SettlementAuditRecordRepository repository = mock(SettlementAuditRecordRepository.class);
         SettlementAuditRecord manualReview = manualReviewRecord(701L, 41L);
-        SettlementAuditRecord accepted = actionRecord(801L, 41L, ScoreTruthReviewService.DECISION_ACCEPTED, "ACCEPT", "ops-lead", "confirmed", 701L);
+        SettlementAuditRecord comment = actionRecord(
+                801L,
+                41L,
+                ScoreTruthReviewService.DECISION_COMMENT,
+                "COMMENT",
+                "ops-lead",
+                "awaiting another source",
+                701L
+        );
 
-        when(repository.findByDecisionOrderByDecidedAtDescIdDesc(
+        when(repository.findByDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
                 eq(ScoreTruthReviewService.DECISION_MANUAL_REVIEW),
+                eq(ScoreTruthReviewService.REVIEW_OPEN),
                 any(Pageable.class)
         )).thenReturn(new PageImpl<>(List.of(manualReview), PageRequest.of(1, 10), 21));
         when(repository.findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(eq(41L), any(), any(Pageable.class)))
-                .thenReturn(List.of(accepted));
+                .thenReturn(List.of(comment));
 
         ScoreTruthReviewService service = new ScoreTruthReviewService(repository, new ObjectMapper());
 
@@ -52,12 +61,13 @@ class ScoreTruthReviewServiceTests {
         assertEquals(3, queue.totalPages());
         assertEquals(1, queue.items().size());
         assertEquals(701L, queue.items().get(0).decisionId());
-        assertEquals("ACCEPTED", queue.items().get(0).reviewStatus());
+        assertEquals("COMMENTED", queue.items().get(0).reviewStatus());
         assertEquals("ops-lead", queue.items().get(0).reviewer());
-        assertEquals("confirmed", queue.items().get(0).reviewComment());
+        assertEquals("awaiting another source", queue.items().get(0).reviewComment());
         assertEquals(801L, queue.items().get(0).reviewActionId());
-        verify(repository).findByDecisionOrderByDecidedAtDescIdDesc(
+        verify(repository).findByDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
                 eq(ScoreTruthReviewService.DECISION_MANUAL_REVIEW),
+                eq(ScoreTruthReviewService.REVIEW_OPEN),
                 any(Pageable.class)
         );
     }
@@ -68,7 +78,10 @@ class ScoreTruthReviewServiceTests {
         SettlementAuditRecord manualReview = manualReviewRecord(702L, 42L);
         SettlementAuditRecord unrelatedAction = actionRecord(802L, 42L, ScoreTruthReviewService.DECISION_COMMENT, "COMMENT", "ops", "wrong row", 999L);
 
-        when(repository.findByDecisionOrderByDecidedAtDescIdDesc(any(String.class), any(Pageable.class)))
+        when(repository.findByDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
+                any(String.class),
+                eq(ScoreTruthReviewService.REVIEW_OPEN),
+                any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(manualReview)));
         when(repository.findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(eq(42L), any(), any(Pageable.class)))
                 .thenReturn(List.of(unrelatedAction));
@@ -83,24 +96,12 @@ class ScoreTruthReviewServiceTests {
     }
 
     @Test
-    void unresolvedQueueDepthCountsOpenAndCommentedReviewsOnly() {
+    void unresolvedQueueDepthUsesExplicitOpenLifecycleState() {
         SettlementAuditRecordRepository repository = mock(SettlementAuditRecordRepository.class);
-        SettlementAuditRecord open = manualReviewRecord(701L, 41L);
-        SettlementAuditRecord acceptedSource = manualReviewRecord(702L, 42L);
-        SettlementAuditRecord commentedSource = manualReviewRecord(703L, 43L);
-        SettlementAuditRecord accepted = actionRecord(801L, 42L, ScoreTruthReviewService.DECISION_ACCEPTED, "ACCEPT", "ops", "confirmed", 702L);
-        SettlementAuditRecord comment = actionRecord(802L, 43L, ScoreTruthReviewService.DECISION_COMMENT, "COMMENT", "ops", "needs another look", 703L);
-
-        when(repository.findByDecisionOrderByDecidedAtDescIdDesc(
-                eq(ScoreTruthReviewService.DECISION_MANUAL_REVIEW),
-                any(Pageable.class)
-        )).thenReturn(new PageImpl<>(List.of(open, acceptedSource, commentedSource)));
-        when(repository.findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(eq(41L), any(), any(Pageable.class)))
-                .thenReturn(List.of());
-        when(repository.findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(eq(42L), any(), any(Pageable.class)))
-                .thenReturn(List.of(accepted));
-        when(repository.findByBetIdAndDecisionInOrderByDecidedAtDescIdDesc(eq(43L), any(), any(Pageable.class)))
-                .thenReturn(List.of(comment));
+        when(repository.countByDecisionAndReviewStatus(
+                ScoreTruthReviewService.DECISION_MANUAL_REVIEW,
+                ScoreTruthReviewService.REVIEW_OPEN
+        )).thenReturn(2L);
 
         ScoreTruthReviewService service = new ScoreTruthReviewService(repository, new ObjectMapper());
 
@@ -127,8 +128,9 @@ class ScoreTruthReviewServiceTests {
         );
 
         ArgumentCaptor<SettlementAuditRecord> captor = ArgumentCaptor.forClass(SettlementAuditRecord.class);
-        verify(repository).save(captor.capture());
-        SettlementAuditRecord saved = captor.getValue();
+        verify(repository, org.mockito.Mockito.times(2)).save(captor.capture());
+        SettlementAuditRecord source = captor.getAllValues().get(0);
+        SettlementAuditRecord saved = captor.getAllValues().get(1);
 
         assertEquals(901L, response.id());
         assertEquals(701L, response.decisionId());
@@ -138,6 +140,8 @@ class ScoreTruthReviewServiceTests {
         assertEquals(ScoreTruthReviewService.DECISION_REJECTED, saved.getDecision());
         assertEquals("OPERATOR_REJECTED", saved.getReason());
         assertEquals(501L, saved.getEvidenceId());
+        assertEquals(701L, saved.getReviewDecisionId());
+        assertEquals(SettlementShadowAuditService.REVIEW_REJECTED, source.getReviewStatus());
         assertNotNull(saved.getDecidedAt());
         assertEquals(701L, new ObjectMapper().readTree(saved.getPayloadJson()).path("reviewDecisionId").asLong());
         assertEquals("scoreboard contradicts source", new ObjectMapper().readTree(saved.getPayloadJson()).path("comment").asText());
@@ -180,6 +184,7 @@ class ScoreTruthReviewServiceTests {
         record.setBetId(betId);
         record.setTrackedEventId("sr:match:" + betId);
         record.setDecision(ScoreTruthReviewService.DECISION_MANUAL_REVIEW);
+        record.setReviewStatus(ScoreTruthReviewService.REVIEW_OPEN);
         record.setReason("MANUAL_REVIEW_AWAITING");
         record.setConfidence(null);
         record.setEvidenceId(501L);

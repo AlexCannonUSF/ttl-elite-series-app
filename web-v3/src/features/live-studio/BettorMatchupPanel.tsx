@@ -402,7 +402,7 @@ function PositionStrip({ bet, row }: { bet: PaperTradeBet; row: LiveOddsRecommen
   const currentEdge = isP1 ? row.edgePlayer1 : row.edgePlayer2
   const scoreRead = inferScoreRead(row.liveScore, isP1)
   return (
-    <div className="grid gap-3 rounded-[20px] border border-amber-300 bg-amber-50/80 p-4 sm:grid-cols-[1.4fr_repeat(3,1fr)]">
+    <div className="grid gap-3 rounded-[20px] border border-amber-300 bg-amber-50/80 p-4 sm:grid-cols-[1.4fr_repeat(4,1fr)]">
       <div>
         <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">
           <CircleDollarSign aria-hidden="true" className="size-4" />
@@ -414,8 +414,22 @@ function PositionStrip({ bet, row }: { bet: PaperTradeBet; row: LiveOddsRecommen
       <MiniMetric label="Placed" value={bet.decimalOdds.toFixed(2)} />
       <MiniMetric label="Now" value={Number.isFinite(currentDecimal) ? currentDecimal.toFixed(2) : '—'} />
       <MiniMetric label="Edge now" value={formatSignedPct(currentEdge)} />
+      <MiniMetric
+        label="Score evidence"
+        value={scoreEvidenceLabel(bet)}
+      />
     </div>
   )
+}
+
+function scoreEvidenceLabel(bet: PaperTradeBet) {
+  if (!bet.scoreEvidenceQuality || bet.scoreEvidenceQuality === 'NONE') return 'Waiting'
+  const label = bet.scoreEvidenceQuality === 'DECISION_GRADE'
+    ? 'Decision-grade'
+    : bet.scoreEvidenceQuality.replaceAll('_', ' ').toLowerCase()
+  return bet.scoreEvidenceConfidence == null
+    ? label
+    : `${label} · ${Math.round(bet.scoreEvidenceConfidence * 100)}%`
 }
 
 function Price({ align, label, value }: { align?: 'right'; label: string; value: string }) {

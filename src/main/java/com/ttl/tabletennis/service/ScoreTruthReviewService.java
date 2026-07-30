@@ -32,6 +32,7 @@ public class ScoreTruthReviewService {
     static final String DECISION_ACCEPTED = "MANUAL_REVIEW_ACCEPTED";
     static final String DECISION_REJECTED = "MANUAL_REVIEW_REJECTED";
     static final String DECISION_COMMENT = "MANUAL_REVIEW_COMMENT";
+    static final String REVIEW_OPEN = SettlementShadowAuditService.REVIEW_OPEN;
 
     private static final int DEFAULT_SIZE = 25;
     private static final int MAX_SIZE = 100;
@@ -55,8 +56,9 @@ public class ScoreTruthReviewService {
         int normalizedPage = page == null || page < 0 ? 0 : page;
         int normalizedSize = normalizeSize(size);
         Page<SettlementAuditRecord> recordPage = settlementAuditRecordRepository
-                .findByDecisionOrderByDecidedAtDescIdDesc(
+                .findByDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
                         DECISION_MANUAL_REVIEW,
+                        REVIEW_OPEN,
                         PageRequest.of(normalizedPage, normalizedSize)
                 );
 
@@ -78,23 +80,10 @@ public class ScoreTruthReviewService {
 
     @Transactional(readOnly = true)
     public long unresolvedQueueDepth() {
-        long unresolved = 0L;
-        int page = 0;
-        Page<SettlementAuditRecord> recordPage;
-        do {
-            recordPage = settlementAuditRecordRepository
-                    .findByDecisionOrderByDecidedAtDescIdDesc(
-                            DECISION_MANUAL_REVIEW,
-                            PageRequest.of(page, MAX_SIZE)
-                    );
-            for (SettlementAuditRecord record : recordPage.getContent()) {
-                if (!resolved(latestAction(record))) {
-                    unresolved++;
-                }
-            }
-            page++;
-        } while (recordPage.hasNext());
-        return unresolved;
+        return settlementAuditRecordRepository.countByDecisionAndReviewStatus(
+                DECISION_MANUAL_REVIEW,
+                REVIEW_OPEN
+        );
     }
 
     @Transactional
@@ -103,6 +92,9 @@ public class ScoreTruthReviewService {
                 .orElseThrow(() -> new ResourceNotFoundException("Manual review decision not found: " + decisionId));
         if (!DECISION_MANUAL_REVIEW.equals(source.getDecision())) {
             throw new ResourceNotFoundException("Manual review decision not found: " + decisionId);
+        }
+        if (!REVIEW_OPEN.equals(source.getReviewStatus())) {
+            throw new IllegalStateException("Manual review decision is no longer open: " + decisionId);
         }
 
         String action = normalizeAction(request == null ? null : request.action());
@@ -123,9 +115,16 @@ public class ScoreTruthReviewService {
         actionRecord.setReason(toReason(action));
         actionRecord.setConfidence(source.getConfidence());
         actionRecord.setEvidenceId(source.getEvidenceId());
+        actionRecord.setReviewDecisionId(source.getId());
         actionRecord.setDecidedAt(reviewedAt);
         actionRecord.setPayloadJson(serializeActionPayload(source, action, reviewer, comment, reviewedAt));
 
+        if ("ACCEPT".equals(action)) {
+            source.setReviewStatus(SettlementShadowAuditService.REVIEW_ACCEPTED);
+        } else if ("REJECT".equals(action)) {
+            source.setReviewStatus(SettlementShadowAuditService.REVIEW_REJECTED);
+        }
+        settlementAuditRecordRepository.save(source);
         SettlementAuditRecord saved = settlementAuditRecordRepository.save(actionRecord);
         return new ScoreTruthReviewActionDto(
                 saved.getId(),
@@ -174,6 +173,9 @@ public class ScoreTruthReviewService {
     }
 
     private boolean actionReferences(SettlementAuditRecord candidate, Long decisionId) {
+        if (candidate != null && candidate.getReviewDecisionId() != null) {
+            return candidate.getReviewDecisionId().equals(decisionId);
+        }
         JsonNode payload = parseJson(candidate.getPayloadJson());
         JsonNode reviewDecisionId = payload.path("reviewDecisionId");
         return reviewDecisionId.canConvertToLong() && reviewDecisionId.asLong() == decisionId;
@@ -204,11 +206,6 @@ public class ScoreTruthReviewService {
             case DECISION_COMMENT -> "COMMENTED";
             default -> "OPEN";
         };
-    }
-
-    private boolean resolved(ReviewActionSnapshot action) {
-        return action != null
-                && ("ACCEPTED".equals(action.status()) || "REJECTED".equals(action.status()));
     }
 
     private String normalizeAction(String action) {

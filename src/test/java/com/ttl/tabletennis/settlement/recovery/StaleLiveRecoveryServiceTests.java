@@ -205,7 +205,64 @@ class StaleLiveRecoveryServiceTests {
         assertEquals(1, batch.officialJobsScheduled());
     }
 
+    @Test
+    void escalatesToExplicitReviewWhenOfficialWindowExpiresWithoutEvidence() throws Exception {
+        PaperTradeBetRepository betRepository = mock(PaperTradeBetRepository.class);
+        TrackedMatchObservationRepository trackedRepository = mock(TrackedMatchObservationRepository.class);
+        SettlementEvidenceBuilder builder = mock(SettlementEvidenceBuilder.class);
+        SettlementShadowAuditService auditService = mock(SettlementShadowAuditService.class);
+        StaleLiveRecoveryService service = service(
+                "primary",
+                betRepository,
+                trackedRepository,
+                builder,
+                mock(SettlementEngine.class),
+                auditService,
+                mock(IngestionBus.class),
+                new SimpleMeterRegistry(),
+                List.of()
+        );
+        PaperTradeBet bet = staleOpenScoreBet(205L);
+        bet.setPlacedAt(LocalDateTime.ofInstant(NOW.minus(Duration.ofMinutes(181)), ZoneId.systemDefault()));
+        when(trackedRepository.findTopByBetIdOrderByObservedAtDesc(205L)).thenReturn(Optional.empty());
+        when(builder.buildForBet(bet)).thenReturn(Optional.empty());
+
+        StaleLiveRecoveryService.RecoveryBatch batch = service.recoverCandidates(List.of(bet));
+
+        assertEquals(1, batch.decisionsRecorded());
+        assertEquals(0, batch.officialJobsScheduled());
+        assertEquals(StaleLiveRecoveryService.STALE_OPEN_REVIEW_REQUIRED, bet.getPendingEvidenceReason());
+        assertTrue(bet.getPendingEvidenceNote().contains("Official recovery window expired"));
+        verify(betRepository).save(bet);
+        verify(auditService).recordNoEvidenceAttempt(
+                bet,
+                StaleLiveRecoveryService.STALE_OPEN_REVIEW_REQUIRED
+        );
+    }
+
     private StaleLiveRecoveryService service(String state,
+                                             TrackedMatchObservationRepository trackedRepository,
+                                             SettlementEvidenceBuilder builder,
+                                             SettlementEngine engine,
+                                             SettlementShadowAuditService auditService,
+                                             IngestionBus ingestionBus,
+                                             SimpleMeterRegistry meterRegistry,
+                                             List<FeedClient<?>> feedClients) throws Exception {
+        return service(
+                state,
+                mock(PaperTradeBetRepository.class),
+                trackedRepository,
+                builder,
+                engine,
+                auditService,
+                ingestionBus,
+                meterRegistry,
+                feedClients
+        );
+    }
+
+    private StaleLiveRecoveryService service(String state,
+                                             PaperTradeBetRepository betRepository,
                                              TrackedMatchObservationRepository trackedRepository,
                                              SettlementEvidenceBuilder builder,
                                              SettlementEngine engine,
@@ -215,7 +272,7 @@ class StaleLiveRecoveryServiceTests {
                                              List<FeedClient<?>> feedClients) throws Exception {
         return new StaleLiveRecoveryService(
                 featureCatalogWithScoreTruth(state),
-                mock(PaperTradeBetRepository.class),
+                betRepository,
                 trackedRepository,
                 builder,
                 engine,

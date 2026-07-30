@@ -29,7 +29,8 @@ class ClosingLineLookupServiceTests {
     void mapsPlayer1SideToTopSnapshotKey() {
         PaperTradeBet bet = betPlayer1Side();
         ArgumentCaptor<String> sideCaptor = ArgumentCaptor.forClass(String.class);
-        when(repository.findClosingCandidates(anyString(), sideCaptor.capture(), any(), any(), any(Pageable.class)))
+        when(repository.findClosingCandidatesForSettlement(
+                anyString(), sideCaptor.capture(), any(), any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(snapshot(2.10, "CLOSED")));
 
         Optional<ClosingLineLookupService.ClosingLine> line = service.findFor(bet);
@@ -37,16 +38,18 @@ class ClosingLineLookupServiceTests {
         assertTrue(line.isPresent());
         assertEquals(ClosingLineLookupService.SIDE_TOP, sideCaptor.getValue());
         assertEquals(2.10, line.get().decimalOdds(), 1e-9);
-        verify(repository).findClosingCandidates(eq("event-7"), eq(ClosingLineLookupService.SIDE_TOP),
-                any(), any(), any(Pageable.class));
+        verify(repository).findClosingCandidatesForSettlement(
+                eq("event-7"), eq(ClosingLineLookupService.SIDE_TOP),
+                any(), any(), any(), any(Pageable.class));
     }
 
     @Test
     void mapsPlayer2SideToBotSnapshotKey() {
         PaperTradeBet bet = betPlayer1Side();
         bet.setSidePlayerId(bet.getPlayer2Id());
-        when(repository.findClosingCandidates(anyString(), eq(ClosingLineLookupService.SIDE_BOT),
-                any(), any(), any(Pageable.class))).thenReturn(List.of(snapshot(1.95, "CLOSED")));
+        when(repository.findClosingCandidatesForSettlement(
+                anyString(), eq(ClosingLineLookupService.SIDE_BOT),
+                any(), any(), any(), any(Pageable.class))).thenReturn(List.of(snapshot(1.95, "CLOSED")));
 
         Optional<ClosingLineLookupService.ClosingLine> line = service.findFor(bet);
 
@@ -56,7 +59,8 @@ class ClosingLineLookupServiceTests {
 
     @Test
     void returnsEmptyWhenNoSnapshotsFound() {
-        when(repository.findClosingCandidates(anyString(), anyString(), any(), any(), any(Pageable.class)))
+        when(repository.findClosingCandidatesForSettlement(
+                anyString(), anyString(), any(), any(), any(), any(Pageable.class)))
                 .thenReturn(List.of());
 
         assertTrue(service.findFor(betPlayer1Side()).isEmpty());
@@ -71,7 +75,8 @@ class ClosingLineLookupServiceTests {
 
     @Test
     void returnsEmptyWhenSnapshotPriceIsImplausible() {
-        when(repository.findClosingCandidates(anyString(), anyString(), any(), any(), any(Pageable.class)))
+        when(repository.findClosingCandidatesForSettlement(
+                anyString(), anyString(), any(), any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(snapshot(0.5, "CLOSED")));
 
         assertTrue(service.findFor(betPlayer1Side()).isEmpty());
@@ -79,7 +84,8 @@ class ClosingLineLookupServiceTests {
 
     @Test
     void swallowsRepositoryExceptions() {
-        when(repository.findClosingCandidates(anyString(), anyString(), any(), any(), any(Pageable.class)))
+        when(repository.findClosingCandidatesForSettlement(
+                anyString(), anyString(), any(), any(), any(), any(Pageable.class)))
                 .thenThrow(new RuntimeException("boom"));
 
         assertTrue(service.findFor(betPlayer1Side()).isEmpty());

@@ -1,6 +1,9 @@
 package com.ttl.tabletennis.config;
 
+import db.migration.V20260729001__phase_01_evidence_integrity;
+import db.migration.V20260729002__phase_02_score_backed_settlement;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.migration.Context;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -13,6 +16,8 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class FlywayMigrationTests {
 
@@ -232,6 +237,122 @@ class FlywayMigrationTests {
 
         assertEquals(0, flyway.migrate().migrationsExecuted);
         flyway.clean();
+    }
+
+    @Test
+    void phase01EvidenceIntegrityMigrationAddsProvenanceAndPreservesLegacyReviewState() throws Exception {
+        String url = "jdbc:h2:mem:phase-01-integrity-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE settlement_evidence (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("""
+                    CREATE TABLE settlement_audit (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        bet_id BIGINT NOT NULL,
+                        decision VARCHAR(24) NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        decided_at TIMESTAMP NOT NULL
+                    )
+                    """);
+            statement.execute("CREATE TABLE settlement_diff_log (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("CREATE TABLE paper_trade_bet (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("CREATE TABLE paper_trade_learning_sample (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("""
+                    INSERT INTO settlement_audit (id, bet_id, decision, payload_json, decided_at)
+                    VALUES
+                      (10, 100, 'MANUAL_REVIEW', '{}', TIMESTAMP '2026-07-29 18:00:00'),
+                      (11, 100, 'MANUAL_REVIEW_ACCEPTED', '{"reviewDecisionId":10}', TIMESTAMP '2026-07-29 18:01:00'),
+                      (12, 101, 'MANUAL_REVIEW', '{}', TIMESTAMP '2026-07-29 18:00:00'),
+                      (13, 101, 'MANUAL_REVIEW', '{}', TIMESTAMP '2026-07-29 18:01:00'),
+                      (14, 102, 'MANUAL_REVIEW', '{}', TIMESTAMP '2026-07-29 18:00:00'),
+                      (15, 102, 'SETTLE', '{}', TIMESTAMP '2026-07-29 18:01:00')
+                    """);
+
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260729001__phase_01_evidence_integrity migration =
+                    new V20260729001__phase_01_evidence_integrity();
+
+            migration.migrate(context);
+            migration.migrate(context);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertTrue(columnExists(metaData, "settlement_evidence", "evidence_fingerprint"));
+            assertTrue(columnExists(metaData, "settlement_audit", "decision_fingerprint"));
+            assertTrue(columnExists(metaData, "settlement_audit", "review_status"));
+            assertTrue(columnExists(metaData, "settlement_audit", "review_decision_id"));
+            assertTrue(columnExists(metaData, "settlement_diff_log", "diff_fingerprint"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "settlement_confidence"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "settlement_evidence_fingerprint"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "closing_decimal_odds"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "closing_source"));
+            assertTrue(columnExists(metaData, "paper_trade_learning_sample", "closing_source"));
+            assertTrue(indexExists(metaData, "settlement_evidence", "uq_settlement_evidence_fingerprint"));
+            assertTrue(indexExists(metaData, "settlement_audit", "uq_settlement_audit_fingerprint"));
+            assertTrue(indexExists(metaData, "settlement_audit", "idx_settlement_audit_review"));
+            assertTrue(indexExists(metaData, "settlement_diff_log", "uq_settlement_diff_fingerprint"));
+
+            try (ResultSet reviews = statement.executeQuery("""
+                    SELECT id, review_status, review_decision_id
+                    FROM settlement_audit
+                    ORDER BY id
+                    """)) {
+                assertTrue(reviews.next());
+                assertEquals(10L, reviews.getLong("id"));
+                assertEquals("ACCEPTED", reviews.getString("review_status"));
+                assertTrue(reviews.next());
+                assertEquals(11L, reviews.getLong("id"));
+                assertEquals(10L, reviews.getLong("review_decision_id"));
+                assertTrue(reviews.next());
+                assertEquals(12L, reviews.getLong("id"));
+                assertEquals("SUPERSEDED", reviews.getString("review_status"));
+                assertTrue(reviews.next());
+                assertEquals(13L, reviews.getLong("id"));
+                assertEquals("OPEN", reviews.getString("review_status"));
+                assertTrue(reviews.next());
+                assertEquals(14L, reviews.getLong("id"));
+                assertEquals("RESOLVED", reviews.getString("review_status"));
+            }
+        }
+    }
+
+    @Test
+    void phase02ScoreBackedMigrationAddsQualityEvidenceIdempotently() throws Exception {
+        String url = "jdbc:h2:mem:phase-02-score-backed-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE paper_trade_bet (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("""
+                    CREATE TABLE settlement_evidence (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        bundle_as_of TIMESTAMP NOT NULL
+                    )
+                    """);
+
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260729002__phase_02_score_backed_settlement migration =
+                    new V20260729002__phase_02_score_backed_settlement();
+
+            migration.migrate(context);
+            migration.migrate(context);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertTrue(columnExists(metaData, "paper_trade_bet", "score_evidence_quality"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "score_evidence_finality"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "score_evidence_confidence"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "score_evidence_latest_score"));
+            assertTrue(columnExists(metaData, "paper_trade_bet", "score_evidence_contradictory"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "score_evidence_quality"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "score_evidence_finality"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "score_inferred_winner_id"));
+            assertTrue(indexExists(metaData, "paper_trade_bet", "idx_paper_bet_score_evidence"));
+            assertTrue(indexExists(metaData, "settlement_evidence", "idx_settlement_evidence_score_quality"));
+        }
     }
 
     private boolean tableExists(DatabaseMetaData metaData, String tableName) throws Exception {

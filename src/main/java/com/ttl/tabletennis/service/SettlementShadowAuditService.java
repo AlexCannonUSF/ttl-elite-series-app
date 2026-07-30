@@ -17,9 +17,12 @@ import com.ttl.tabletennis.settlement.HoldOpen;
 import com.ttl.tabletennis.settlement.ManualReview;
 import com.ttl.tabletennis.settlement.Settle;
 import com.ttl.tabletennis.settlement.SettlementEvidence;
+import com.ttl.tabletennis.settlement.ScoreEvidenceAnalyzer;
+import com.ttl.tabletennis.settlement.ScoreEvidenceAssessment;
 import com.ttl.tabletennis.settlement.VoidDecision;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -37,6 +40,11 @@ public class SettlementShadowAuditService {
     static final String DECISION_ESCALATE = "ESCALATE";
     static final String DECISION_VOID = "VOID";
     static final String DECISION_MANUAL_REVIEW = "MANUAL_REVIEW";
+    static final String REVIEW_OPEN = "OPEN";
+    static final String REVIEW_ACCEPTED = "ACCEPTED";
+    static final String REVIEW_REJECTED = "REJECTED";
+    static final String REVIEW_SUPERSEDED = "SUPERSEDED";
+    static final String REVIEW_RESOLVED = "RESOLVED";
 
     private final SettlementEvidenceRecordRepository settlementEvidenceRecordRepository;
     private final SettlementContradictionRecordRepository settlementContradictionRecordRepository;
@@ -68,14 +76,34 @@ public class SettlementShadowAuditService {
                 Optional.empty());
     }
 
-    public void recordAttempt(PaperTradeBet bet, SettlementEvidence evidence, Decision decision) {
-        SettlementEvidenceRecord evidenceRecord = findOrCreateEvidenceRecord(evidence);
+    @Transactional
+    public AuditWriteResult recordAttempt(PaperTradeBet bet, SettlementEvidence evidence, Decision decision) {
+        String evidenceFingerprint = SettlementFingerprint.evidence(evidence);
+        SettlementEvidenceRecord evidenceRecord = findOrCreateEvidenceRecord(evidence, evidenceFingerprint);
+        String decisionFingerprint = SettlementFingerprint.decision(bet, evidenceFingerprint, decision);
+        if (settlementAuditRecordRepository.existsByDecisionFingerprint(decisionFingerprint)) {
+            return new AuditWriteResult(false, null, evidenceRecord.getId(), evidenceFingerprint, decisionFingerprint);
+        }
         String evidenceRefs = collectCvAuditEvidenceRefs(evidence);
-        recordAudit(bet, evidence, decision, evidenceRecord.getId(),
-                serializeDecisionPayload(bet, evidence, decision), evidenceRefs);
+        SettlementAuditRecord audit = recordAudit(
+                bet,
+                evidence,
+                decision,
+                evidenceRecord.getId(),
+                serializeDecisionPayload(bet, evidence, decision),
+                evidenceRefs,
+                decisionFingerprint
+        );
+        return new AuditWriteResult(true, audit.getId(), evidenceRecord.getId(), evidenceFingerprint, decisionFingerprint);
     }
 
-    public void recordNoEvidenceAttempt(PaperTradeBet bet, String reason) {
+    @Transactional
+    public AuditWriteResult recordNoEvidenceAttempt(PaperTradeBet bet, String reason) {
+        String decisionFingerprint = SettlementFingerprint.noEvidenceDecision(bet, reason);
+        if (settlementAuditRecordRepository.existsByDecisionFingerprint(decisionFingerprint)) {
+            return new AuditWriteResult(false, null, null, null, decisionFingerprint);
+        }
+        supersedeOpenReviews(bet == null ? null : bet.getId(), REVIEW_SUPERSEDED);
         SettlementAuditRecord auditRecord = new SettlementAuditRecord();
         auditRecord.setBetId(bet.getId());
         auditRecord.setTrackedEventId(resolveTrackedEventId(bet, null));
@@ -83,22 +111,62 @@ public class SettlementShadowAuditService {
         auditRecord.setReason(reason);
         auditRecord.setConfidence(null);
         auditRecord.setEvidenceId(null);
+        auditRecord.setDecisionFingerprint(decisionFingerprint);
+        auditRecord.setReviewStatus(REVIEW_OPEN);
         auditRecord.setDecidedAt(firstNonNull(bet.getSettledAt(), bet.getLastObservedAt(), bet.getPlacedAt(), LocalDateTime.now()));
         auditRecord.setPayloadJson(serialize(Map.of(
                 "betId", bet.getId(),
                 "trackedEventId", resolveTrackedEventId(bet, null),
                 "reason", reason
         )));
-        settlementAuditRecordRepository.save(auditRecord);
+        SettlementAuditRecord saved = settlementAuditRecordRepository.save(auditRecord);
+        return new AuditWriteResult(true, saved.getId(), null, null, decisionFingerprint);
     }
 
-    private SettlementEvidenceRecord findOrCreateEvidenceRecord(SettlementEvidence evidence) {
+    private SettlementEvidenceRecord findOrCreateEvidenceRecord(SettlementEvidence evidence,
+                                                                String evidenceFingerprint) {
+        Optional<SettlementEvidenceRecord> fingerprintMatch =
+                settlementEvidenceRecordRepository.findByEvidenceFingerprint(evidenceFingerprint);
+        if (fingerprintMatch.isPresent()) {
+            return backfillScoreEvidence(fingerprintMatch.get(), evidence);
+        }
         LocalDateTime bundleAsOf = toLocalDateTime(evidence.bundleAsOf());
-        return settlementEvidenceRecordRepository.findFirstByBetIdAndBundleAsOf(evidence.betId(), bundleAsOf)
-                .orElseGet(() -> createEvidenceRecord(evidence, bundleAsOf));
+        Optional<SettlementEvidenceRecord> timestampMatch =
+                settlementEvidenceRecordRepository.findFirstByBetIdAndBundleAsOf(evidence.betId(), bundleAsOf);
+        if (timestampMatch.isPresent()) {
+            SettlementEvidenceRecord existing = timestampMatch.get();
+            if (existing.getEvidenceFingerprint() == null || existing.getEvidenceFingerprint().isBlank()) {
+                existing.setEvidenceFingerprint(evidenceFingerprint);
+            }
+            return backfillScoreEvidence(existing, evidence);
+        }
+        return createEvidenceRecord(evidence, bundleAsOf, evidenceFingerprint);
     }
 
-    private SettlementEvidenceRecord createEvidenceRecord(SettlementEvidence evidence, LocalDateTime bundleAsOf) {
+    private SettlementEvidenceRecord backfillScoreEvidence(SettlementEvidenceRecord record,
+                                                            SettlementEvidence evidence) {
+        if (record.getScoreEvidenceQuality() != null
+                && record.getScoreEvidenceFinality() != null
+                && record.getScoreEvidenceConfidence() != null
+                && record.getScoreObservationCount() != null
+                && record.getScoreSourceCount() != null
+                && record.getScoreCompletionSignalCount() != null) {
+            return record;
+        }
+        ScoreEvidenceAssessment scoreEvidence = ScoreEvidenceAnalyzer.assess(evidence);
+        record.setScoreEvidenceQuality(scoreEvidence.quality().name());
+        record.setScoreEvidenceFinality(scoreEvidence.finality().name());
+        record.setScoreEvidenceConfidence(scoreEvidence.confidence());
+        record.setScoreObservationCount(scoreEvidence.observationCount());
+        record.setScoreSourceCount(scoreEvidence.distinctSourceCount());
+        record.setScoreCompletionSignalCount(scoreEvidence.completionSignalCount());
+        record.setScoreInferredWinnerId(scoreEvidence.inferredWinnerPlayerId());
+        return settlementEvidenceRecordRepository.save(record);
+    }
+
+    private SettlementEvidenceRecord createEvidenceRecord(SettlementEvidence evidence,
+                                                          LocalDateTime bundleAsOf,
+                                                          String evidenceFingerprint) {
         SettlementEvidenceRecord record = new SettlementEvidenceRecord();
         record.setBetId(evidence.betId());
         record.setTrackedEventId(evidence.trackedEventId().value());
@@ -107,6 +175,15 @@ public class SettlementShadowAuditService {
         record.setAmbiguityScore(evidence.ambiguityScore());
         record.setConfidence(evidence.confidence());
         record.setPayloadJson(serialize(evidence));
+        record.setEvidenceFingerprint(evidenceFingerprint);
+        ScoreEvidenceAssessment scoreEvidence = ScoreEvidenceAnalyzer.assess(evidence);
+        record.setScoreEvidenceQuality(scoreEvidence.quality().name());
+        record.setScoreEvidenceFinality(scoreEvidence.finality().name());
+        record.setScoreEvidenceConfidence(scoreEvidence.confidence());
+        record.setScoreObservationCount(scoreEvidence.observationCount());
+        record.setScoreSourceCount(scoreEvidence.distinctSourceCount());
+        record.setScoreCompletionSignalCount(scoreEvidence.completionSignalCount());
+        record.setScoreInferredWinnerId(scoreEvidence.inferredWinnerPlayerId());
         SettlementEvidenceRecord saved = settlementEvidenceRecordRepository.save(record);
 
         if (!evidence.contradictions().isEmpty()) {
@@ -136,23 +213,51 @@ public class SettlementShadowAuditService {
         return record;
     }
 
-    private void recordAudit(PaperTradeBet bet,
-                             SettlementEvidence evidence,
-                             Decision decision,
-                             Long evidenceId,
-                             String payloadJson,
-                             String evidenceRefs) {
+    private SettlementAuditRecord recordAudit(PaperTradeBet bet,
+                                              SettlementEvidence evidence,
+                                              Decision decision,
+                                              Long evidenceId,
+                                              String payloadJson,
+                                              String evidenceRefs,
+                                              String decisionFingerprint) {
+        String decisionType = decisionType(decision);
+        if (DECISION_MANUAL_REVIEW.equals(decisionType)) {
+            supersedeOpenReviews(bet.getId(), REVIEW_SUPERSEDED);
+        } else if (DECISION_SETTLE.equals(decisionType) || DECISION_VOID.equals(decisionType)) {
+            supersedeOpenReviews(bet.getId(), REVIEW_RESOLVED);
+        }
         SettlementAuditRecord auditRecord = new SettlementAuditRecord();
         auditRecord.setBetId(bet.getId());
         auditRecord.setTrackedEventId(resolveTrackedEventId(bet, evidence));
-        auditRecord.setDecision(decisionType(decision));
+        auditRecord.setDecision(decisionType);
         auditRecord.setReason(decision.reason().name());
         auditRecord.setConfidence(decisionConfidence(decision));
         auditRecord.setEvidenceId(evidenceId);
+        auditRecord.setDecisionFingerprint(decisionFingerprint);
+        if (DECISION_MANUAL_REVIEW.equals(decisionType)) {
+            auditRecord.setReviewStatus(REVIEW_OPEN);
+        }
         auditRecord.setDecidedAt(toLocalDateTime(evidence.bundleAsOf()));
         auditRecord.setPayloadJson(payloadJson);
         auditRecord.setEvidenceRefs(evidenceRefs);
-        settlementAuditRecordRepository.save(auditRecord);
+        return settlementAuditRecordRepository.save(auditRecord);
+    }
+
+    private void supersedeOpenReviews(Long betId, String newStatus) {
+        if (betId == null) {
+            return;
+        }
+        List<SettlementAuditRecord> openReviews = settlementAuditRecordRepository
+                .findByBetIdAndDecisionAndReviewStatusOrderByDecidedAtDescIdDesc(
+                        betId,
+                        DECISION_MANUAL_REVIEW,
+                        REVIEW_OPEN
+                );
+        if (openReviews == null || openReviews.isEmpty()) {
+            return;
+        }
+        openReviews.forEach(review -> review.setReviewStatus(newStatus));
+        settlementAuditRecordRepository.saveAll(openReviews);
     }
 
     String collectCvAuditEvidenceRefs(SettlementEvidence evidence) {
@@ -184,6 +289,7 @@ public class SettlementShadowAuditService {
         payload.put("ambiguityScore", evidence.ambiguityScore());
         payload.put("contradictionCount", evidence.contradictions().size());
         payload.put("evidenceConfidence", evidence.confidence());
+        payload.put("scoreEvidence", ScoreEvidenceAnalyzer.assess(evidence));
         if (decision instanceof Settle settle) {
             payload.put("winnerPlayerId", settle.winnerPlayerId());
             payload.put("decisionConfidence", settle.confidence());
@@ -277,5 +383,12 @@ public class SettlementShadowAuditService {
             return "unknown";
         }
         return value.replace("\\", "\\\\").replace("\"", "'");
+    }
+
+    public record AuditWriteResult(boolean recorded,
+                                   Long auditId,
+                                   Long evidenceId,
+                                   String evidenceFingerprint,
+                                   String decisionFingerprint) {
     }
 }

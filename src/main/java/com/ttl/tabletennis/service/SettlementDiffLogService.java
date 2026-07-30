@@ -22,9 +22,11 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class SettlementDiffLogService {
@@ -90,8 +92,7 @@ public class SettlementDiffLogService {
             return 0;
         }
 
-        settlementDiffLogRepository.saveAll(rows);
-        return rows.size();
+        return saveNewRows(rows);
     }
 
     public int recordScoreTruthReplay(List<PaperTradeBet> trackedOpenBets) {
@@ -129,8 +130,7 @@ public class SettlementDiffLogService {
             return 0;
         }
 
-        settlementDiffLogRepository.saveAll(rows);
-        return rows.size();
+        return saveNewRows(rows);
     }
 
     private SettlementDiffLog toIdentityAgreeRow(PaperTradeBet bet) {
@@ -145,6 +145,7 @@ public class SettlementDiffLogService {
         row.setNewWinner(shadowDecision.winnerPlayerId());
         row.setDiffKind(diffKind(legacyDecision, shadowDecision));
         row.setDecidedAt(legacyDecision.decidedAt() == null ? LocalDateTime.now() : legacyDecision.decidedAt());
+        attachFingerprint(row);
         return row;
     }
 
@@ -175,7 +176,37 @@ public class SettlementDiffLogService {
         row.setDecidedAt(scoreTruthDecision.decidedAt() == null
                 ? (legacyDecision.decidedAt() == null ? LocalDateTime.now() : legacyDecision.decidedAt())
                 : scoreTruthDecision.decidedAt());
+        attachFingerprint(row);
         return row;
+    }
+
+    private int saveNewRows(List<SettlementDiffLog> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return 0;
+        }
+        Set<String> seenThisBatch = new HashSet<>();
+        List<SettlementDiffLog> newRows = candidates.stream()
+                .filter(Objects::nonNull)
+                .filter(row -> StringUtils.hasText(row.getDiffFingerprint()))
+                .filter(row -> seenThisBatch.add(row.getDiffFingerprint()))
+                .filter(row -> !settlementDiffLogRepository.existsByDiffFingerprint(row.getDiffFingerprint()))
+                .toList();
+        if (newRows.isEmpty()) {
+            return 0;
+        }
+        settlementDiffLogRepository.saveAll(newRows);
+        return newRows.size();
+    }
+
+    private void attachFingerprint(SettlementDiffLog row) {
+        row.setDiffFingerprint(SettlementFingerprint.diff(
+                row.getBetId(),
+                row.getOldReason(),
+                row.getNewReason(),
+                row.getOldWinner(),
+                row.getNewWinner(),
+                row.getDiffKind()
+        ));
     }
 
     private String scoreTruthDiffKind(SettlementDecisionSnapshot legacyDecision,

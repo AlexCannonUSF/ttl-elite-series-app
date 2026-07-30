@@ -41,4 +41,29 @@ public interface OddsSnapshotRepository extends JpaRepository<OddsSnapshot, Long
                                              @Param("placedAt") LocalDateTime placedAt,
                                              @Param("until") LocalDateTime until,
                                              Pageable pageable);
+
+    @Query("""
+            select o from OddsSnapshot o
+            where o.bookerEventId = :bookerEventId
+              and o.side = :side
+              and o.observedAt >= :placedAt
+              and o.observedAt <= :until
+              and (
+                o.marketState in ('CLOSED', 'SUSPENDED')
+                or o.observedAt <= :settledAt
+              )
+            order by
+              case
+                when o.marketState = 'CLOSED' then 0
+                when o.marketState = 'SUSPENDED' then 1
+                else 2
+              end,
+              o.observedAt desc
+            """)
+    List<OddsSnapshot> findClosingCandidatesForSettlement(@Param("bookerEventId") String bookerEventId,
+                                                          @Param("side") String side,
+                                                          @Param("placedAt") LocalDateTime placedAt,
+                                                          @Param("settledAt") LocalDateTime settledAt,
+                                                          @Param("until") LocalDateTime until,
+                                                          Pageable pageable);
 }

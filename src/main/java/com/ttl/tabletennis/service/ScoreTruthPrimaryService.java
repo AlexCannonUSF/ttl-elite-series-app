@@ -2,6 +2,7 @@ package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.config.FeatureFlagCatalog;
 import com.ttl.tabletennis.domain.PaperTradeBet;
+import com.ttl.tabletennis.prediction.staking.ClosingLineLookupService;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
 import com.ttl.tabletennis.settlement.BetSettlementPolicyCatalog;
 import com.ttl.tabletennis.settlement.Decision;
@@ -14,7 +15,8 @@ import com.ttl.tabletennis.settlement.SettlementReason;
 import com.ttl.tabletennis.settlement.SettlementEvidence;
 import com.ttl.tabletennis.settlement.SettlementEvidenceBuilder;
 import com.ttl.tabletennis.settlement.SettlementPolicy;
-import com.ttl.tabletennis.settlement.SettlementReason;
+import com.ttl.tabletennis.settlement.ScoreEvidenceAnalyzer;
+import com.ttl.tabletennis.settlement.ScoreEvidenceAssessment;
 import com.ttl.tabletennis.settlement.VoidDecision;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
@@ -53,6 +57,7 @@ public class ScoreTruthPrimaryService {
     private final SettlementShadowAuditService auditService;
     private final BetSettlementPolicyCatalog policyCatalog;
     private final PaperTradeBetRepository betRepository;
+    private final ClosingLineLookupService closingLineLookupService;
     private final MeterRegistry meterRegistry;
     private final Clock clock;
 
@@ -63,9 +68,10 @@ public class ScoreTruthPrimaryService {
                                     SettlementShadowAuditService auditService,
                                     BetSettlementPolicyCatalog policyCatalog,
                                     PaperTradeBetRepository betRepository,
+                                    ClosingLineLookupService closingLineLookupService,
                                     MeterRegistry meterRegistry) {
         this(featureFlagCatalog, evidenceBuilder, settlementEngine, auditService,
-                policyCatalog, betRepository, meterRegistry, Clock.systemDefaultZone());
+                policyCatalog, betRepository, closingLineLookupService, meterRegistry, Clock.systemDefaultZone());
     }
 
     ScoreTruthPrimaryService(FeatureFlagCatalog featureFlagCatalog,
@@ -76,12 +82,26 @@ public class ScoreTruthPrimaryService {
                              PaperTradeBetRepository betRepository,
                              MeterRegistry meterRegistry,
                              Clock clock) {
+        this(featureFlagCatalog, evidenceBuilder, settlementEngine, auditService,
+                policyCatalog, betRepository, null, meterRegistry, clock);
+    }
+
+    ScoreTruthPrimaryService(FeatureFlagCatalog featureFlagCatalog,
+                             SettlementEvidenceBuilder evidenceBuilder,
+                             SettlementEngine settlementEngine,
+                             SettlementShadowAuditService auditService,
+                             BetSettlementPolicyCatalog policyCatalog,
+                             PaperTradeBetRepository betRepository,
+                             ClosingLineLookupService closingLineLookupService,
+                             MeterRegistry meterRegistry,
+                             Clock clock) {
         this.featureFlagCatalog = featureFlagCatalog;
         this.evidenceBuilder = evidenceBuilder;
         this.settlementEngine = settlementEngine;
         this.auditService = auditService;
         this.policyCatalog = policyCatalog;
         this.betRepository = betRepository;
+        this.closingLineLookupService = closingLineLookupService;
         this.meterRegistry = meterRegistry;
         this.clock = clock == null ? Clock.systemDefaultZone() : clock;
     }
@@ -129,39 +149,45 @@ public class ScoreTruthPrimaryService {
                     continue;
                 }
                 SettlementEvidence settlementEvidence = evidence.get();
+                ScoreEvidenceAssessment scoreEvidence = ScoreEvidenceAnalyzer.assess(settlementEvidence);
+                boolean scoreEvidenceChanged = applyScoreEvidence(bet, scoreEvidence);
                 Decision decision = settlementEngine.decide(settlementEvidence, policy);
                 decision = enforcePostCloseStreamCvPolicy(bet, settlementEvidence, decision);
-                auditService.recordAttempt(bet, settlementEvidence, decision);
+                SettlementShadowAuditService.AuditWriteResult audit =
+                        auditService.recordAttempt(bet, settlementEvidence, decision);
 
                 if (decision instanceof Settle settle) {
-                    applySettle(bet, settle, now);
+                    applySettle(bet, settle, audit, now);
                     settled++;
                     recordOutcome("WIN_OR_LOSS");
-                } else if (decision instanceof VoidDecision) {
-                    // Don't apply the v3 void here. v3 voids when the
-                    // observation pipeline has gone dark past the official
-                    // window — but the bet's own {@code lastObservedScore}
-                    // (read by the legacy fallthrough) often still has
-                    // enough information to determine a W/L outcome from a
-                    // partial-but-decisive final-set score. Leaving the bet
-                    // OPEN here lets {@link SettlementFacade}'s legacy
-                    // fallthrough take a swing at the heuristic settlement;
-                    // legacy will void on its own (VOIDED_MISSING_BOARD_TIMEOUT)
-                    // if even {@link ScoreWinnerResolver} can't read a winner.
-                    held++;
-                    recordOutcome("V3_VOID_DEFERRED_TO_LEGACY");
+                } else if (decision instanceof VoidDecision voidDecision) {
+                    applyVoid(bet, voidDecision, audit, now);
+                    voided++;
+                    recordOutcome("VOID");
                 } else if (decision instanceof HoldOpen holdOpen) {
+                    if (scoreEvidenceChanged) {
+                        save(bet);
+                    }
                     held++;
                     recordOutcome(holdOpen.reason() == SettlementReason.SCORE_BACKED_ONLY
                             ? "SCORE_BACKED_ONLY"
                             : "HOLD_OPEN");
                 } else if (decision instanceof Escalate) {
+                    if (scoreEvidenceChanged) {
+                        save(bet);
+                    }
                     reviewed++;
                     recordOutcome("ESCALATE");
                 } else if (decision instanceof ManualReview) {
+                    if (scoreEvidenceChanged) {
+                        save(bet);
+                    }
                     reviewed++;
                     recordOutcome("MANUAL_REVIEW");
                 } else {
+                    if (scoreEvidenceChanged) {
+                        save(bet);
+                    }
                     skipped++;
                     recordOutcome("OTHER");
                 }
@@ -188,7 +214,10 @@ public class ScoreTruthPrimaryService {
     }
 
     private boolean streamCvRequired(PaperTradeBet bet) {
-        return bet != null && bet.isTrackedAfterClose();
+        return bet != null
+                && bet.isTrackedAfterClose()
+                && featureFlagCatalog != null
+                && "on".equals(featureFlagCatalog.stateOf(FeatureFlagCatalog.STREAM_CV_FLAG));
     }
 
     private boolean streamCvPresent(SettlementEvidence evidence) {
@@ -201,12 +230,16 @@ public class ScoreTruthPrimaryService {
             case SCORE_BACKED_DECISIVE,
                     SCORE_BACKED_FINISHED,
                     TARGETED_COMPLETION_SIGNAL,
+                    STREAM_CV_CONSENSUS,
                     LAST_SCORE_HEURISTIC -> true;
             default -> false;
         };
     }
 
-    private void applySettle(PaperTradeBet bet, Settle decision, LocalDateTime settledAt) {
+    private void applySettle(PaperTradeBet bet,
+                             Settle decision,
+                             SettlementShadowAuditService.AuditWriteResult audit,
+                             LocalDateTime settledAt) {
         long winner = decision.winnerPlayerId();
         boolean won = bet.getSidePlayerId() != null && Objects.equals(bet.getSidePlayerId(), winner);
         double stake = bet.getStake();
@@ -225,10 +258,17 @@ public class ScoreTruthPrimaryService {
         bet.setSettlementReason(decision.reason() == null
                 ? "V3_PRIMARY"
                 : "V3_PRIMARY_" + decision.reason().name());
+        bet.setResultMatchId(resolveResultMatchId(decision));
+        applyProvenance(bet, decision.evidence(), decision.confidence(), audit);
+        captureClosingLine(bet);
+        recordScoreEvidence(bet, decision.reason());
         save(bet);
     }
 
-    private void applyVoid(PaperTradeBet bet, LocalDateTime settledAt) {
+    private void applyVoid(PaperTradeBet bet,
+                           VoidDecision decision,
+                           SettlementShadowAuditService.AuditWriteResult audit,
+                           LocalDateTime settledAt) {
         bet.setStatus(PaperTradeBet.STATUS_VOIDED);
         bet.setProfitLoss(0.0);
         bet.setSettledAt(settledAt);
@@ -236,8 +276,115 @@ public class ScoreTruthPrimaryService {
         // #122 — same as applySettle, persist source/reason so the integrity
         // dashboard's voidedSettlements counter sees v3 voids.
         bet.setSettlementSource("V3_PRIMARY_VOID");
-        bet.setSettlementReason("V3_PRIMARY_VOIDED_NO_EVIDENCE");
+        bet.setSettlementReason(decision.reason() == null
+                ? "V3_PRIMARY_VOID"
+                : "V3_PRIMARY_" + decision.reason().name());
+        applyProvenance(bet, decision.evidence(), decision.evidence().confidence(), audit);
+        captureClosingLine(bet);
+        recordScoreEvidence(bet, decision.reason());
         save(bet);
+    }
+
+    private boolean applyScoreEvidence(PaperTradeBet bet, ScoreEvidenceAssessment assessment) {
+        if (bet == null || assessment == null) {
+            return false;
+        }
+        boolean changed = !Objects.equals(bet.getScoreEvidenceQuality(), assessment.quality().name())
+                || !Objects.equals(bet.getScoreEvidenceFinality(), assessment.finality().name())
+                || !sameDouble(bet.getScoreEvidenceConfidence(), assessment.confidence())
+                || !Objects.equals(bet.getScoreEvidenceObservationCount(), assessment.observationCount())
+                || !Objects.equals(bet.getScoreEvidenceSourceCount(), assessment.distinctSourceCount())
+                || !Objects.equals(bet.getScoreEvidenceAgreeingSources(), assessment.agreeingSourceCount())
+                || !Objects.equals(bet.getScoreEvidenceCompletionSignals(), assessment.completionSignalCount())
+                || !Objects.equals(bet.getScoreEvidenceInferredWinnerId(), assessment.inferredWinnerPlayerId())
+                || !Objects.equals(bet.getScoreEvidenceLatestScore(), emptyToNull(assessment.latestScore()))
+                || !Objects.equals(bet.getScoreEvidenceLatestPhase(), emptyToNull(assessment.latestPhase()))
+                || bet.isScoreEvidenceContradictory() != assessment.contradictory();
+        if (!changed) {
+            return false;
+        }
+        bet.setScoreEvidenceQuality(assessment.quality().name());
+        bet.setScoreEvidenceFinality(assessment.finality().name());
+        bet.setScoreEvidenceConfidence(assessment.confidence());
+        bet.setScoreEvidenceObservationCount(assessment.observationCount());
+        bet.setScoreEvidenceSourceCount(assessment.distinctSourceCount());
+        bet.setScoreEvidenceAgreeingSources(assessment.agreeingSourceCount());
+        bet.setScoreEvidenceCompletionSignals(assessment.completionSignalCount());
+        bet.setScoreEvidenceInferredWinnerId(assessment.inferredWinnerPlayerId());
+        bet.setScoreEvidenceLatestScore(emptyToNull(assessment.latestScore()));
+        bet.setScoreEvidenceLatestPhase(emptyToNull(assessment.latestPhase()));
+        bet.setScoreEvidenceContradictory(assessment.contradictory());
+        return true;
+    }
+
+    private boolean sameDouble(Double left, double right) {
+        return left != null && Math.abs(left - right) < 0.000001;
+    }
+
+    private String emptyToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private void applyProvenance(PaperTradeBet bet,
+                                 SettlementEvidence evidence,
+                                 double confidence,
+                                 SettlementShadowAuditService.AuditWriteResult audit) {
+        bet.setSettlementConfidence(clamp01(confidence));
+        bet.setSettlementEvidenceId(audit == null ? null : audit.evidenceId());
+        bet.setSettlementEvidenceFingerprint(audit == null
+                ? SettlementFingerprint.evidence(evidence)
+                : audit.evidenceFingerprint());
+        bet.setSettlementEvidenceSourceCount(evidence == null ? 0 : evidence.distinctSources().size());
+        bet.setSettlementCoverageState(evidence == null || evidence.coverageState() == null
+                ? null
+                : evidence.coverageState().name());
+        bet.setSettlementAmbiguityScore(evidence == null ? null : evidence.ambiguityScore());
+        bet.setSettlementObservedAt(evidence == null || evidence.bundleAsOf() == null
+                ? null
+                : LocalDateTime.ofInstant(evidence.bundleAsOf(), ZoneId.systemDefault()));
+    }
+
+    private Long resolveResultMatchId(Settle decision) {
+        if (decision == null || decision.evidence() == null || decision.reason() == null) {
+            return null;
+        }
+        long winner = decision.winnerPlayerId();
+        if (decision.reason() == SettlementReason.OFFICIAL_RESULT_CONFIRMED) {
+            return decision.evidence().officialCandidates().stream()
+                    .filter(candidate -> candidate.completed() && Objects.equals(candidate.winnerPlayerId(), winner))
+                    .max(Comparator.comparingDouble(com.ttl.tabletennis.settlement.OfficialCandidate::confidence)
+                            .thenComparing(com.ttl.tabletennis.settlement.OfficialCandidate::observedAt))
+                    .map(com.ttl.tabletennis.settlement.OfficialCandidate::matchId)
+                    .orElse(null);
+        }
+        if (decision.reason() == SettlementReason.DATABASE_RESULT_CONFIRMED) {
+            return decision.evidence().databaseCandidates().stream()
+                    .filter(candidate -> candidate.completed() && Objects.equals(candidate.winnerPlayerId(), winner))
+                    .max(Comparator.comparingDouble(com.ttl.tabletennis.settlement.DatabaseCandidate::confidence)
+                            .thenComparing(com.ttl.tabletennis.settlement.DatabaseCandidate::observedAt))
+                    .map(com.ttl.tabletennis.settlement.DatabaseCandidate::matchId)
+                    .orElse(null);
+        }
+        return null;
+    }
+
+    private void captureClosingLine(PaperTradeBet bet) {
+        if (closingLineLookupService == null || bet == null || bet.getClosingDecimalOdds() != null) {
+            return;
+        }
+        closingLineLookupService.findFor(bet).ifPresent(line -> {
+            bet.setClosingDecimalOdds(line.decimalOdds());
+            bet.setClosingObservedAt(line.observedAt());
+            bet.setClosingSource(line.sourceId());
+            bet.setClosingMarketState(line.marketState());
+        });
+    }
+
+    private double clamp01(double value) {
+        if (!Double.isFinite(value)) {
+            return 0.0;
+        }
+        return Math.max(0.0, Math.min(1.0, value));
     }
 
     /**
@@ -263,12 +410,7 @@ public class ScoreTruthPrimaryService {
         if (betRepository == null) {
             return;
         }
-        try {
-            betRepository.save(bet);
-        } catch (RuntimeException ex) {
-            log.warn("[score-truth-primary] unable to persist bet {} after v3 closure: {}",
-                    bet == null ? null : bet.getId(), ex.getMessage());
-        }
+        betRepository.save(bet);
     }
 
     private SettlementPolicy currentPolicy() {
@@ -289,6 +431,21 @@ public class ScoreTruthPrimaryService {
             return;
         }
         meterRegistry.counter("ttl.score_truth.primary.closures", "outcome", outcome).increment();
+    }
+
+    private void recordScoreEvidence(PaperTradeBet bet, SettlementReason reason) {
+        if (meterRegistry == null || bet == null) {
+            return;
+        }
+        meterRegistry.counter(
+                "ttl.score_truth.primary.score_evidence",
+                "quality",
+                bet.getScoreEvidenceQuality() == null ? "UNKNOWN" : bet.getScoreEvidenceQuality(),
+                "finality",
+                bet.getScoreEvidenceFinality() == null ? "UNKNOWN" : bet.getScoreEvidenceFinality(),
+                "reason",
+                reason == null ? "UNKNOWN" : reason.name()
+        ).increment();
     }
 
     public record ClosureStats(int settled, int voided, int held, int reviewed, int skipped) {

@@ -105,19 +105,89 @@ function BetRow({
       </td>
       <td className="rounded-r-[18px] px-3 py-3 align-top text-sm">
         {variant === 'upcoming' ? (
-          <span className="text-[var(--ink-muted)]">{bet.topTrigger ?? '—'}</span>
+          <span className="grid gap-1">
+            <span className="text-[var(--ink-muted)]">{bet.topTrigger ?? '—'}</span>
+            <ScoreEvidenceReadout bet={bet} />
+          </span>
         ) : (
-          <BetResult
-            status={bet.status}
-            profitLoss={bet.profitLoss}
-            isWin={isWin}
-            isLoss={isLoss}
-            isVoid={isVoid}
-          />
+          <div className="grid gap-1.5">
+            <BetResult
+              status={bet.status}
+              profitLoss={bet.profitLoss}
+              isWin={isWin}
+              isLoss={isLoss}
+              isVoid={isVoid}
+            />
+            <SettlementTrust bet={bet} />
+          </div>
         )}
       </td>
     </tr>
   )
+}
+
+function ScoreEvidenceReadout({ bet }: { bet: PaperTradeBet }) {
+  if (!bet.scoreEvidenceQuality || bet.scoreEvidenceQuality === 'NONE') {
+    return null
+  }
+  const confidence = bet.scoreEvidenceConfidence == null
+    ? null
+    : `${Math.round(bet.scoreEvidenceConfidence * 100)}%`
+  const sources = bet.scoreEvidenceSourceCount
+    ? `${bet.scoreEvidenceSourceCount} ${bet.scoreEvidenceSourceCount === 1 ? 'feed' : 'feeds'}`
+    : null
+  return (
+    <span className={cn(
+      'text-[10px] leading-4',
+      bet.scoreEvidenceContradictory
+        ? 'text-rose-700'
+        : bet.scoreEvidenceQuality === 'DECISION_GRADE'
+          ? 'text-emerald-700'
+          : 'text-[var(--ink-muted)]',
+    )}>
+      {prettyEvidence(bet.scoreEvidenceQuality)}
+      {confidence ? ` · ${confidence}` : ''}
+      {sources ? ` · ${sources}` : ''}
+      {bet.scoreEvidenceLatestScore ? <span className="block font-mono">{bet.scoreEvidenceLatestScore}</span> : null}
+    </span>
+  )
+}
+
+function SettlementTrust({ bet }: { bet: PaperTradeBet }) {
+  if (bet.settlementConfidence == null && !bet.settlementSource && bet.closingDecimalOdds == null) {
+    return null
+  }
+  const sourceCount = bet.settlementEvidenceSourceCount ?? 0
+  const evidence = [
+    settlementLabel(bet.settlementSource, bet.settlementReason),
+    bet.settlementConfidence == null ? null : `${Math.round(bet.settlementConfidence * 100)}% trust`,
+    sourceCount > 0 ? `${sourceCount} ${sourceCount === 1 ? 'source' : 'sources'}` : null,
+  ].filter(Boolean).join(' · ')
+  const close = bet.closingDecimalOdds == null
+    ? null
+    : `Close ${bet.closingDecimalOdds.toFixed(2)}${bet.closingSource ? ` · ${bet.closingSource}` : ''}`
+
+  return (
+    <span className="block max-w-[260px] text-[10px] leading-4 text-[var(--ink-muted)]">
+      {evidence || 'Settlement evidence recorded'}
+      {close ? <span className="block">{close}</span> : null}
+    </span>
+  )
+}
+
+function prettyEvidence(value: string) {
+  return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function settlementLabel(source: string | null | undefined, reason: string | null | undefined) {
+  const value = `${source ?? ''} ${reason ?? ''}`.toUpperCase()
+  if (value.includes('TARGETED')) return 'Targeted completion'
+  if (value.includes('SCORE_BACKED') || value.includes('DECISIVE')) return 'Score backed'
+  if (value.includes('OFFICIAL')) return 'Official result'
+  if (value.includes('DATABASE')) return 'Database result'
+  if (value.includes('HEURISTIC')) return 'Heuristic'
+  if (value.includes('VOID')) return 'No trusted result'
+  return source ? source.replaceAll('_', ' ').toLowerCase() : null
 }
 
 function BetResult({

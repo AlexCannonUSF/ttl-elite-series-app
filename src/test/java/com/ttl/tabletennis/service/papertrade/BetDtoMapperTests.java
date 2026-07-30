@@ -33,6 +33,17 @@ class BetDtoMapperTests {
         bet.setSidePlayerId(7L);
         bet.setSideName("Smith");
         bet.setTopTrigger("Smash");
+        bet.setSettlementConfidence(0.94);
+        bet.setSettlementEvidenceId(501L);
+        bet.setSettlementEvidenceFingerprint("evidence-fingerprint");
+        bet.setSettlementEvidenceSourceCount(3);
+        bet.setSettlementCoverageState("FULL");
+        bet.setSettlementAmbiguityScore(0.08);
+        bet.setSettlementObservedAt(LocalDateTime.parse("2026-05-10T19:29:55"));
+        bet.setClosingDecimalOdds(2.32);
+        bet.setClosingObservedAt(LocalDateTime.parse("2026-05-10T19:29:50"));
+        bet.setClosingSource("HR_MKT");
+        bet.setClosingMarketState("CLOSED");
         bet.setPlacedAt(LocalDateTime.parse("2026-05-10T18:00:00"));
         bet.setSettledAt(LocalDateTime.parse("2026-05-10T19:30:00"));
 
@@ -54,6 +65,17 @@ class BetDtoMapperTests {
         assertEquals(0.15, dto.edge(), 1e-9);
         assertEquals("Smith", dto.sideName());
         assertEquals("Smash", dto.topTrigger());
+        assertEquals(0.94, dto.settlementConfidence(), 1e-9);
+        assertEquals(501L, dto.settlementEvidenceId());
+        assertEquals("evidence-fingerprint", dto.settlementEvidenceFingerprint());
+        assertEquals(3, dto.settlementEvidenceSourceCount());
+        assertEquals("FULL", dto.settlementCoverageState());
+        assertEquals(0.08, dto.settlementAmbiguityScore(), 1e-9);
+        assertEquals(LocalDateTime.parse("2026-05-10T19:29:55"), dto.settlementObservedAt());
+        assertEquals(2.32, dto.closingDecimalOdds(), 1e-9);
+        assertEquals(LocalDateTime.parse("2026-05-10T19:29:50"), dto.closingObservedAt());
+        assertEquals("HR_MKT", dto.closingSource());
+        assertEquals("CLOSED", dto.closingMarketState());
         assertEquals(LocalDateTime.parse("2026-05-10T18:00:00"), dto.placedAt());
         assertEquals(LocalDateTime.parse("2026-05-10T19:30:00"), dto.settledAt());
     }

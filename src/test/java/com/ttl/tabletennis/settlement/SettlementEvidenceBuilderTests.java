@@ -81,6 +81,55 @@ class SettlementEvidenceBuilderTests {
         assertTrue(evidence.ambiguityScore() < 0.3);
     }
 
+    @Test
+    void promotesIdentityLockedTargetedCompletionConfidence() {
+        TrackedMatchObservationRepository repository = mock(TrackedMatchObservationRepository.class);
+        SettlementEvidenceBuilder builder = new SettlementEvidenceBuilder(repository, new AmbiguityScorer());
+
+        PaperTradeBet bet = new PaperTradeBet();
+        setId(bet, 56L);
+        bet.setEventKey("match:56");
+        bet.setExternalEventId("booker-56");
+        bet.setLockedExternalEventId("booker-56");
+        bet.setLockedSourceFeedEventId("booker-56");
+        bet.setPlayer1Id(10L);
+        bet.setPlayer2Id(20L);
+        bet.setPlacedAt(LocalDateTime.of(2026, 7, 29, 12, 0));
+
+        TrackedMatchObservation observation = new TrackedMatchObservation();
+        observation.setBetId(56L);
+        observation.setSessionId(7L);
+        observation.setEventKey("match:56");
+        observation.setSource("HARD_ROCK_GQL_SCORE");
+        observation.setSourceKind("SCORE_FEED");
+        observation.setSourceConfidence(0.90);
+        observation.setExternalEventId("booker-56");
+        observation.setSourceFeedEventId("booker-56");
+        observation.setPlayer1Id(10L);
+        observation.setPlayer2Id(20L);
+        observation.setDisplayed(false);
+        observation.setResulted(true);
+        observation.setMatchCompleted(false);
+        observation.setLive(false);
+        observation.setTrackedAfterClose(true);
+        observation.setLiveScore("2-1 (10-9)");
+        observation.setMatchPhase("FINISHED");
+        observation.setObservedAt(LocalDateTime.of(2026, 7, 29, 12, 30));
+
+        when(repository.findByBetIdOrderByObservedAtAsc(56L)).thenReturn(List.of(observation));
+
+        SettlementEvidence evidence = builder.buildForBet(bet).orElseThrow();
+        LiveObservation targeted = evidence.liveObservations().get(0);
+
+        assertEquals(SourceId.HR_TGT, targeted.source());
+        assertEquals(0.98, targeted.confidence(), 1e-9);
+        assertTrue(targeted.completionSignal());
+        assertEquals(
+                ScoreEvidenceAssessment.Quality.DECISION_GRADE,
+                ScoreEvidenceAnalyzer.assess(evidence).quality()
+        );
+    }
+
     private void setId(PaperTradeBet bet, Long id) {
         try {
             Field field = PaperTradeBet.class.getDeclaredField("id");

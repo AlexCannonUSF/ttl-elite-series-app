@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -98,6 +99,27 @@ class SettlementDiffLogServiceTests {
 
         assertEquals(0, service.recordIdentityReplay(List.of()));
         verifyNoInteractions(repository);
+    }
+
+    @Test
+    void repeatedDiffFingerprintDoesNotAppendAnotherRow() {
+        SettlementDiffLogRepository repository = mock(SettlementDiffLogRepository.class);
+        SettlementDiffLogService service = new SettlementDiffLogService(
+                repository,
+                mock(SettlementEvidenceBuilder.class),
+                mock(ContradictionGuard.class),
+                mock(SettlementEngine.class),
+                mock(SettlementShadowAuditService.class)
+        );
+        PaperTradeBet bet = new PaperTradeBet();
+        setId(bet, 13L);
+        bet.setStatus(PaperTradeBet.STATUS_OPEN);
+        when(repository.existsByDiffFingerprint(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+
+        int recorded = service.recordIdentityReplay(List.of(bet));
+
+        assertEquals(0, recorded);
+        verify(repository, never()).saveAll(anyList());
     }
 
     @Test

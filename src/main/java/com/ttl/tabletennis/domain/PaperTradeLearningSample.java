@@ -133,6 +133,12 @@ public class PaperTradeLearningSample {
     @Column(name = "closing_observed_at")
     private LocalDateTime closingObservedAt;
 
+    @Column(name = "closing_source", length = 16)
+    private String closingSource;
+
+    @Column(name = "closing_market_state", length = 24)
+    private String closingMarketState;
+
     @PrePersist
     void prePersist() {
         if (status == null || status.isBlank()) {
@@ -400,5 +406,21 @@ public class PaperTradeLearningSample {
 
     public void setClosingObservedAt(LocalDateTime closingObservedAt) {
         this.closingObservedAt = closingObservedAt;
+    }
+
+    public String getClosingSource() {
+        return closingSource;
+    }
+
+    public void setClosingSource(String closingSource) {
+        this.closingSource = closingSource;
+    }
+
+    public String getClosingMarketState() {
+        return closingMarketState;
+    }
+
+    public void setClosingMarketState(String closingMarketState) {
+        this.closingMarketState = closingMarketState;
     }
 }

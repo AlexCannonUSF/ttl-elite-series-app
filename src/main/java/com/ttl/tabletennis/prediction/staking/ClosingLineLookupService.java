@@ -63,8 +63,8 @@ public class ClosingLineLookupService {
         }
         LocalDateTime until = settledAt.plusHours(LOOKUP_BUFFER.toHours());
         try {
-            List<OddsSnapshot> candidates = repository.findClosingCandidates(
-                    bookerEventId, side, placedAt, until, PageRequest.of(0, 1));
+            List<OddsSnapshot> candidates = repository.findClosingCandidatesForSettlement(
+                    bookerEventId, side, placedAt, settledAt, until, PageRequest.of(0, 1));
             if (candidates == null || candidates.isEmpty()) {
                 return Optional.empty();
             }
