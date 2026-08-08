@@ -5,6 +5,8 @@ import { RoleGatewayRoute } from '@/routes/RoleGatewayRoute'
 
 const LiveBoardRoute = lazy(() => import('@/routes/LiveBoardRoute').then((module) => ({ default: module.LiveBoardRoute })))
 const MatchDetailRoute = lazy(() => import('@/routes/MatchDetailRoute').then((module) => ({ default: module.MatchDetailRoute })))
+const ModelCallTrackingRoute = lazy(() => import('@/routes/ModelCallTrackingRoute').then((module) => ({ default: module.ModelCallTrackingRoute })))
+const ModelPipelineRoute = lazy(() => import('@/routes/ModelPipelineRoute').then((module) => ({ default: module.ModelPipelineRoute })))
 const MlQualityRoute = lazy(() => import('@/routes/MlQualityRoute').then((module) => ({ default: module.MlQualityRoute })))
 const AdminHubRoute = lazy(() => import('@/routes/AdminHubRoute').then((module) => ({ default: module.AdminHubRoute })))
 const OpsConsoleRoute = lazy(() => import('@/routes/OpsConsoleRoute').then((module) => ({ default: module.OpsConsoleRoute })))
@@ -51,12 +53,24 @@ export const router = createBrowserRouter([
     element: lazyRoute(MatchDetailRoute),
   },
   {
+    path: '/user/tracking/:callId',
+    element: lazyRoute(ModelCallTrackingRoute),
+  },
+  {
     path: '/admin',
     element: lazyRoute(AdminHubRoute),
   },
   {
     path: '/admin/model-quality',
     element: lazyRoute(MlQualityRoute),
+  },
+  {
+    path: '/admin/pipeline',
+    element: lazyRoute(ModelPipelineRoute),
+  },
+  {
+    path: '/admin/pipeline/:callId',
+    element: lazyRoute(ModelCallTrackingRoute),
   },
   {
     path: '/admin/ops',

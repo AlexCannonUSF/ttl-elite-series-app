@@ -302,7 +302,7 @@ public class StaleLiveRecoveryService {
         if (trackedMatchObservationRepository == null || bet == null || bet.getId() == null) {
             return Optional.empty();
         }
-        return trackedMatchObservationRepository.findTopByBetIdOrderByObservedAtDesc(bet.getId());
+        return trackedMatchObservationRepository.findTopByBetIdOrderByObservedAtDescIdDesc(bet.getId());
     }
 
     private Optional<Instant> latestObservedAt(PaperTradeBet bet, Optional<TrackedMatchObservation> latestTracked) {

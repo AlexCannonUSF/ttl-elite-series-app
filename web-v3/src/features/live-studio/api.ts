@@ -1,11 +1,24 @@
 import type {
   LiveOddsRecommendation,
+  HardRockScoreStreamStatus,
   MatchupAnalysis,
+  ModelCallApproval,
+  ModelCallMonitor,
   ModelCallScorecard,
+  ModelCallTracking,
   PaperTradingSession,
   PaperTradingSyncResult,
   TrackedMatchObservation,
 } from '@/features/live-studio/types'
+
+export async function fetchHardRockScoreStreamStatus(signal?: AbortSignal): Promise<HardRockScoreStreamStatus> {
+  const response = await fetch('/api/live-studio/score-stream', {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Hard Rock score stream request failed with ${response.status}`)
+  return (await response.json()) as HardRockScoreStreamStatus
+}
 
 export async function fetchModelCallScorecard(
   limit = 40,
@@ -22,6 +35,38 @@ export async function fetchModelCallScorecard(
   }
 
   return (await response.json()) as ModelCallScorecard
+}
+
+export async function fetchModelCallMonitor(limit = 100, signal?: AbortSignal): Promise<ModelCallMonitor> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  const response = await fetch(`/api/live-studio/model-calls?${query}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Model pipeline request failed with ${response.status}`)
+  return (await response.json()) as ModelCallMonitor
+}
+
+export async function fetchModelCallTracking(callId: number, signal?: AbortSignal): Promise<ModelCallTracking> {
+  const response = await fetch(`/api/live-studio/model-calls/${callId}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Model call request failed with ${response.status}`)
+  return (await response.json()) as ModelCallTracking
+}
+
+export async function approveModelCall(callId: number, approval: ModelCallApproval): Promise<ModelCallTracking> {
+  const response = await fetch(`/api/live-studio/model-calls/${callId}/approve`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(approval),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { message?: string } | null
+    throw new Error(body?.message ?? `Viewer approval failed with ${response.status}`)
+  }
+  return (await response.json()) as ModelCallTracking
 }
 
 export async function fetchMatchupAnalysis(

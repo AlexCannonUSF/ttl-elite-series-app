@@ -62,4 +62,21 @@ class HardRockFeedClientTests {
         verify(scraper).fetchScoreboard();
         verify(scraper).fetchScoreboardByEventIds(eventIds);
     }
+
+    @Test
+    void pullOnceRegistersEventBeforePublishingMarketRow() {
+        HardRockOddsScraper scraper = mock(HardRockOddsScraper.class);
+        IngestionBus ingestionBus = mock(IngestionBus.class);
+        HardRockScoreStreamClient scoreStream = mock(HardRockScoreStreamClient.class);
+        HardRockFeedClient client = new HardRockFeedClient(scraper, ingestionBus);
+        client.setScoreStreamClient(scoreStream);
+        MatchOdds row = new MatchOdds("Early Alpha", "Early Beta", 1.90, 1.90);
+        row.setExternalEventId("early-event-1");
+        when(scraper.fetch()).thenReturn(List.of(row));
+
+        client.pullOnce(new FeedClient.PullContext(Instant.now(), "corr", null));
+
+        verify(scoreStream).track(row);
+        verify(ingestionBus).publish(any(IngestEvent.class));
+    }
 }

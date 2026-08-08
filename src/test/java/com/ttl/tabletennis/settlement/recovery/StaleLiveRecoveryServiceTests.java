@@ -107,7 +107,7 @@ class StaleLiveRecoveryServiceTests {
         SettlementEvidence evidence = evidence(202L);
         Settle settle = new Settle(evidence, 10L, SettlementReason.STALE_ESCALATION_RECOVERED, 0.93);
 
-        when(trackedRepository.findTopByBetIdOrderByObservedAtDesc(202L)).thenReturn(Optional.empty());
+        when(trackedRepository.findTopByBetIdOrderByObservedAtDescIdDesc(202L)).thenReturn(Optional.empty());
         when(trackedRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(builder.buildForBet(bet)).thenReturn(Optional.of(evidence));
         when(engine.decide(evidence, com.ttl.tabletennis.settlement.SettlementPolicy.defaults())).thenReturn(settle);
@@ -168,7 +168,7 @@ class StaleLiveRecoveryServiceTests {
         );
         PaperTradeBet bet = staleOpenScoreBet(203L);
 
-        when(trackedRepository.findTopByBetIdOrderByObservedAtDesc(203L)).thenReturn(Optional.empty());
+        when(trackedRepository.findTopByBetIdOrderByObservedAtDescIdDesc(203L)).thenReturn(Optional.empty());
         when(builder.buildForBet(bet)).thenReturn(Optional.empty());
 
         StaleLiveRecoveryService.RecoveryBatch first = service.recoverCandidates(List.of(bet));
@@ -195,7 +195,7 @@ class StaleLiveRecoveryServiceTests {
         );
         PaperTradeBet bet = staleOpenScoreBet(204L);
 
-        when(trackedRepository.findTopByBetIdOrderByObservedAtDesc(204L)).thenReturn(Optional.empty());
+        when(trackedRepository.findTopByBetIdOrderByObservedAtDescIdDesc(204L)).thenReturn(Optional.empty());
         when(builder.buildForBet(bet)).thenReturn(Optional.empty());
 
         StaleLiveRecoveryService.RecoveryBatch batch = service.recoverCandidates(List.of(bet));
@@ -224,7 +224,7 @@ class StaleLiveRecoveryServiceTests {
         );
         PaperTradeBet bet = staleOpenScoreBet(205L);
         bet.setPlacedAt(LocalDateTime.ofInstant(NOW.minus(Duration.ofMinutes(181)), ZoneId.systemDefault()));
-        when(trackedRepository.findTopByBetIdOrderByObservedAtDesc(205L)).thenReturn(Optional.empty());
+        when(trackedRepository.findTopByBetIdOrderByObservedAtDescIdDesc(205L)).thenReturn(Optional.empty());
         when(builder.buildForBet(bet)).thenReturn(Optional.empty());
 
         StaleLiveRecoveryService.RecoveryBatch batch = service.recoverCandidates(List.of(bet));

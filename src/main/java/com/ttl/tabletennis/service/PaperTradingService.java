@@ -987,9 +987,10 @@ public class PaperTradingService {
             placed++;
         }
 
+        List<LiveOddsRecommendationDto> settlementRows = mergeSettlementRows(rows, scoreSnapshots);
         recordVisibleBoardObservations(
                 session.getId(),
-                rows,
+                settlementRows,
                 existingOpenBets,
                 placedEventKeys,
                 LocalDateTime.now()
@@ -997,7 +998,7 @@ public class PaperTradingService {
 
         SettlementStats settlementStats = settlementFacade.settleOpenBets(
                 session,
-                mergeSettlementRows(rows, scoreSnapshots)
+                settlementRows
         );
         int settled = settlementStats.settled();
         int voided = settlementStats.voided();
@@ -1095,6 +1096,23 @@ public class PaperTradingService {
     @Transactional(readOnly = true)
     public ModelCallScorecardDto getModelCallScorecard(int limit) {
         return modelCallLedgerService.scorecard(limit);
+    }
+
+    @Transactional(readOnly = true)
+    public com.ttl.tabletennis.dto.ModelCallMonitorDto getModelCallMonitor(int limit) {
+        return modelCallLedgerService.monitor(limit);
+    }
+
+    @Transactional(readOnly = true)
+    public com.ttl.tabletennis.dto.ModelCallTrackingDto getModelCallTracking(long callId) {
+        return modelCallLedgerService.tracking(callId);
+    }
+
+    @Transactional
+    public com.ttl.tabletennis.dto.ModelCallTrackingDto approveModelCall(
+            long callId,
+            com.ttl.tabletennis.dto.ModelCallApprovalRequest request) {
+        return modelCallLedgerService.approve(callId, request);
     }
 
     public PaperTradingSessionDto resetSession(Double startingBankroll, String label) {
@@ -1885,7 +1903,7 @@ public class PaperTradingService {
         String score = StringUtils.hasText(normalizedScore) ? normalizedScore.trim() : null;
         String phase = StringUtils.hasText(row.matchPhase()) ? row.matchPhase().trim() : null;
         String sourceKind = inferObservationSourceKind(row);
-        Optional<TrackedMatchObservation> previous = trackedMatchObservationRepository.findTopByBetIdOrderByObservedAtDesc(bet.getId());
+        Optional<TrackedMatchObservation> previous = trackedMatchObservationRepository.findTopByBetIdOrderByObservedAtDescIdDesc(bet.getId());
         if (previous.isPresent()) {
             TrackedMatchObservation last = previous.get();
             boolean sameEvent = eventKey.equals(safeText(last.getEventKey(), ""));
@@ -1990,7 +2008,7 @@ public class PaperTradingService {
         String phase = StringUtils.hasText(row.matchPhase()) ? row.matchPhase().trim() : null;
         String sourceKind = inferObservationSourceKind(row);
         Optional<TrackedMatchObservation> previous = trackedMatchObservationRepository
-                .findTopByEventKeyOrderByObservedAtDesc(eventKey);
+                .findTopByEventKeyOrderByObservedAtDescIdDesc(eventKey);
         if (previous.isPresent()) {
             TrackedMatchObservation last = previous.get();
             boolean unchanged = safeText(score, "").equals(safeText(last.getLiveScore(), ""))

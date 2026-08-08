@@ -4,6 +4,7 @@ import com.ttl.tabletennis.domain.PaperTradeSession;
 import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.util.CorrelationContext;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
+import com.ttl.tabletennis.repository.ModelCallViewerReviewRepository;
 import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
@@ -41,6 +42,7 @@ public class SessionResetService {
     private final TrackedMatchObservationRepository trackedMatchObservationRepository;
     private final PaperTradeDecisionSampleRepository decisionSampleRepository;
     private final PaperTradeModelCallRepository modelCallRepository;
+    private final ModelCallViewerReviewRepository modelCallViewerReviewRepository;
     private final PaperTradeBetRepository betRepository;
     private final PaperTradeSessionRepository sessionRepository;
     private final SessionLifecycleService sessionLifecycleService;
@@ -50,6 +52,7 @@ public class SessionResetService {
                                TrackedMatchObservationRepository trackedMatchObservationRepository,
                                PaperTradeDecisionSampleRepository decisionSampleRepository,
                                PaperTradeModelCallRepository modelCallRepository,
+                               ModelCallViewerReviewRepository modelCallViewerReviewRepository,
                                PaperTradeBetRepository betRepository,
                                PaperTradeSessionRepository sessionRepository,
                                SessionLifecycleService sessionLifecycleService,
@@ -58,6 +61,7 @@ public class SessionResetService {
         this.trackedMatchObservationRepository = trackedMatchObservationRepository;
         this.decisionSampleRepository = decisionSampleRepository;
         this.modelCallRepository = modelCallRepository;
+        this.modelCallViewerReviewRepository = modelCallViewerReviewRepository;
         this.betRepository = betRepository;
         this.sessionRepository = sessionRepository;
         this.sessionLifecycleService = sessionLifecycleService;
@@ -78,6 +82,7 @@ public class SessionResetService {
                 paperTradingShadowService.clearAll();
                 trackedMatchObservationRepository.deleteAllInBatch();
                 decisionSampleRepository.deleteAllInBatch();
+                modelCallViewerReviewRepository.deleteAllInBatch();
                 modelCallRepository.deleteAllInBatch();
                 betRepository.deleteAllInBatch();
                 sessionRepository.deleteAllInBatch();

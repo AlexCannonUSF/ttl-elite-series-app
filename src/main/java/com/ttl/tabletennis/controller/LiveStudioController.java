@@ -3,7 +3,10 @@ package com.ttl.tabletennis.controller;
 import com.ttl.tabletennis.dto.CompletedMatchLogDto;
 import com.ttl.tabletennis.dto.LiveStudioIntegrityDto;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
+import com.ttl.tabletennis.dto.ModelCallApprovalRequest;
+import com.ttl.tabletennis.dto.ModelCallMonitorDto;
 import com.ttl.tabletennis.dto.ModelCallScorecardDto;
+import com.ttl.tabletennis.dto.ModelCallTrackingDto;
 import com.ttl.tabletennis.dto.PaperTradeBetDto;
 import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
@@ -12,9 +15,11 @@ import com.ttl.tabletennis.service.PaperTradingService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 
 import java.util.List;
 
@@ -60,6 +65,22 @@ public class LiveStudioController {
     @GetMapping("/model-scorecard")
     public ModelCallScorecardDto modelScorecard(@RequestParam(defaultValue = "40") int limit) {
         return paperTradingService.getModelCallScorecard(limit);
+    }
+
+    @GetMapping("/model-calls")
+    public ModelCallMonitorDto modelCalls(@RequestParam(defaultValue = "100") int limit) {
+        return paperTradingService.getModelCallMonitor(limit);
+    }
+
+    @GetMapping("/model-calls/{callId}")
+    public ModelCallTrackingDto modelCall(@PathVariable long callId) {
+        return paperTradingService.getModelCallTracking(callId);
+    }
+
+    @PostMapping("/model-calls/{callId}/approve")
+    public ModelCallTrackingDto approveModelCall(@PathVariable long callId,
+                                                 @Valid @RequestBody ModelCallApprovalRequest request) {
+        return paperTradingService.approveModelCall(callId, request);
     }
 
     @GetMapping("/integrity")

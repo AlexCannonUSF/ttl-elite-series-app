@@ -20,5 +20,11 @@ public record ModelCallScorecardDto(Long sessionId,
                                     double liveFirstAccuracyPct,
                                     double averageConfidencePct,
                                     Double brierScore,
+                                    int viewerGradedCalls,
+                                    int viewerCorrect,
+                                    int viewerIncorrect,
+                                    double viewerAccuracyPct,
+                                    int viewerApprovedPending,
+                                    int viewerConflicts,
                                     List<ModelCallResultDto> recentResults) {
 }

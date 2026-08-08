@@ -171,7 +171,111 @@ export type ModelCallScorecard = {
   liveFirstAccuracyPct: number
   averageConfidencePct: number
   brierScore: number | null
+  viewerGradedCalls: number
+  viewerCorrect: number
+  viewerIncorrect: number
+  viewerAccuracyPct: number
+  viewerApprovedPending: number
+  viewerConflicts: number
   recentResults: ModelCallResult[]
+}
+
+export type ModelCallPipelineStage =
+  | 'SCHEDULED'
+  | 'WAITING_FOR_FEED'
+  | 'LIVE_MONITORING'
+  | 'SETTLEMENT_REVIEW'
+  | 'VIEWER_APPROVED'
+  | 'SYSTEM_CONFIRMED'
+  | 'RESULT_CONFLICT'
+  | string
+
+export type ModelCallTracking = {
+  callId: number
+  sessionId: number
+  eventKey: string
+  eventName: string
+  competitionName: string | null
+  source: string | null
+  strategy: string | null
+  modelVersion: string | null
+  captureType: string
+  capturedAt: string | null
+  startTimeIso: string | null
+  player1Id: number | null
+  player1Name: string
+  player2Id: number | null
+  player2Name: string
+  predictedWinnerPlayerId: number | null
+  predictedWinnerName: string | null
+  modelProbability: number | null
+  modelFairAmericanOdds: number | null
+  hardRockAmericanOdds: number | null
+  opponentHardRockAmericanOdds: number | null
+  hardRockNoVigProbability: number | null
+  hardRockMarginPct: number | null
+  recommendedAtCapture: boolean
+  paperPickPlaced: boolean
+  decisionStatus: string | null
+  decisionReason: string | null
+  latestScore: string | null
+  latestPhase: string | null
+  latestSource: string | null
+  latestObservedAt: string | null
+  latestLive: boolean
+  completionSignalSeen: boolean
+  provisionalOutcomeMethod: string | null
+  provisionalOutcomeConfidence: number | null
+  pipelineStage: ModelCallPipelineStage
+  pipelineLabel: string
+  pipelineDetail: string
+  systemWinnerPlayerId: number | null
+  systemWinnerName: string | null
+  systemScore: string | null
+  systemResultSource: string | null
+  systemResolvedAt: string | null
+  viewerWinnerPlayerId: number | null
+  viewerWinnerName: string | null
+  viewerScore: string | null
+  viewerNote: string | null
+  viewerReviewedAt: string | null
+  effectiveOutcome: 'CORRECT' | 'INCORRECT' | 'NO_LEAN' | 'AWAITING' | string
+  effectiveOutcomeSource: 'SYSTEM' | 'VIEWER' | null
+  canApprove: boolean
+}
+
+export type ModelCallMonitor = {
+  sessionId: number | null
+  sessionLabel: string
+  generatedAt: string
+  totalCalls: number
+  scheduled: number
+  liveTracking: number
+  settlementReview: number
+  viewerApproved: number
+  systemConfirmed: number
+  conflicts: number
+  calls: ModelCallTracking[]
+}
+
+export type HardRockScoreStreamStatus = {
+  enabled: boolean
+  connected: boolean
+  trackedEvents: number
+  liveEvents: number
+  completedEventsCached: number
+  connectedAt: string | null
+  lastMessageAt: string | null
+  lastScoreAt: string | null
+  reconnectCount: number
+  lastError: string | null
+}
+
+export type ModelCallApproval = {
+  winnerPlayerId: number
+  score?: string
+  reviewer?: string
+  note?: string
 }
 
 export type LiveOddsRecommendation = {

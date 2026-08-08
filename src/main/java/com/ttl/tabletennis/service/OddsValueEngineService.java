@@ -17,6 +17,7 @@ import com.ttl.tabletennis.repository.ValueOpportunityRepository;
 import com.ttl.tabletennis.scrape.FeedClient;
 import com.ttl.tabletennis.scrape.HardRockFeedClient;
 import com.ttl.tabletennis.scrape.HardRockOddsScraper;
+import com.ttl.tabletennis.scrape.HardRockScoreStreamClient;
 import com.ttl.tabletennis.util.CorrelationContext;
 import com.ttl.tabletennis.util.NameUtils;
 import org.slf4j.Logger;
@@ -36,9 +37,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -108,6 +112,7 @@ public class OddsValueEngineService {
     private final PlayerIdentityService playerIdentityService;
     private final HardRockOddsScraper hardRockOddsScraper;
     private HardRockFeedClient hardRockFeedClient;
+    private HardRockScoreStreamClient hardRockScoreStreamClient;
     private final OddsQuoteRepository oddsQuoteRepository;
     private final ValueOpportunityRepository valueOpportunityRepository;
     private final MatchRepository matchRepository;
@@ -157,6 +162,11 @@ public class OddsValueEngineService {
     @Autowired(required = false)
     void setHardRockFeedClient(HardRockFeedClient hardRockFeedClient) {
         this.hardRockFeedClient = hardRockFeedClient;
+    }
+
+    @Autowired(required = false)
+    void setHardRockScoreStreamClient(HardRockScoreStreamClient hardRockScoreStreamClient) {
+        this.hardRockScoreStreamClient = hardRockScoreStreamClient;
     }
 
     /**
@@ -827,8 +837,11 @@ public class OddsValueEngineService {
         // The sportsbook call is remote I/O. Player identity lookups below own
         // short repository transactions; an outer read transaction would pin a
         // pool connection for the entire network request.
-        List<MatchOdds> fetched = hardRockOddsScraper.fetchScoreboard();
-        return toLiveScoreSnapshots(fetched, take, includeUnresolved);
+        List<MatchOdds> marketRows = safeScoreboardFetch();
+        List<MatchOdds> streamRows = hardRockScoreStreamClient == null
+                ? List.of()
+                : hardRockScoreStreamClient.snapshots();
+        return toLiveScoreSnapshots(mergeScoreRows(marketRows, streamRows), take, includeUnresolved);
     }
 
     public List<LiveScoreSnapshotDto> liveScoreSnapshotsForEventIds(Collection<String> externalEventIds,
@@ -850,8 +863,90 @@ public class OddsValueEngineService {
             return List.of();
         }
         int take = Math.max(1, Math.min(limit, 1600));
-        List<MatchOdds> fetched = hardRockOddsScraper.fetchScoreboardByEventIds(normalized);
-        return toLiveScoreSnapshots(fetched, take, includeUnresolved);
+        List<MatchOdds> streamRows = List.of();
+        if (hardRockScoreStreamClient != null) {
+            hardRockScoreStreamClient.trackEventIds(normalized);
+            streamRows = hardRockScoreStreamClient.snapshotsForEventIds(normalized);
+        }
+        Set<String> covered = streamRows.stream()
+                .map(MatchOdds::getExternalEventId)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toSet());
+        LinkedHashSet<String> missing = new LinkedHashSet<>(normalized);
+        missing.removeAll(covered);
+        List<MatchOdds> marketRows = missing.isEmpty()
+                ? List.of()
+                : safeTargetedScoreboardFetch(missing);
+        return toLiveScoreSnapshots(mergeScoreRows(marketRows, streamRows), take, includeUnresolved);
+    }
+
+    private List<MatchOdds> safeScoreboardFetch() {
+        try {
+            List<MatchOdds> rows = hardRockOddsScraper.fetchScoreboard();
+            return rows == null ? List.of() : rows;
+        } catch (RuntimeException ex) {
+            log.warn("[scoreboard] market-backed score pull failed; retaining subscription snapshots", ex);
+            return List.of();
+        }
+    }
+
+    private List<MatchOdds> safeTargetedScoreboardFetch(Collection<String> eventIds) {
+        try {
+            List<MatchOdds> rows = hardRockOddsScraper.fetchScoreboardByEventIds(eventIds);
+            return rows == null ? List.of() : rows;
+        } catch (RuntimeException ex) {
+            log.warn("[scoreboard] targeted market-backed score pull failed; retaining subscription snapshots", ex);
+            return List.of();
+        }
+    }
+
+    /**
+     * One event may exist in both transports. The subscription wins when it
+     * has terminal state, a richer score, or greater source confidence; this
+     * prevents a newly-created but scoreless market row from masking the
+     * final update retained by the score stream.
+     */
+    private List<MatchOdds> mergeScoreRows(List<MatchOdds> marketRows, List<MatchOdds> streamRows) {
+        Map<String, MatchOdds> byEvent = new LinkedHashMap<>();
+        addScoreRows(byEvent, marketRows);
+        addScoreRows(byEvent, streamRows);
+        return List.copyOf(byEvent.values());
+    }
+
+    private void addScoreRows(Map<String, MatchOdds> byEvent, List<MatchOdds> rows) {
+        if (rows == null) return;
+        for (MatchOdds row : rows) {
+            if (row == null) continue;
+            String key = StringUtils.hasText(row.getExternalEventId())
+                    ? "id:" + row.getExternalEventId().trim()
+                    : "match:" + safeSortToken(row.getPlayerA()) + "|" + safeSortToken(row.getPlayerB())
+                    + "|" + safeSortToken(row.getStartTimeIso());
+            byEvent.merge(key, row, this::preferScoreRow);
+        }
+    }
+
+    private MatchOdds preferScoreRow(MatchOdds left, MatchOdds right) {
+        if (isTerminal(right) != isTerminal(left)) return isTerminal(right) ? right : left;
+        int leftScoreQuality = scoreQuality(left);
+        int rightScoreQuality = scoreQuality(right);
+        if (rightScoreQuality != leftScoreQuality) return rightScoreQuality > leftScoreQuality ? right : left;
+        if (Double.compare(right.getSourceConfidence(), left.getSourceConfidence()) != 0) {
+            return right.getSourceConfidence() > left.getSourceConfidence() ? right : left;
+        }
+        return right.getTimestamp() >= left.getTimestamp() ? right : left;
+    }
+
+    private static boolean isTerminal(MatchOdds row) {
+        return row != null && (row.isResulted() || row.isMatchCompleted()
+                || "FINISHED".equalsIgnoreCase(row.getMatchPhase()));
+    }
+
+    private static int scoreQuality(MatchOdds row) {
+        if (row == null) return 0;
+        int quality = StringUtils.hasText(row.getLiveScore()) ? 1 : 0;
+        if (StringUtils.hasText(row.getScoreDetail())) quality++;
+        return quality;
     }
 
     private List<LiveScoreSnapshotDto> toLiveScoreSnapshots(List<MatchOdds> fetched,

@@ -2,24 +2,30 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   CheckCircle2,
   CircleDotDashed,
+  Eye,
   Gauge,
   MinusCircle,
   RefreshCcw,
   Target,
+  UserCheck,
   XCircle,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchModelCallScorecard } from '@/features/live-studio/api'
-import type { ModelCallResult, ModelCallScorecard } from '@/features/live-studio/types'
+import { fetchModelCallMonitor, fetchModelCallScorecard } from '@/features/live-studio/api'
+import { ModelCallPipelineRow } from '@/features/live-studio/ModelCallPipelineRow'
+import type { ModelCallMonitor, ModelCallResult, ModelCallScorecard } from '@/features/live-studio/types'
 import { cn } from '@/lib/utils'
 
 const REFRESH_INTERVAL_MS = 30_000
 
 export function ModelPerformanceScorecard() {
   const [data, setData] = useState<ModelCallScorecard | null>(null)
+  const [monitor, setMonitor] = useState<ModelCallMonitor | null>(null)
+  const [reviewOnly, setReviewOnly] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -39,9 +45,13 @@ export function ModelPerformanceScorecard() {
       if (!background) setLoading(true)
     }
     try {
-      const next = await fetchModelCallScorecard(40, controller.signal)
+      const [next, nextMonitor] = await Promise.all([
+        fetchModelCallScorecard(40, controller.signal),
+        fetchModelCallMonitor(200, controller.signal),
+      ])
       if (!mountedRef.current) return
       setData(next)
+      setMonitor(nextMonitor)
       setError(null)
     } catch (nextError) {
       if (!mountedRef.current) return
@@ -60,6 +70,9 @@ export function ModelPerformanceScorecard() {
   }, [load])
 
   const hasSettled = (data?.settledCalls ?? 0) > 0
+  const visibleCalls = [...(monitor?.calls ?? [])]
+    .filter((call) => !reviewOnly || call.canApprove)
+    .sort(compareViewerCalls)
 
   return (
     <Card className="mt-5 overflow-hidden">
@@ -82,7 +95,14 @@ export function ModelPerformanceScorecard() {
       </CardHeader>
 
       <CardContent className="grid gap-5 p-5 sm:p-6">
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+          <ScoreMetric
+            icon={UserCheck}
+            label="Your live progress"
+            value={(data?.viewerGradedCalls ?? 0) > 0 ? `${formatNumber(data?.viewerAccuracyPct, 1)}%` : 'Ready'}
+            detail={`${data?.viewerCorrect ?? 0}–${data?.viewerIncorrect ?? 0} · ${data?.viewerApprovedPending ?? 0} provisional`}
+            tone={(data?.viewerGradedCalls ?? 0) > 0 && (data?.viewerAccuracyPct ?? 0) >= 55 ? 'positive' : 'neutral'}
+          />
           <ScoreMetric
             icon={Target}
             label="Winner accuracy"
@@ -126,7 +146,37 @@ export function ModelPerformanceScorecard() {
           </div>
         ) : null}
 
-        {!loading && (data?.recentResults.length ?? 0) === 0 ? (
+        {!loading && (monitor?.calls.length ?? 0) > 0 ? (
+          <div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ink-muted)]">Every observed match</p>
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">Open any match to see its score, odds, decision, evidence path, and exact settlement blocker.</p>
+              </div>
+              <div className="flex gap-2">
+                <Button variant={reviewOnly ? 'secondary' : 'primary'} size="sm" onClick={() => setReviewOnly(false)}>
+                  <Eye className="size-3.5" /> All {monitor?.totalCalls ?? 0}
+                </Button>
+                <Button variant={reviewOnly ? 'primary' : 'secondary'} size="sm" onClick={() => setReviewOnly(true)}>
+                  <UserCheck className="size-3.5" /> Needs review {monitor?.calls.filter((call) => call.canApprove).length ?? 0}
+                </Button>
+              </div>
+            </div>
+            {visibleCalls.length ? (
+              <div className="hide-scrollbar grid max-h-[620px] gap-2 overflow-y-auto pr-1">
+                {visibleCalls.map((call) => (
+                  <ModelCallPipelineRow call={call} key={call.callId} to={`/user/tracking/${call.callId}`} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-[18px] border border-dashed border-[var(--line-strong)] bg-slate-50/70 px-5 py-6 text-center text-sm text-[var(--ink-muted)]">
+                No unresolved matches need your review right now.
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {!loading && (monitor?.calls.length ?? 0) === 0 ? (
           <div className="rounded-[22px] border border-dashed border-[var(--line-strong)] bg-slate-50/70 px-5 py-7 text-center">
             <CircleDotDashed className="mx-auto size-6 text-emerald-700" />
             <p className="mt-3 font-semibold text-[var(--ink-strong)]">Fresh simulation ready</p>
@@ -157,7 +207,7 @@ function CompletedCallRow({ result }: { result: ModelCallResult }) {
   const noLean = result.outcome === 'NO_LEAN'
   const OutcomeIcon = noLean ? MinusCircle : correct ? CheckCircle2 : XCircle
   return (
-    <div className="grid gap-3 rounded-[20px] border border-[var(--line)] bg-white/70 p-4 lg:grid-cols-[minmax(220px,1.3fr)_minmax(190px,1fr)_minmax(190px,0.95fr)_auto] lg:items-center">
+    <Link to={`/user/tracking/${result.callId}`} className="grid gap-3 rounded-[20px] border border-[var(--line)] bg-white/70 p-4 transition hover:border-emerald-300 hover:bg-white lg:grid-cols-[minmax(220px,1.3fr)_minmax(190px,1fr)_minmax(190px,0.95fr)_auto] lg:items-center">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn(
@@ -199,8 +249,28 @@ function CompletedCallRow({ result }: { result: ModelCallResult }) {
         <p className="mt-1 truncate text-sm font-bold text-[var(--ink-strong)]">{result.actualWinnerName}</p>
         <p className="mt-1 font-mono text-xs text-[var(--ink-muted)]">Final {result.score}</p>
       </div>
-    </div>
+    </Link>
   )
+}
+
+function compareViewerCalls(left: ModelCallMonitor['calls'][number], right: ModelCallMonitor['calls'][number]) {
+  const priority: Record<string, number> = {
+    LIVE_MONITORING: 0,
+    RESULT_CONFLICT: 1,
+    SETTLEMENT_REVIEW: 2,
+    VIEWER_APPROVED: 3,
+    WAITING_FOR_FEED: 4,
+    SCHEDULED: 5,
+    SYSTEM_CONFIRMED: 6,
+  }
+  const stageDelta = (priority[left.pipelineStage] ?? 9) - (priority[right.pipelineStage] ?? 9)
+  if (stageDelta !== 0) return stageDelta
+  const leftTime = Date.parse(left.startTimeIso ?? left.capturedAt ?? '')
+  const rightTime = Date.parse(right.startTimeIso ?? right.capturedAt ?? '')
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return left.pipelineStage === 'SYSTEM_CONFIRMED' ? rightTime - leftTime : leftTime - rightTime
+  }
+  return right.callId - left.callId
 }
 
 function ScoreMetric({

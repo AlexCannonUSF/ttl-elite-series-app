@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Waves,
+  Workflow,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 
@@ -35,6 +36,7 @@ const userSections = [
 const adminSections = [
   { label: 'Command', icon: Gauge, to: '/admin' },
   { label: 'Model', icon: BrainCircuit, to: '/admin/model-quality' },
+  { label: 'Pipeline', icon: Workflow, to: '/admin/pipeline' },
   { label: 'Ops', icon: Waves, to: '/admin/ops' },
   { label: 'Feeds', icon: RadioTower, to: '/admin/feeds' },
   { label: 'Ingest', icon: RefreshCw, to: '/admin/ingest' },

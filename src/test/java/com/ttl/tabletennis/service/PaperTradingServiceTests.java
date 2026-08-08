@@ -569,6 +569,56 @@ class PaperTradingServiceTests {
     }
 
     @Test
+    void terminalScoreStreamObservationIsRecordedForSkippedMatchWithoutPaperBet() {
+        Player alpha = playerRepository.save(new Player("Observe", "Alpha"));
+        Player beta = playerRepository.save(new Player("Observe", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(30);
+        String externalEventId = "event-observe-final-1";
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto skipped = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=" + externalEventId,
+                "CONSERVATIVE", "ENSEMBLE", "Observe Alpha vs Observe Beta", "TTL Elite Series",
+                false, startIso, null, "UPCOMING",
+                alpha.getId(), alpha.getName(), beta.getId(), beta.getName(),
+                1.70, 2.12, -143, 112, 0.59, 0.41,
+                0.51, 0.49, -0.08, 0.08, -104, 104,
+                beta.getName(), 0.001, 104, 0.30, 0.70,
+                false, "WATCH", "Model has a lean but the wager is not approved", "Baseline",
+                0.04, eventKey, dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+        LiveScoreSnapshotDto terminal = new LiveScoreSnapshotDto(
+                "HARD_ROCK_SCORE_STREAM:FLORIDA_ONLINE|event=" + externalEventId,
+                "HARD_ROCK_SCORE_STREAM", 0.99, 0L,
+                "Observe Alpha vs Observe Beta", "TTL Elite Series", false, startIso,
+                "1-3", "FINISHED", externalEventId, false, true, true,
+                "BETRADAR_UF", "sr:match:observe-final-1", "8-11, 11-9, 7-11, 9-11",
+                alpha.getId(), alpha.getName(), beta.getId(), beta.getName(), eventKey
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(skipped), List.of());
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of(terminal));
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(0, first.betsPlaced());
+        assertEquals(0, second.betsSettled());
+        assertTrue(paperTradeBetRepository.findAll().isEmpty());
+        TrackedMatchObservation latest = trackedMatchObservationRepository
+                .findTopByEventKeyOrderByObservedAtDescIdDesc(eventKey)
+                .orElseThrow();
+        assertEquals("1-3", latest.getLiveScore());
+        assertEquals("FINISHED", latest.getMatchPhase());
+        assertEquals("SCORE_FEED", latest.getSourceKind());
+        assertTrue(latest.isResulted());
+        assertTrue(latest.isMatchCompleted());
+        assertEquals(externalEventId, latest.getExternalEventId());
+    }
+
+    @Test
     void syncSkipsThinSignalPlusMoneyDespiteModestPositiveEdge() {
         Player alpha = playerRepository.save(new Player("Thin", "Signal"));
         Player beta = playerRepository.save(new Player("Thin", "Opponent"));
@@ -4822,7 +4872,7 @@ class PaperTradingServiceTests {
         assertEquals("1-1 (0-0)", trackedBet.getLastObservedScore());
 
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(400));
         trackedMatchObservationRepository.save(observation);
@@ -4970,7 +5020,7 @@ class PaperTradingServiceTests {
         PaperTradeBet trackedBet = paperTradeBetRepository.findAll().get(0);
         assertTrue(trackedBet.isTrackedAfterClose());
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(240));
         trackedMatchObservationRepository.save(observation);
@@ -5931,7 +5981,7 @@ class PaperTradingServiceTests {
 
         PaperTradeBet trackedBet = paperTradeBetRepository.findAll().get(0);
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(240));
         trackedMatchObservationRepository.save(observation);

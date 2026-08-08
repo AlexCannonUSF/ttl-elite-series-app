@@ -11,6 +11,7 @@ import com.ttl.tabletennis.repository.OddsQuoteRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.repository.ValueOpportunityRepository;
 import com.ttl.tabletennis.scrape.HardRockOddsScraper;
+import com.ttl.tabletennis.scrape.HardRockScoreStreamClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 @SpringBootTest
 @Transactional
@@ -66,6 +68,9 @@ class OddsValueEngineServiceTests {
     @MockBean
     private HardRockOddsScraper hardRockOddsScraper;
 
+    @MockBean
+    private HardRockScoreStreamClient hardRockScoreStreamClient;
+
     @BeforeEach
     void clearScrapeCacheBetweenTests() {
         // The OddsValueEngineService bean is a singleton in @SpringBootTest, so its
@@ -74,6 +79,8 @@ class OddsValueEngineServiceTests {
         // when(hardRockOddsScraper.fetch()) hook is actually exercised.
         oddsValueEngineService.clearScrapeCacheForTest();
         when(predictionFacade.isPromotedModel(any(), any())).thenReturn(true);
+        when(hardRockScoreStreamClient.snapshots()).thenReturn(List.of());
+        when(hardRockScoreStreamClient.snapshotsForEventIds(any())).thenReturn(List.of());
     }
 
     @Test
@@ -345,6 +352,45 @@ class OddsValueEngineServiceTests {
         assertEquals("feed-123", row.sourceFeedEventId());
         assertEquals("11-8, 9-11", row.scoreDetail());
         assertNotNull(row.matchupKey());
+    }
+
+    @Test
+    void liveScoreSnapshotsUsesTerminalSubscriptionWithoutCallingClosedMarketEndpoint() {
+        Player p1 = playerRepository.save(new Player("Stream", "Alpha"));
+        Player p2 = playerRepository.save(new Player("Stream", "Beta"));
+        String externalEventId = "event-stream-final-1";
+        MatchOdds terminal = new MatchOdds(
+                "Stream Alpha", "Stream Beta", 1.88, 1.96,
+                "Stream Alpha vs Stream Beta", "TT Elite Series", false,
+                "2026-08-08T20:00:00Z",
+                "HARD_ROCK_SCORE_STREAM:FLORIDA_ONLINE|event=" + externalEventId,
+                "3-1", "FINISHED"
+        );
+        terminal.setExternalEventId(externalEventId);
+        terminal.setSourceType("HARD_ROCK_SCORE_STREAM");
+        terminal.setSourceConfidence(0.99);
+        terminal.setDisplayed(false);
+        terminal.setResulted(true);
+        terminal.setMatchCompleted(true);
+        terminal.setSourceFeedCode("BETRADAR_UF");
+        terminal.setSourceFeedEventId("sr:match:stream-final-1");
+        terminal.setScoreDetail("11-7, 8-11, 11-5, 11-9");
+
+        when(hardRockScoreStreamClient.snapshotsForEventIds(any())).thenReturn(List.of(terminal));
+        when(playerIdentityService.findCanonicalPlayer("Stream Alpha")).thenReturn(Optional.of(p1));
+        when(playerIdentityService.findCanonicalPlayer("Stream Beta")).thenReturn(Optional.of(p2));
+
+        List<LiveScoreSnapshotDto> rows = oddsValueEngineService.liveScoreSnapshotsForEventIds(
+                List.of(externalEventId), 10, false);
+
+        assertEquals(1, rows.size());
+        assertEquals("FINISHED", rows.get(0).matchPhase());
+        assertEquals("3-1", rows.get(0).liveScore());
+        assertTrue(rows.get(0).resulted());
+        assertTrue(rows.get(0).matchCompleted());
+        assertEquals("HARD_ROCK_SCORE_STREAM", rows.get(0).sourceType());
+        verify(hardRockScoreStreamClient).trackEventIds(argThat(ids -> ids.contains(externalEventId)));
+        verify(hardRockOddsScraper, never()).fetchScoreboardByEventIds(any());
     }
 
     @Test

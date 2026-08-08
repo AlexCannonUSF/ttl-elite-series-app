@@ -17,6 +17,7 @@ import {
   Save,
   ShieldCheck,
   Target,
+  Workflow,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -24,8 +25,8 @@ import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchLiveSession } from '@/features/live-studio/api'
-import type { PaperTradingSession } from '@/features/live-studio/types'
+import { fetchLiveSession, fetchModelCallMonitor } from '@/features/live-studio/api'
+import type { ModelCallMonitor, PaperTradingSession } from '@/features/live-studio/types'
 import {
   fetchModelLearningAudit,
   fetchStakingPolicy,
@@ -54,6 +55,7 @@ type AdminSnapshot = {
   policy: StakingPolicy | null
   scrape: ScrapeStatus | null
   session: PaperTradingSession | null
+  pipeline: ModelCallMonitor | null
   streams: OpsStreamsResponse | null
   errors: string[]
 }
@@ -92,6 +94,7 @@ export function AdminHubRoute() {
       fetchModelLearningAudit(),
       fetchStakingPolicy(),
       fetchLiveSession(),
+      fetchModelCallMonitor(200),
       fetchOpsFeeds(),
       fetchOpsIngest(),
       fetchOpsStreams(),
@@ -99,7 +102,7 @@ export function AdminHubRoute() {
     ])
     if (!mounted.current) return
 
-    const labels = ['Learning audit', 'Staking policy', 'Live session', 'Feeds', 'Ingest', 'Streams', 'Scraper']
+    const labels = ['Learning audit', 'Staking policy', 'Live session', 'Decision pipeline', 'Feeds', 'Ingest', 'Streams', 'Scraper']
     const errors = results.flatMap((result, index) =>
       result.status === 'rejected' ? [`${labels[index]}: ${errorMessage(result.reason)}`] : [],
     )
@@ -107,10 +110,11 @@ export function AdminHubRoute() {
       audit: valueAt<ModelLearningAudit>(results, 0),
       policy: valueAt<StakingPolicy>(results, 1),
       session: valueAt<PaperTradingSession>(results, 2),
-      feeds: valueAt<OpsFeedsResponse>(results, 3),
-      ingest: valueAt<OpsIngestResponse>(results, 4),
-      streams: valueAt<OpsStreamsResponse>(results, 5),
-      scrape: valueAt<ScrapeStatus>(results, 6),
+      pipeline: valueAt<ModelCallMonitor>(results, 3),
+      feeds: valueAt<OpsFeedsResponse>(results, 4),
+      ingest: valueAt<OpsIngestResponse>(results, 5),
+      streams: valueAt<OpsStreamsResponse>(results, 6),
+      scrape: valueAt<ScrapeStatus>(results, 7),
       errors,
     })
     setLoading(false)
@@ -264,6 +268,13 @@ export function AdminHubRoute() {
             <CardDescription>Fast health signals with direct paths into the operator surface that owns each one.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
+            <SystemRow
+              href="/admin/pipeline"
+              icon={Workflow}
+              label="Decision pipeline"
+              status={`${snapshot?.pipeline?.totalCalls ?? 0} tracked · ${snapshot?.pipeline?.settlementReview ?? 0} terminal review · ${snapshot?.pipeline?.viewerApproved ?? 0} viewer-approved`}
+              warning={(snapshot?.pipeline?.conflicts ?? 0) > 0}
+            />
             <SystemRow
               href="/admin/feeds"
               icon={RadioTower}

@@ -1,6 +1,7 @@
 package com.ttl.tabletennis.scrape;
 
 import com.ttl.tabletennis.model.MatchOdds;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -16,12 +17,22 @@ public class HardRockFeedClient implements FeedClient<MatchOdds> {
 
     private final HardRockOddsScraper hardRockOddsScraper;
     private final IngestionBus ingestionBus;
+    private HardRockScoreStreamClient scoreStreamClient;
     private final FeedHealthTracker healthTracker = new FeedHealthTracker();
 
     public HardRockFeedClient(HardRockOddsScraper hardRockOddsScraper,
                               IngestionBus ingestionBus) {
         this.hardRockOddsScraper = hardRockOddsScraper;
         this.ingestionBus = ingestionBus;
+    }
+
+    /**
+     * Keep this optional for focused feed tests, while production registers
+     * every discoverable market event before Hard Rock closes its bet market.
+     */
+    @Autowired(required = false)
+    void setScoreStreamClient(HardRockScoreStreamClient scoreStreamClient) {
+        this.scoreStreamClient = scoreStreamClient;
     }
 
     @Override
@@ -34,6 +45,9 @@ public class HardRockFeedClient implements FeedClient<MatchOdds> {
         Instant startedAt = healthTracker.onPullStart();
         try {
             List<MatchOdds> rows = hardRockOddsScraper.fetch();
+            if (scoreStreamClient != null) {
+                rows.forEach(scoreStreamClient::track);
+            }
             List<IngestEvent<MatchOdds>> events = rows.stream()
                     .map(row -> new IngestEvent<>(
                             source(),
