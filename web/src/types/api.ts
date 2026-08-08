@@ -653,3 +653,45 @@ export interface CompletedMatchLogDto {
   picked: boolean
   pickStatus: string | null
 }
+
+export interface SettlementReviewItemDto {
+  betId: number
+  status: string
+  eventName: string
+  selectedSide: string
+  winnerName: string | null
+  settlementSource: string | null
+  settlementReason: string | null
+  settledAt: string | null
+  selectedCandidateMatchId: number | null
+  selectedCandidateDate: string | null
+  playerSetConfidence: number | null
+  feedIdentityMatch: boolean | null
+  archiveConfidence: number | null
+  selectedCandidateInRecentCompleted: boolean
+  sameDayCandidateCount: number
+  lastObservedScore: string | null
+  lastObservedPhase: string | null
+  lateScoreDirectionName: string | null
+  scoreEvidenceConfidence: number | null
+  settlementConfidence: number | null
+  trustBand: 'HIGH' | 'MEDIUM' | 'LOW'
+  suspicious: boolean
+  suspicionFlags: string[]
+  contradictionFlags: string[]
+  explanation: string
+}
+
+export interface SettlementReviewPageDto {
+  generatedAt: string
+  page: number
+  size: number
+  totalItems: number
+  totalPages: number
+  hasPrevious: boolean
+  hasNext: boolean
+  suspiciousItems: number
+  highTrustItems: number
+  lowTrustItems: number
+  items: SettlementReviewItemDto[]
+}

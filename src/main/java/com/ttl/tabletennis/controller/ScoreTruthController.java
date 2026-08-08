@@ -5,8 +5,10 @@ import com.ttl.tabletennis.dto.ScoreTruthEvidenceDto;
 import com.ttl.tabletennis.dto.ScoreTruthReviewActionDto;
 import com.ttl.tabletennis.dto.ScoreTruthReviewActionRequest;
 import com.ttl.tabletennis.dto.ScoreTruthReviewQueueDto;
+import com.ttl.tabletennis.dto.SettlementReviewPageDto;
 import com.ttl.tabletennis.service.ScoreTruthQueryService;
 import com.ttl.tabletennis.service.ScoreTruthReviewService;
+import com.ttl.tabletennis.service.SettlementReviewService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,11 +25,14 @@ public class ScoreTruthController {
 
     private final ScoreTruthQueryService scoreTruthQueryService;
     private final ScoreTruthReviewService scoreTruthReviewService;
+    private final SettlementReviewService settlementReviewService;
 
     public ScoreTruthController(ScoreTruthQueryService scoreTruthQueryService,
-                                ScoreTruthReviewService scoreTruthReviewService) {
+                                ScoreTruthReviewService scoreTruthReviewService,
+                                SettlementReviewService settlementReviewService) {
         this.scoreTruthQueryService = scoreTruthQueryService;
         this.scoreTruthReviewService = scoreTruthReviewService;
+        this.settlementReviewService = settlementReviewService;
     }
 
     @GetMapping("/evidence/{matchId}")
@@ -50,6 +55,13 @@ public class ScoreTruthController {
     public ScoreTruthReviewQueueDto reviewQueue(@RequestParam(required = false) Integer page,
                                                 @RequestParam(required = false) Integer size) {
         return scoreTruthReviewService.queue(page, size);
+    }
+
+    @GetMapping("/settlement-review")
+    public SettlementReviewPageDto settlementReview(@RequestParam(required = false) Integer page,
+                                                     @RequestParam(required = false) Integer size,
+                                                     @RequestParam(defaultValue = "false") boolean suspiciousOnly) {
+        return settlementReviewService.review(page, size, suspiciousOnly);
     }
 
     @PostMapping("/review/{decisionId}")

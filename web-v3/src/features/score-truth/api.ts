@@ -3,10 +3,38 @@ import type {
   ScoreTruthReviewActionRequest,
   ScoreTruthReviewActionResponse,
   ScoreTruthReviewQueueResponse,
+  SettlementReviewPageResponse,
 } from '@/features/score-truth/types'
 
 function isNumericId(id: string) {
   return /^\d+$/.test(id)
+}
+
+export async function fetchSettlementReview({
+  page,
+  size,
+  suspiciousOnly,
+  signal,
+}: {
+  page: number
+  size: number
+  suspiciousOnly: boolean
+  signal?: AbortSignal
+}): Promise<SettlementReviewPageResponse> {
+  const query = new URLSearchParams()
+  query.set('page', String(page))
+  query.set('size', String(size))
+  query.set('suspiciousOnly', String(suspiciousOnly))
+
+  const response = await fetch(`/api/score-truth/settlement-review?${query}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+    signal,
+  })
+
+  await assertOk(response, 'Settlement review request')
+  return (await response.json()) as SettlementReviewPageResponse
 }
 
 export async function fetchScoreTruthEvidence(id: string, signal?: AbortSignal): Promise<ScoreTruthEvidenceResponse> {

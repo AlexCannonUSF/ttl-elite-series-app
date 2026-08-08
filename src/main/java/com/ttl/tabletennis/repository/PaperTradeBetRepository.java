@@ -2,6 +2,7 @@ package com.ttl.tabletennis.repository;
 
 import com.ttl.tabletennis.domain.PaperTradeBet;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Page;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.time.LocalDateTime;
@@ -27,6 +28,9 @@ public interface PaperTradeBetRepository extends JpaRepository<PaperTradeBet, Lo
 
     List<PaperTradeBet> findByStatusInOrderBySettledAtDesc(Collection<String> statuses,
                                                             Pageable pageable);
+
+    Page<PaperTradeBet> findAllByStatusInOrderBySettledAtDescIdDesc(Collection<String> statuses,
+                                                                    Pageable pageable);
 
     List<PaperTradeBet> findBySessionIdAndStatusInOrderBySettledAtAsc(Long sessionId,
                                                                        Collection<String> statuses);

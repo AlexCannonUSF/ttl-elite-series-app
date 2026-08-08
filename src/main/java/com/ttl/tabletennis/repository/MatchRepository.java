@@ -38,6 +38,18 @@ public interface MatchRepository extends JpaRepository<Match, Long> {
 
     @Query("""
            SELECT m FROM Match m
+           WHERE m.complete = TRUE
+             AND ((m.player1.id = :p1 AND m.player2.id = :p2)
+               OR  (m.player1.id = :p2 AND m.player2.id = :p1))
+             AND m.date = :date
+           ORDER BY m.id DESC
+           """)
+    List<Match> findCompletedMatchesByPlayersOnDate(@Param("p1") Long player1Id,
+                                                     @Param("p2") Long player2Id,
+                                                     @Param("date") LocalDate date);
+
+    @Query("""
+           SELECT m FROM Match m
            WHERE (m.player1.id = :p1 AND m.player2.id = :p2)
               OR (m.player1.id = :p2 AND m.player2.id = :p1)
            ORDER BY m.date DESC, m.id DESC

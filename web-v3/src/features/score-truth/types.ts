@@ -92,3 +92,61 @@ export type ScoreTruthReviewActionResponse = {
   comment: string | null
   reviewedAt: string
 }
+
+export type SettlementReviewItem = {
+  betId: number
+  sessionId: number
+  status: string
+  eventName: string
+  competitionName: string
+  player1Name: string
+  player2Name: string
+  selectedSide: string
+  winnerPlayerId: number | null
+  winnerName: string | null
+  settlementSource: string | null
+  settlementReason: string | null
+  settledAt: string | null
+  selectedCandidateMatchId: number | null
+  selectedCandidateDate: string | null
+  playerSetConfidence: number | null
+  feedIdentityMatch: boolean | null
+  archiveConfidence: number | null
+  selectedCandidateInRecentCompleted: boolean
+  recentCompletedCandidateCount: number
+  sameDayCandidateCount: number
+  lastObservedScore: string | null
+  lastObservedPhase: string | null
+  lateScoreDirectionPlayerId: number | null
+  lateScoreDirectionName: string | null
+  scoreEvidenceQuality: string | null
+  scoreEvidenceFinality: string | null
+  scoreEvidenceConfidence: number | null
+  scoreEvidenceObservationCount: number | null
+  scoreEvidenceSourceCount: number | null
+  scoreEvidenceAgreeingSources: number | null
+  scoreEvidenceCompletionSignals: number | null
+  evidenceId: number | null
+  coverageState: string | null
+  ambiguityScore: number | null
+  settlementConfidence: number | null
+  trustBand: 'HIGH' | 'MEDIUM' | 'LOW'
+  suspicious: boolean
+  suspicionFlags: string[]
+  contradictionFlags: string[]
+  explanation: string
+}
+
+export type SettlementReviewPageResponse = {
+  generatedAt: string
+  page: number
+  size: number
+  totalItems: number
+  totalPages: number
+  hasPrevious: boolean
+  hasNext: boolean
+  suspiciousItems: number
+  highTrustItems: number
+  lowTrustItems: number
+  items: SettlementReviewItem[]
+}

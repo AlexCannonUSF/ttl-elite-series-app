@@ -5,7 +5,10 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Database,
   ExternalLink,
+  Flag,
+  GitCompare,
   Info,
   Loader2,
   MessageSquare,
@@ -22,13 +25,20 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveSession } from '@/features/live-studio/api'
 import type { PaperTradeBet } from '@/features/live-studio/types'
-import { fetchScoreTruthEvidence, fetchScoreTruthReviewQueue, submitScoreTruthReviewAction } from '@/features/score-truth/api'
+import {
+  fetchScoreTruthEvidence,
+  fetchScoreTruthReviewQueue,
+  fetchSettlementReview,
+  submitScoreTruthReviewAction,
+} from '@/features/score-truth/api'
 import type {
   JsonValue,
   ScoreTruthEvidenceResponse,
   ScoreTruthReviewAction,
   ScoreTruthReviewItem,
   ScoreTruthReviewQueueResponse,
+  SettlementReviewItem,
+  SettlementReviewPageResponse,
 } from '@/features/score-truth/types'
 import { cn } from '@/lib/utils'
 
@@ -37,15 +47,21 @@ const PAGE_SIZE = 20
 export function ReviewRoute() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<ScoreTruthReviewQueueResponse | null>(null)
+  const [settlementData, setSettlementData] = useState<SettlementReviewPageResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [settlementError, setSettlementError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [settlementLoading, setSettlementLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [settlementRefreshing, setSettlementRefreshing] = useState(false)
   const [actionInFlight, setActionInFlight] = useState<number | null>(null)
   const [comments, setComments] = useState<Record<number, string>>({})
   const [reviewer, setReviewer] = useState('operator')
   const [betLookup, setBetLookup] = useState<Map<number, PaperTradeBet>>(new Map())
   const mountedRef = useRef(true)
   const page = parsePage(searchParams.get('page'))
+  const settlementPage = parsePage(searchParams.get('settlementPage'))
+  const suspiciousOnly = searchParams.get('flagged') === '1'
 
   // One-shot session fetch so we can resolve betId → matchup name for any bet
   // that's still in the active session (covers ~the last 25 bets).
@@ -109,6 +125,40 @@ export function ReviewRoute() {
     void loadQueue(false)
   }, [loadQueue])
 
+  const loadSettlements = useCallback(async (background: boolean) => {
+    if (mountedRef.current) {
+      if (background) {
+        setSettlementRefreshing(true)
+      } else {
+        setSettlementLoading(true)
+      }
+    }
+    try {
+      const next = await fetchSettlementReview({
+        page: settlementPage,
+        size: PAGE_SIZE,
+        suspiciousOnly,
+      })
+      if (!mountedRef.current) return
+      setSettlementData(next)
+      setSettlementError(null)
+    } catch (nextError) {
+      if (!mountedRef.current) return
+      setSettlementError(nextError instanceof Error ? nextError.message : 'Unable to load settlement forensics right now.')
+    } finally {
+      if (!mountedRef.current) return
+      if (background) {
+        setSettlementRefreshing(false)
+      } else {
+        setSettlementLoading(false)
+      }
+    }
+  }, [settlementPage, suspiciousOnly])
+
+  useEffect(() => {
+    void loadSettlements(false)
+  }, [loadSettlements])
+
   const pageStats = useMemo(() => summarizePage(data), [data])
   const totalPages = data ? Math.max(1, data.totalPages) : 1
 
@@ -121,6 +171,27 @@ export function ReviewRoute() {
     }
     setSearchParams(next, { replace: true })
   }, [searchParams, setSearchParams])
+
+  const updateSettlementPage = useCallback((nextPage: number) => {
+    const next = new URLSearchParams(searchParams)
+    if (nextPage <= 0) {
+      next.delete('settlementPage')
+    } else {
+      next.set('settlementPage', String(nextPage))
+    }
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
+
+  const toggleSuspiciousOnly = useCallback(() => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('settlementPage')
+    if (suspiciousOnly) {
+      next.delete('flagged')
+    } else {
+      next.set('flagged', '1')
+    }
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams, suspiciousOnly])
 
   const submitAction = useCallback(async (item: ScoreTruthReviewItem, action: ScoreTruthReviewAction) => {
     const comment = (comments[item.decisionId] ?? '').trim()
@@ -156,23 +227,123 @@ export function ReviewRoute() {
   return (
     <V3Shell
       eyebrow="TTLElite Series 3.0"
-      title="Manual Review Queue"
-      description="Bets the system held back from auto-settling because the evidence was thin or conflicting. Your job is to accept, reject, or annotate each one."
+      title="Settlement Review"
+      description="A forensic ledger for every automatic settlement, plus the decisions the system held for a human. See exactly what was selected, what agreed, and what should not be trusted."
       badges={
         <>
           <Badge variant="accent">Review</Badge>
-          <Badge>{data ? `${data.totalItems} total` : '—'}</Badge>
-          <Badge>{`${pageStats.open} open this page`}</Badge>
+          <Badge>{settlementData ? `${settlementData.totalItems} settlements` : '—'}</Badge>
+          <Badge>{data ? `${data.totalItems} manual` : '—'}</Badge>
+          <Badge>{settlementData ? `${settlementData.suspiciousItems} flagged here` : '—'}</Badge>
         </>
       }
       actions={
-        <Button variant="secondary" onClick={() => void loadQueue(true)} disabled={loading || refreshing}>
-          <RefreshCcw className={cn('size-4', refreshing && 'animate-spin')} />
-          Refresh queue
+        <Button
+          variant="secondary"
+          onClick={() => {
+            void loadSettlements(true)
+            void loadQueue(true)
+          }}
+          disabled={loading || settlementLoading || refreshing || settlementRefreshing}
+        >
+          <RefreshCcw className={cn('size-4', (refreshing || settlementRefreshing) && 'animate-spin')} />
+          Refresh review
         </Button>
       }
     >
       <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <Badge variant="accent" className="w-fit">
+                <GitCompare className="size-3" />
+                Settlement Forensics
+              </Badge>
+              <CardTitle className="mt-3">Why each result closed</CardTitle>
+              <CardDescription>
+                Newest first. Archive identity, date, player-set match, score direction, confidence, and contradictions
+                are normalized into one readable audit instead of scattered across raw payloads.
+              </CardDescription>
+            </div>
+            <Button variant={suspiciousOnly ? 'primary' : 'secondary'} onClick={toggleSuspiciousOnly}>
+              <Flag className="size-4" />
+              {suspiciousOnly ? 'Showing flagged only' : 'Show flagged only'}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          {settlementLoading && !settlementData ? (
+            <div className="rounded-[24px] border border-dashed border-[var(--line-strong)] bg-[rgba(255,255,255,0.58)] p-6 text-sm text-[var(--ink-muted)]">
+              Building settlement explanations…
+            </div>
+          ) : null}
+
+          {settlementError ? (
+            <InlineAlert>
+              <AlertTriangle className="size-4" />
+              <span>{settlementError}</span>
+            </InlineAlert>
+          ) : null}
+
+          {settlementData ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <MetricTile label={suspiciousOnly ? 'Flagged settlements' : 'Settlements'} value={String(settlementData.totalItems)} icon={Database} />
+                <MetricTile label="Flagged on page" value={String(settlementData.suspiciousItems)} icon={Flag} />
+                <MetricTile label="High trust on page" value={String(settlementData.highTrustItems)} icon={ShieldCheck} />
+                <MetricTile label="Low trust on page" value={String(settlementData.lowTrustItems)} icon={AlertTriangle} />
+              </div>
+              <div className="rounded-[20px] border border-[var(--line)] bg-[var(--panel-soft)] px-4 py-3 text-xs leading-5 text-[var(--ink-muted)]">
+                <b className="text-[var(--ink-strong)]">Automatic flags:</b>{' '}
+                archive match missing from the recent completed ledger, archived winner against the late-score direction,
+                or multiple completed candidates for the same players on the selected date. A flag asks for inspection;
+                it does not silently reverse a settled bet.
+              </div>
+            </>
+          ) : null}
+
+          {settlementData?.items.length === 0 ? (
+            <div className="rounded-[22px] border border-dashed border-[var(--line-strong)] bg-[rgba(255,255,255,0.58)] p-6 text-sm text-[var(--ink-muted)]">
+              {suspiciousOnly ? 'No suspicious settlements were found.' : 'No completed settlements are available yet.'}
+            </div>
+          ) : null}
+
+          {settlementData?.items.map((item) => (
+            <SettlementForensicsCard key={item.betId} item={item} />
+          ))}
+
+          {settlementData ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-[var(--line)] bg-[rgba(255,255,255,0.66)] px-4 py-3 text-sm text-[var(--ink-muted)]">
+              <div>
+                Page {settlementData.page + 1} of {Math.max(1, settlementData.totalPages)}
+                <span className="ml-2">Generated {formatDateTime(settlementData.generatedAt)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!settlementData.hasPrevious}
+                  onClick={() => updateSettlementPage(Math.max(0, settlementData.page - 1))}
+                >
+                  <ChevronLeft className="size-4" />
+                  Prev
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!settlementData.hasNext}
+                  onClick={() => updateSettlementPage(settlementData.page + 1)}
+                >
+                  Next
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-5">
         <CardHeader>
           <Badge variant="accent" className="w-fit">
             <Info className="size-3" />
@@ -340,6 +511,156 @@ export function ReviewRoute() {
         </CardContent>
       </Card>
     </V3Shell>
+  )
+}
+
+function SettlementForensicsCard({ item }: { item: SettlementReviewItem }) {
+  const archiveBacked = item.archiveConfidence != null
+  const trustTone = item.trustBand === 'HIGH'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    : item.trustBand === 'LOW'
+      ? 'border-rose-200 bg-rose-50 text-rose-800'
+      : 'border-amber-200 bg-amber-50 text-amber-800'
+
+  return (
+    <article className={cn(
+      'rounded-[24px] border bg-[rgba(255,255,255,0.76)] p-4 shadow-[0_16px_48px_-34px_rgba(15,23,42,0.7)]',
+      item.suspicious ? 'border-amber-300' : 'border-[var(--line)]',
+    )}>
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn('rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]', trustTone)}>
+              {item.trustBand} trust
+            </span>
+            {item.suspicious ? (
+              <Badge className="border-amber-200 bg-amber-50 text-amber-800"><Flag className="size-3" /> Needs inspection</Badge>
+            ) : <Badge>Checks passed</Badge>}
+            <Badge>{item.status}</Badge>
+            <span className="text-xs text-[var(--ink-muted)]">Bet #{item.betId}</span>
+          </div>
+          <p className="mt-3 text-lg font-semibold text-[var(--ink-strong)]">{item.eventName}</p>
+          <p className="mt-1 text-sm text-[var(--ink-muted)]">
+            Picked <b className="text-[var(--ink-strong)]">{item.selectedSide}</b>
+            {' · '}winner <b className="text-[var(--ink-strong)]">{item.winnerName ?? 'void / unknown'}</b>
+            {' · '}{formatDateTime(item.settledAt)}
+          </p>
+          <p className="mt-3 max-w-5xl rounded-[16px] bg-[var(--panel-soft)] px-3 py-2 text-sm leading-6 text-[var(--ink)]">
+            {item.explanation}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {item.evidenceId != null ? (
+            <Button variant="ghost" size="sm" asChild>
+              <Link to={`/matches/${item.betId}/evidence`}>
+                <ExternalLink className="size-4" />
+                Evidence
+              </Link>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <ForensicDatum
+          label={archiveBacked ? 'Selected archive match' : 'Score decision'}
+          value={archiveBacked
+            ? item.selectedCandidateMatchId == null ? 'External row' : `#${item.selectedCandidateMatchId}`
+            : item.scoreEvidenceQuality ?? 'Ungraded'}
+          detail={archiveBacked ? item.selectedCandidateDate ?? 'Date unavailable' : item.scoreEvidenceFinality ?? 'Finality unavailable'}
+        />
+        <ForensicDatum
+          label={archiveBacked ? 'Player-set match' : 'Score confidence'}
+          value={archiveBacked ? percentOrDash(item.playerSetConfidence) : percentOrDash(item.scoreEvidenceConfidence)}
+          detail={archiveBacked
+            ? item.playerSetConfidence === 1 ? 'Both locked player IDs matched.' : 'Identity was inferred or incomplete.'
+            : `${item.scoreEvidenceAgreeingSources ?? 0} agreeing source(s)`}
+          warning={archiveBacked ? (item.playerSetConfidence ?? 0) < 1 : (item.scoreEvidenceConfidence ?? 0) < 0.9}
+        />
+        <ForensicDatum
+          label={archiveBacked ? 'Feed identity' : 'Evidence coverage'}
+          value={archiveBacked ? item.feedIdentityMatch ? 'MATCH' : 'NO MATCH' : item.coverageState ?? 'UNKNOWN'}
+          detail={archiveBacked
+            ? item.feedIdentityMatch ? 'Book event ID tied to this result.' : 'No exact book-to-archive ID link.'
+            : `${item.scoreEvidenceSourceCount ?? 0} source(s) · ${item.scoreEvidenceObservationCount ?? 0} observation(s)`}
+          warning={archiveBacked ? !item.feedIdentityMatch : item.coverageState !== 'FULL'}
+        />
+        <ForensicDatum
+          label={archiveBacked ? 'Archive confidence' : 'Settlement confidence'}
+          value={percentOrDash(archiveBacked ? item.archiveConfidence : item.settlementConfidence)}
+          detail={archiveBacked ? 'Identity, recency, collision, and score checks.' : `Ambiguity ${percentOrDash(item.ambiguityScore)}`}
+          warning={(archiveBacked ? item.archiveConfidence ?? 0 : item.settlementConfidence ?? 0) < 0.9}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <ForensicDatum
+          label="Recent completed ledger"
+          value={archiveBacked ? item.selectedCandidateInRecentCompleted ? 'PRESENT' : 'NOT FOUND' : 'N/A'}
+          detail={`${item.recentCompletedCandidateCount} recent matchup result(s) inspected`}
+          warning={archiveBacked && !item.selectedCandidateInRecentCompleted}
+        />
+        <ForensicDatum
+          label="Same-day candidates"
+          value={archiveBacked ? String(item.sameDayCandidateCount) : 'N/A'}
+          detail={item.sameDayCandidateCount > 1 ? 'More than one result could fit this date.' : 'No same-day collision detected.'}
+          warning={archiveBacked && item.sameDayCandidateCount > 1}
+        />
+        <ForensicDatum
+          label="Late score direction"
+          value={item.lateScoreDirectionName ?? 'NO STRONG LEADER'}
+          detail={item.lastObservedScore
+            ? `${item.lastObservedScore} · ${item.lastObservedPhase ?? 'phase unknown'}`
+            : 'No late score was captured.'}
+          warning={item.suspicionFlags.includes('ARCHIVE_WINNER_CONFLICTS_LATE_SCORE_DIRECTION')}
+        />
+        <ForensicDatum
+          label="Settlement path"
+          value={compactCode(item.settlementSource ?? 'UNKNOWN')}
+          detail={compactCode(item.settlementReason ?? 'Reason unavailable')}
+        />
+      </div>
+
+      {item.contradictionFlags.length > 0 ? (
+        <div className="mt-4 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-800">Flags and contradictions</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {item.contradictionFlags.map((flag) => (
+              <span key={flag} className="rounded-full border border-amber-200 bg-white px-2.5 py-1 text-xs font-medium text-amber-900">
+                {humanizeFlag(flag)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-[18px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          No identity, archive, score-direction, coverage, or persisted evidence contradiction was detected.
+        </div>
+      )}
+    </article>
+  )
+}
+
+function ForensicDatum({
+  label,
+  value,
+  detail,
+  warning = false,
+}: {
+  label: string
+  value: string
+  detail: string
+  warning?: boolean
+}) {
+  return (
+    <div className={cn(
+      'rounded-[18px] border px-3 py-3',
+      warning ? 'border-amber-200 bg-amber-50' : 'border-[var(--line)] bg-[rgba(255,255,255,0.68)]',
+    )}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--ink-muted)]">{label}</p>
+      <p className="mt-2 truncate text-sm font-semibold text-[var(--ink-strong)]" title={value}>{value}</p>
+      <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">{detail}</p>
+    </div>
   )
 }
 
@@ -845,6 +1166,27 @@ function summarizePage(data: ScoreTruthReviewQueueResponse | null) {
     reviewed: items.filter((item) => item.reviewStatus !== 'OPEN').length,
     oldest,
   }
+}
+
+function compactCode(value: string) {
+  return value
+    .replace(/^SETTLED_FROM_/, '')
+    .replaceAll('_', ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function humanizeFlag(value: string) {
+  const labels: Record<string, string> = {
+    ARCHIVE_MATCH_NOT_IN_RECENT_COMPLETED: 'Archive match absent from recent completed ledger',
+    ARCHIVE_WINNER_CONFLICTS_LATE_SCORE_DIRECTION: 'Archive winner conflicts with late score direction',
+    MULTIPLE_SAME_DAY_CANDIDATES: 'Multiple same-day matchup candidates',
+    SCORE_EVIDENCE_CONTRADICTORY: 'Score evidence was contradictory',
+    HIGH_SETTLEMENT_AMBIGUITY: 'High settlement ambiguity',
+    INCOMPLETE_EVIDENCE_COVERAGE: 'Evidence coverage was incomplete',
+    WINNER_OUTSIDE_LOCKED_PLAYER_SET: 'Winner fell outside the locked player set',
+  }
+  return labels[value] ?? compactCode(value.replace(/^EVIDENCE_/, 'Evidence '))
 }
 
 function asObject(value: JsonValue | null | undefined): Record<string, JsonValue> | null {

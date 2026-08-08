@@ -14,8 +14,13 @@
 - Targeted completion can settle from one identity-locked high-confidence feed, while model calibration still requires independent agreeing support.
 - Score-backed, targeted, heuristic, official, database, and void paths are reported as exclusive integrity categories.
 - The active v3 bettor and admin surfaces expose score-evidence strength, settlement trust, and score-backed closure share.
+- Phase 3 is now implemented in code.
+- `GET /api/score-truth/settlement-review` provides a paged forensic explanation for every completed paper settlement, with an optional suspicious-only filter.
+- Each explanation normalizes the selected archive match/date, player-set confidence, feed-identity match, archive confidence, late-score direction, score-evidence strength, coverage, ambiguity, trust band, and persisted contradiction kinds.
+- Automatic flags identify archive results absent from the recent completed ledger, archived winners that conflict with the late score direction, and same-player same-day candidate collisions.
+- The v3 Settlement Review page combines the automatic-settlement forensic ledger with the existing human review queue; the retained Operations UI exposes the same evidence in a compact scan table.
 - Flyway migrations `V20260729001` and `V20260729002` preserve the Phase 1 and Phase 2 evidence fields on upgrade.
-- Verification on 2026-07-29: 813 backend tests passed; both `web-v3` and legacy `web` production builds passed.
+- Verification on 2026-08-07: 816 backend tests passed; both `web-v3` and legacy `web` production builds passed; the legacy frontend lint check passed; and the v3 Settlement Review route passed a local browser layout/console inspection.
 
 ## Purpose
 
