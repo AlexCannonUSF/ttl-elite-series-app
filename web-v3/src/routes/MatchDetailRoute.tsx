@@ -20,7 +20,12 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveBoard, fetchMatchTimeline, fetchMatchupAnalysis } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
-import { calculateBookMargin } from '@/features/live-studio/marketMath'
+import {
+  calculateBookMargin,
+  calculateModelPriceAtBookMargin,
+  calculateNoVigMarketProbability,
+  probabilityToAmericanOdds,
+} from '@/features/live-studio/marketMath'
 import type {
   LiveOddsRecommendation,
   MatchupAnalysis,
@@ -667,6 +672,9 @@ function MarketTab({
           </Badge>
           <CardTitle>{row.eventName}</CardTitle>
           <CardDescription>{row.rationale || 'No market rationale returned for this row yet.'}</CardDescription>
+          <CardDescription>
+            Our fair price is no-vig. “Our @ HR hold” uses model probability × (1 + current Hard Rock hold) for a proportional retail-price comparison; executable edge always uses the actual offered price.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
           {error ? <InlineAlert>{error}</InlineAlert> : null}
@@ -683,11 +691,13 @@ function MarketTab({
               <thead>
                 <tr className="text-left text-xs uppercase tracking-[0.2em] text-[var(--ink-muted)]">
                   <th className="px-3 pb-1 font-semibold">Side</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Odds</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Break-even</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Model</th>
+                  <th className="px-3 pb-1 text-right font-semibold">HR offered</th>
+                  <th className="px-3 pb-1 text-right font-semibold">HR no-vig</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Offered BE</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Our model</th>
                   <th className="px-3 pb-1 text-right font-semibold">Bet edge</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Fair</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Our fair · 0%</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Our @ HR hold</th>
                 </tr>
               </thead>
               <tbody>
@@ -695,6 +705,7 @@ function MarketTab({
                   edge={row.edgePlayer1}
                   fairOdds={row.modelFairAmericanOddsPlayer1}
                   implied={row.impliedProbabilityPlayer1}
+                  margin={bookMargin}
                   model={row.modelProbabilityPlayer1}
                   odds={row.americanOddsPlayer1}
                   selected={row.suggestedSide === row.player1Name}
@@ -704,6 +715,7 @@ function MarketTab({
                   edge={row.edgePlayer2}
                   fairOdds={row.modelFairAmericanOddsPlayer2}
                   implied={row.impliedProbabilityPlayer2}
+                  margin={bookMargin}
                   model={row.modelProbabilityPlayer2}
                   odds={row.americanOddsPlayer2}
                   selected={row.suggestedSide === row.player2Name}
@@ -739,6 +751,7 @@ function MarketSideRow({
   edge,
   fairOdds,
   implied,
+  margin,
   model,
   odds,
   selected,
@@ -747,11 +760,16 @@ function MarketSideRow({
   edge: number | null
   fairOdds: number | null
   implied: number
+  margin: number | null
   model: number | null
   odds: number
   selected: boolean
   side: string
 }) {
+  const noVigMarketProbability = calculateNoVigMarketProbability(implied, margin)
+  const noVigMarketOdds = probabilityToAmericanOdds(noVigMarketProbability)
+  const modelAtBookMargin = calculateModelPriceAtBookMargin(model, margin)
+
   return (
     <tr className={cn('bg-[rgba(255,255,255,0.76)] text-sm', selected && 'bg-[rgba(236,253,245,0.9)]')}>
       <td className="rounded-l-[18px] px-3 py-4 font-semibold text-[var(--ink-strong)]">
@@ -761,12 +779,14 @@ function MarketSideRow({
         </div>
       </td>
       <td className="px-3 py-4 text-right font-mono">{formatAmerican(odds)}</td>
+      <td className="px-3 py-4 text-right font-mono">{formatAmerican(noVigMarketOdds)}</td>
       <td className="px-3 py-4 text-right">{formatPct(implied)}</td>
       <td className="px-3 py-4 text-right">{formatPct(model)}</td>
       <td className={cn('px-3 py-4 text-right font-mono', (edge ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
         {formatSignedPct(edge)}
       </td>
-      <td className="rounded-r-[18px] px-3 py-4 text-right font-mono">{formatAmerican(fairOdds)}</td>
+      <td className="px-3 py-4 text-right font-mono">{formatAmerican(fairOdds)}</td>
+      <td className="rounded-r-[18px] px-3 py-4 text-right font-mono">{formatAmerican(modelAtBookMargin)}</td>
     </tr>
   )
 }
@@ -1227,7 +1247,8 @@ function formatSignedPct(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) {
     return 'N/A'
   }
-  const pct = value * 100
+  const rawPct = value * 100
+  const pct = Math.abs(rawPct) < 0.005 ? 0 : rawPct
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
 }
 

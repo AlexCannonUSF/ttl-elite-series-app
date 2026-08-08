@@ -210,7 +210,9 @@ class OddsValueEngineServiceTests {
         assertTrue(row.edgePlayer1() < 0.0);
         assertTrue(row.suggestedEdge() < 0.0);
         assertFalse(row.recommended());
-        assertTrue(row.rationale().contains("offered Hard Rock break-even price"));
+        assertTrue(row.rationale().contains("Fair odds are no-vig"));
+        assertTrue(row.rationale().contains("actual offered Hard Rock break-even probability"));
+        assertTrue(row.rationale().contains("margin is already embedded in the comparison"));
     }
 
     @Test

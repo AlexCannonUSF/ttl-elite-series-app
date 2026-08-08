@@ -26,7 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveBoard, fetchLiveSession, fetchMatchupAnalysis, syncLiveSession } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
-import { calculateBookMargin } from '@/features/live-studio/marketMath'
+import { calculateBookMargin, calculateModelPriceAtBookMargin } from '@/features/live-studio/marketMath'
 import { SessionRibbon } from '@/features/live-studio/SessionRibbon'
 import type {
   LiveBoardHistoryPoint,
@@ -281,7 +281,7 @@ export function LiveBoardRoute() {
                 {diagnostics.liveRows} live now
               </span>
               <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-200">
-                Hard Rock + TTLElite fair
+                Hard Rock + no-vig fair + margin match
               </span>
             </div>
             <h2 className="mt-5 max-w-3xl text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
@@ -289,7 +289,7 @@ export function LiveBoardRoute() {
             </h2>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
               Live matches stay first, then the schedule runs chronologically. Every market shows the price you can take,
-              the price our model believes is fair, and the evidence that makes the difference credible—or says to pass.
+              our no-vig fair price, the same model price carrying Hard Rock's current hold, and the evidence that makes the difference credible—or says to pass.
             </p>
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -431,7 +431,9 @@ function MarketWatchCard({
   const sideP2 = row.suggestedSide === row.player2Name
   const suggestedBook = sideP1 ? row.americanOddsPlayer1 : sideP2 ? row.americanOddsPlayer2 : null
   const suggestedFair = sideP1 ? row.modelFairAmericanOddsPlayer1 : sideP2 ? row.modelFairAmericanOddsPlayer2 : null
+  const suggestedModelProbability = sideP1 ? row.modelProbabilityPlayer1 : sideP2 ? row.modelProbabilityPlayer2 : null
   const bookMargin = calculateBookMargin(row.decimalOddsPlayer1, row.decimalOddsPlayer2)
+  const suggestedAtBookMargin = calculateModelPriceAtBookMargin(suggestedModelProbability, bookMargin)
 
   return (
     <button
@@ -484,19 +486,30 @@ function MarketWatchCard({
           <p className="text-[9px] font-semibold uppercase tracking-[0.15em] text-[var(--ink-muted)]">{row.recommended ? 'Model lean' : 'Model status'}</p>
           <p className="mt-1 truncate text-xs font-bold text-[var(--ink-strong)]">{row.suggestedSide ?? 'Pass / watch'}</p>
         </div>
-        <CompactPrice label="Hard Rock" value={formatAmerican(suggestedBook)} />
-        <CompactPrice label="Our fair" value={formatAmerican(suggestedFair)} />
-        <CompactPrice label="Bet edge" value={formatSignedPct(row.suggestedEdge)} accent={(row.suggestedEdge ?? 0) > 0} />
+        <CompactPrice label="Hard Rock" value={formatAmerican(suggestedBook)} detail={`${formatPct(bookMargin)} hold`} />
+        <CompactPrice label="Our fair · 0%" value={formatAmerican(suggestedFair)} detail={`${formatAmerican(suggestedAtBookMargin)} @ HR hold`} />
+        <CompactPrice label="Bet edge" value={formatSignedPct(row.suggestedEdge)} detail="Model − offered" accent={(row.suggestedEdge ?? 0) > 0} />
       </div>
     </button>
   )
 }
 
-function CompactPrice({ accent = false, label, value }: { accent?: boolean; label: string; value: string }) {
+function CompactPrice({
+  accent = false,
+  detail,
+  label,
+  value,
+}: {
+  accent?: boolean
+  detail?: string
+  label: string
+  value: string
+}) {
   return (
     <div className="text-right">
       <p className="text-[8px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">{label}</p>
       <p className={cn('mt-1 font-mono text-xs font-bold', accent ? 'text-emerald-700' : 'text-[var(--ink-strong)]')}>{value}</p>
+      {detail ? <p className="mt-0.5 truncate text-[8px] text-[var(--ink-muted)]">{detail}</p> : null}
     </div>
   )
 }
@@ -658,7 +671,8 @@ function formatSignedPct(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) {
     return 'N/A'
   }
-  const pct = value * 100
+  const rawPct = value * 100
+  const pct = Math.abs(rawPct) < 0.005 ? 0 : rawPct
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
 }
 

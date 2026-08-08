@@ -731,7 +731,7 @@ public class OddsValueEngineService {
                     rationale += " Recommendation paused: no candidate has passed the independent promotion gates.";
                 }
                 rationale += String.format(
-                        " Executable edge is measured against the offered Hard Rock break-even price and includes its %.2f%% two-way margin.",
+                        " Fair odds are no-vig. Executable edge equals model probability minus the actual offered Hard Rock break-even probability, so its %.2f%% two-way margin is already embedded in the comparison.",
                         bookMargin * 100.0
                 );
                 if (odds.isLive()) {

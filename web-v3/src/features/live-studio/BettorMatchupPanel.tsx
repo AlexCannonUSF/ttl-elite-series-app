@@ -21,7 +21,12 @@ import type {
   MatchupForm,
   PaperTradeBet,
 } from '@/features/live-studio/types'
-import { calculateBookMargin } from '@/features/live-studio/marketMath'
+import {
+  calculateBookMargin,
+  calculateModelPriceAtBookMargin,
+  calculateNoVigMarketProbability,
+  probabilityToAmericanOdds,
+} from '@/features/live-studio/marketMath'
 import { cn } from '@/lib/utils'
 
 export function BettorMatchupPanel({
@@ -92,10 +97,10 @@ export function BettorMatchupPanel({
               <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--ink-muted)]" id="price-board-heading">
                 Price board
               </p>
-              <h3 className="mt-1 text-lg font-semibold text-[var(--ink-strong)]">Hard Rock vs. TTLElite fair</h3>
+              <h3 className="mt-1 text-lg font-semibold text-[var(--ink-strong)]">Hard Rock vs. our price</h3>
             </div>
             <span className="text-right text-xs text-[var(--ink-muted)]">
-              Hard Rock margin {formatPct(bookMargin)}<br />Edge includes the live price
+              Hard Rock hold {formatPct(bookMargin)}<br />Our @ HR hold = model × (1 + hold)<br />Edge = model − offered break-even
             </span>
           </div>
 
@@ -105,6 +110,7 @@ export function BettorMatchupPanel({
               edge={row.edgePlayer1}
               fairOdds={row.modelFairAmericanOddsPlayer1}
               implied={row.impliedProbabilityPlayer1}
+              margin={bookMargin}
               model={row.modelProbabilityPlayer1}
               movement={decimalMovement(firstPrice?.player1Odds, lastPrice?.player1Odds)}
               name={row.player1Name}
@@ -115,6 +121,7 @@ export function BettorMatchupPanel({
               edge={row.edgePlayer2}
               fairOdds={row.modelFairAmericanOddsPlayer2}
               implied={row.impliedProbabilityPlayer2}
+              margin={bookMargin}
               model={row.modelProbabilityPlayer2}
               movement={decimalMovement(firstPrice?.player2Odds, lastPrice?.player2Odds)}
               name={row.player2Name}
@@ -245,6 +252,7 @@ function MarketSide({
   edge,
   fairOdds,
   implied,
+  margin,
   model,
   movement,
   name,
@@ -254,11 +262,19 @@ function MarketSide({
   edge: number | null
   fairOdds: number | null
   implied: number
+  margin: number | null
   model: number | null
   movement: number | null
   name: string
   selected: boolean
 }) {
+  const noVigMarketProbability = calculateNoVigMarketProbability(implied, margin)
+  const noVigMarketOdds = probabilityToAmericanOdds(noVigMarketProbability)
+  const modelAtBookMargin = calculateModelPriceAtBookMargin(model, margin)
+  const marketViewGap = model == null || noVigMarketProbability == null
+    ? null
+    : model - noVigMarketProbability
+
   return (
     <div className={cn(
       'rounded-[20px] border bg-[rgba(255,255,255,0.72)] p-4',
@@ -271,7 +287,7 @@ function MarketSide({
             {selected ? <Badge variant="accent">Model side</Badge> : null}
           </div>
           <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            Break-even at Hard Rock {formatPct(implied)} · our model {formatPct(model)}
+            Offered break-even {formatPct(implied)} · HR no-vig view {formatPct(noVigMarketProbability)} · our model {formatPct(model)}
           </p>
         </div>
         <span className={cn(
@@ -284,11 +300,16 @@ function MarketSide({
 
       <ValueRail book={implied} model={model} />
 
-      <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Price label="Hard Rock live" value={formatAmerican(bookOdds)} />
-        <ArrowRight aria-hidden="true" className="size-4 text-[var(--ink-muted)]" />
-        <Price align="right" label="TTLElite fair" value={formatAmerican(fairOdds)} />
+        <Price label="HR no-vig" value={formatAmerican(noVigMarketOdds)} />
+        <Price label="Our fair · 0% vig" value={formatAmerican(fairOdds)} />
+        <Price label={`Our @ HR ${formatPct(margin)} hold`} value={formatAmerican(modelAtBookMargin)} />
       </div>
+
+      <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">
+        Market-view gap {formatSignedPct(marketViewGap)} · executable edge {formatSignedPct(edge)} against the actual Hard Rock offer.
+      </p>
 
       {movement != null ? (
         <p className="mt-2 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
@@ -506,7 +527,8 @@ function formatPct(value: number | null | undefined) {
 
 function formatSignedPct(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return 'N/A'
-  const pct = value * 100
+  const rawPct = value * 100
+  const pct = Math.abs(rawPct) < 0.05 ? 0 : rawPct
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
 }
 
