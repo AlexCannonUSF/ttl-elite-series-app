@@ -67,7 +67,7 @@ class ClvBaselineSqlTests {
                     ('ev-100', 'P2', 0.540000, 'CLOSED', DATEADD('MINUTE', -35, CURRENT_TIMESTAMP))
                     """);
 
-            String sql = Files.readString(Path.of("/Users/alexcannon/Downloads/TTLEliteSeries/infra/sql/clv_baseline.sql"));
+            String sql = Files.readString(Path.of("infra", "sql", "clv_baseline.sql"));
             try (ResultSet rs = statement.executeQuery(sql)) {
                 assertTrue(rs.next());
                 assertEquals(1L, rs.getLong("bets_in_window"));

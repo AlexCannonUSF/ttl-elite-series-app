@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="/Users/alexcannon/Downloads/TTLEliteSeries"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WEB_DIR="$ROOT_DIR/web"
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 

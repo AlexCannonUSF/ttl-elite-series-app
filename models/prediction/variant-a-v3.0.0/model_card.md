@@ -55,4 +55,3 @@ early_stopping_rounds: 50
 - Variant A intentionally excludes §3.6 market features so the model competes against the market rather than copying it; do not enable the `with-market` variant for edge detection.
 - Any material regression on the gates above blocks promotion. The promotion record (`promotion_record.yaml`) is committed alongside the artefact when promotion is approved.
 - A model whose feature schema hash differs from the live `FeatureBuilder` will refuse to score — §3.10 hard-error contract.
-

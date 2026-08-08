@@ -28,6 +28,7 @@ import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -59,9 +60,10 @@ class SettlementShadowAuditServiceTests {
 
         PaperTradeBet bet = bet(101L);
         SettlementEvidence evidence = evidence(101L, Instant.parse("2026-04-19T20:00:00Z"));
+        LocalDateTime expectedBundleAsOf = LocalDateTime.ofInstant(evidence.bundleAsOf(), ZoneId.systemDefault());
         Settle settle = new Settle(evidence, 10L, SettlementReason.SCORE_BACKED_FINISHED, 0.91);
 
-        when(evidenceRepository.findFirstByBetIdAndBundleAsOf(101L, LocalDateTime.of(2026, 4, 19, 16, 0)))
+        when(evidenceRepository.findFirstByBetIdAndBundleAsOf(101L, expectedBundleAsOf))
                 .thenReturn(Optional.empty());
         when(evidenceRepository.findByEvidenceFingerprint(any()))
                 .thenReturn(Optional.empty())
@@ -77,7 +79,7 @@ class SettlementShadowAuditServiceTests {
 
         service.recordAttempt(bet, evidence, new HoldOpen(evidence, SettlementReason.MANUAL_REVIEW_AWAITING, "still live"));
 
-        verify(evidenceRepository, times(1)).findFirstByBetIdAndBundleAsOf(101L, LocalDateTime.of(2026, 4, 19, 16, 0));
+        verify(evidenceRepository, times(1)).findFirstByBetIdAndBundleAsOf(101L, expectedBundleAsOf);
         verify(evidenceRepository, times(1)).save(any(SettlementEvidenceRecord.class));
         verify(contradictionRepository, times(1)).saveAll(anyList());
         verify(auditRepository, times(2)).save(any(SettlementAuditRecord.class));

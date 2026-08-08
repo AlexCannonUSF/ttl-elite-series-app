@@ -91,6 +91,7 @@ public class WebConfig implements WebMvcConfigurer {
 
     static String asFileLocation(String rawPath) {
         Path path = Path.of(rawPath).toAbsolutePath().normalize();
-        return path.toUri().toString();
+        String uri = path.toUri().toString();
+        return uri.endsWith("/") ? uri : uri + "/";
     }
 }

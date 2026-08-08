@@ -1,13 +1,13 @@
 # Phase 07 Performance Audit
-Generated: 2026-08-08T04:17:16.998Z
+Generated: 2026-08-08T04:30:05.281Z
 ## Budgets vs measured
 | Metric | Budget | Measured | Status |
 | --- | ---: | ---: | :---: |
 | Initial JS bundle (gz) | 450 KB | 94.51 KB (21.0% of budget) | PASS |
 | Initial CSS bundle (gz) | (no spec budget) | 10.96 KB | INFO |
-| LCP (median of 3) | 2000 ms | 136 ms | PASS |
-| TTI proxy (domInteractive, median of 3) | 1500 ms | 53 ms | PASS |
-| FCP (median of 3) | (informational) | 136 ms | INFO |
+| LCP (median of 3) | 2000 ms | 148 ms | PASS |
+| TTI proxy (domInteractive, median of 3) | 1500 ms | 59 ms | PASS |
+| FCP (median of 3) | (informational) | 148 ms | INFO |
 ## Initial-payload composition
 | Asset | bytes | gz bytes |
 | --- | ---: | ---: |

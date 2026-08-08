@@ -51,7 +51,7 @@ REQUEST_MAPPING_ARRAY_RE = re.compile(r'@RequestMapping\((.+)\)')
 
 def repo_link(path: Path) -> str:
     rel = path.relative_to(ROOT).as_posix()
-    return f"[`/Users/alexcannon/Downloads/TTLEliteSeries/{rel}`]({rel})"
+    return f"[`{(ROOT / rel).as_posix()}`]({rel})"
 
 
 def parse_java_file(path: Path) -> dict:
