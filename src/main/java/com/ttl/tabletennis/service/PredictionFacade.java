@@ -47,6 +47,7 @@ public class PredictionFacade {
     private final PredictionModelService predictionModelService;
     private final MeterRegistry meterRegistry;
     private final Optional<PredictionShadowService> shadowService;
+    private SnapshotIndexCache snapshotIndexCache;
 
     @Autowired
     public PredictionFacade(PredictionModelService predictionModelService,
@@ -59,6 +60,11 @@ public class PredictionFacade {
 
     public PredictionFacade(PredictionModelService predictionModelService, MeterRegistry meterRegistry) {
         this(predictionModelService, meterRegistry, Optional.empty());
+    }
+
+    @Autowired(required = false)
+    void setSnapshotIndexCache(SnapshotIndexCache snapshotIndexCache) {
+        this.snapshotIndexCache = snapshotIndexCache;
     }
 
     public PredictionModelService.PredictionSnapshot predict(Long player1Id,
@@ -79,6 +85,7 @@ public class PredictionFacade {
             }
             return cached.snapshot();
         }
+        awaitRatingIndexIfNeeded();
         PredictionModelService.PredictionSnapshot snapshot = record("predict",
                 () -> predictionModelService.predict(player1Id, player2Id, asOfDate, requestedFamily));
         if (snapshot != null) {
@@ -96,6 +103,17 @@ public class PredictionFacade {
         }
         fireShadow(player1Id, player2Id, asOfDate, snapshot);
         return snapshot;
+    }
+
+    private void awaitRatingIndexIfNeeded() {
+        if (snapshotIndexCache == null
+                || !snapshotIndexCache.isEnabled()
+                || snapshotIndexCache.isWarmed()) {
+            return;
+        }
+        if (!snapshotIndexCache.awaitWarmed(30_000L)) {
+            throw new IllegalStateException("Rating snapshot index is still warming; retry shortly");
+        }
     }
 
     /** Drop expired entries; keep newest if everything is still fresh. */

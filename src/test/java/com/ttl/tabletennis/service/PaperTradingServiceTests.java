@@ -251,6 +251,108 @@ class PaperTradingServiceTests {
     }
 
     @Test
+    void visibleUnpickedMatchBuildsTimelineWithoutDuplicateUnchangedRows() {
+        Player alpha = playerRepository.save(new Player("Watch", "Alpha"));
+        Player beta = playerRepository.save(new Player("Watch", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(10);
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto upcoming = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=watch-1",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Watch Alpha vs Watch Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.80,
+                2.00,
+                -125,
+                100,
+                0.5556,
+                0.50,
+                0.54,
+                0.46,
+                -0.0156,
+                -0.04,
+                -117,
+                117,
+                alpha.getName(),
+                -0.0156,
+                -117,
+                0.35,
+                0.70,
+                false,
+                "WATCH",
+                "Below executable-edge threshold",
+                "Recent Form Delta",
+                0.10,
+                eventKey,
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        LiveOddsRecommendationDto live = new LiveOddsRecommendationDto(
+                upcoming.source(),
+                upcoming.strategy(),
+                upcoming.modelVersion(),
+                upcoming.eventName(),
+                upcoming.competitionName(),
+                true,
+                upcoming.startTimeIso(),
+                "0-0 (3-2)",
+                "LIVE_EARLY",
+                upcoming.player1Id(),
+                upcoming.player1Name(),
+                upcoming.player2Id(),
+                upcoming.player2Name(),
+                upcoming.decimalOddsPlayer1(),
+                upcoming.decimalOddsPlayer2(),
+                upcoming.americanOddsPlayer1(),
+                upcoming.americanOddsPlayer2(),
+                upcoming.impliedProbabilityPlayer1(),
+                upcoming.impliedProbabilityPlayer2(),
+                upcoming.modelProbabilityPlayer1(),
+                upcoming.modelProbabilityPlayer2(),
+                upcoming.edgePlayer1(),
+                upcoming.edgePlayer2(),
+                upcoming.modelFairAmericanOddsPlayer1(),
+                upcoming.modelFairAmericanOddsPlayer2(),
+                upcoming.suggestedSide(),
+                upcoming.suggestedEdge(),
+                upcoming.suggestedFairAmericanOdds(),
+                upcoming.confidenceLow(),
+                upcoming.confidenceHigh(),
+                false,
+                "WATCH",
+                upcoming.rationale(),
+                upcoming.topTrigger(),
+                upcoming.topTriggerContribution(),
+                eventKey,
+                upcoming.suggestedDedupeKey()
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(upcoming), List.of(upcoming), List.of(live));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        List<TrackedMatchObservationDto> timeline = paperTradingService.getMatchTimeline(eventKey);
+        assertEquals(2, timeline.size());
+        assertNull(timeline.get(0).betId());
+        assertEquals("UPCOMING", timeline.get(0).matchPhase());
+        assertEquals("0-0 (3-2)", timeline.get(1).liveScore());
+        assertEquals("LIVE_EARLY", timeline.get(1).matchPhase());
+    }
+
+    @Test
     void syncSkipsUnsafeLongshotOdds() {
         Player alpha = playerRepository.save(new Player("Long", "ShotA"));
         Player beta = playerRepository.save(new Player("Long", "ShotB"));

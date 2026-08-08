@@ -256,6 +256,7 @@ export function MatchDetailRoute() {
     : evidence
       ? `Tracked event ${evidence.evidence.trackedEventId}`
       : 'Evidence, prediction, history, and market state in one v3 route.'
+  const modelRead = currentModelRead(marketRow, prediction)
 
   return (
     <V3Shell
@@ -306,9 +307,13 @@ export function MatchDetailRoute() {
         </CardHeader>
         <CardContent className="grid gap-4">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricTile icon={FileSearch2} label="Evidence" value={evidence ? evidence.evidence.coverageState : 'N/A'} />
-            <MetricTile icon={Brain} label="Prediction" value={prediction ? formatPct(prediction.pTop.value) : 'N/A'} />
-            <MetricTile icon={Activity} label="History Rows" value={String(timeline.length)} />
+            <MetricTile
+              icon={FileSearch2}
+              label="Settlement evidence"
+              value={evidence ? evidence.evidence.coverageState : 'Not opened'}
+            />
+            <MetricTile icon={Brain} label={modelRead.label} value={formatPct(modelRead.value)} />
+            <MetricTile icon={Activity} label="Timeline points" value={String(timeline.length)} />
             <MetricTile icon={TrendingUp} label="Executable Edge" value={formatSignedPct(marketRow?.suggestedEdge)} />
           </div>
 
@@ -496,7 +501,10 @@ function PredictionTab({
           <Badge variant="accent" className="w-fit">
             Probability
           </Badge>
-          <CardTitle>Model p_top with conformal interval</CardTitle>
+          <CardTitle>Pre-match model with conformal interval</CardTitle>
+          <CardDescription>
+            This core matchup estimate excludes the live score. Use the live model above for the current in-match state.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {error ? <InlineAlert>{error}</InlineAlert> : null}
@@ -771,7 +779,7 @@ function ProbabilityPanel({ panel }: { panel: PredictionPanelResponse }) {
         <p className="font-serif text-5xl font-semibold tracking-[-0.05em] text-[var(--ink-strong)]">
           {formatPct(panel.pTop.value)}
         </p>
-        <p className="mb-2 text-sm text-[var(--ink-muted)]">p_top | p_bot {formatPct(panel.pBot.value)}</p>
+        <p className="mb-2 text-sm text-[var(--ink-muted)]">Pre-match p_top | p_bot {formatPct(panel.pBot.value)}</p>
       </div>
       <IntervalBar legend="Model interval" low={panel.pTop.intervalLow} high={panel.pTop.intervalHigh} point={panel.pTop.value} />
       <IntervalBar legend={`Conformal ${panel.conformal.method}`} low={panel.conformal.intervalLow} high={panel.conformal.intervalHigh} point={panel.pTop.value} />
@@ -1173,6 +1181,21 @@ function normalizeIdentity(value: string | null | undefined) {
 function normalizeKey(value: string | null | undefined) {
   const normalized = value?.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   return normalized || 'na'
+}
+
+function currentModelRead(
+  row: LiveOddsRecommendation | null,
+  prediction: PredictionPanelResponse | null,
+) {
+  if (row) {
+    if (row.suggestedSide === row.player1Name) {
+      return { label: `Live model · ${row.player1Name}`, value: row.modelProbabilityPlayer1 }
+    }
+    if (row.suggestedSide === row.player2Name) {
+      return { label: `Live model · ${row.player2Name}`, value: row.modelProbabilityPlayer2 }
+    }
+  }
+  return { label: 'Pregame model · p_top', value: prediction?.pTop.value ?? null }
 }
 
 function asObject(value: JsonValue | null | undefined): Record<string, JsonValue> | null {

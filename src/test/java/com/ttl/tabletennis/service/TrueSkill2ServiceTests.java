@@ -41,7 +41,11 @@ class TrueSkill2ServiceTests {
         Player p1 = playerRepository.save(new Player("Top", "Seed"));
         Player p2 = playerRepository.save(new Player("Chaser", "Two"));
 
-        LocalDate start = LocalDate.now().minusDays(6);
+        // Use a fixture-owned, valid historical window. The full Spring suite
+        // intentionally reuses one in-memory context, so LocalDate.now()-based
+        // fixtures can overlap matches written by another test class.
+        LocalDate start = LocalDate.of(1995, 1, 10);
+        long expectedPlayers = playerRepository.count();
         saveMatch("ts2-1", p1, p2, "3:1", start);
         saveMatch("ts2-2", p1, p2, "3:0", start.plusDays(1));
         saveMatch("ts2-3", p1, p2, "1:3", start.plusDays(2));
@@ -52,10 +56,10 @@ class TrueSkill2ServiceTests {
         assertEquals(start, rebuilt.fromDate());
         assertEquals(start.plusDays(3), rebuilt.toDate());
         assertEquals(4, rebuilt.daysProcessed());
-        assertEquals(2, rebuilt.playersProcessed());
+        assertEquals(expectedPlayers, rebuilt.playersProcessed());
         assertEquals(4, rebuilt.matchesProcessed());
-        assertEquals(8, rebuilt.snapshotsWritten());
-        assertEquals(8, playerRatingTs2Repository.count());
+        assertEquals(expectedPlayers * 4, rebuilt.snapshotsWritten());
+        assertEquals(expectedPlayers * 4, playerRatingTs2Repository.count());
 
         TrueSkill2RatingDto top = trueSkill2Service.ratingForPlayer(p1.getId(), start.plusDays(3));
         TrueSkill2RatingDto chaser = trueSkill2Service.ratingForPlayer(p2.getId(), start.plusDays(3));

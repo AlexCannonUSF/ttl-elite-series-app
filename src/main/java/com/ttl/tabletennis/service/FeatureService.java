@@ -128,6 +128,12 @@ public class FeatureService {
         if (player1Id.equals(player2Id)) {
             throw new IllegalArgumentException("Select two different players");
         }
+        if (snapshotIndexCache != null
+                && snapshotIndexCache.isEnabled()
+                && !snapshotIndexCache.isWarmed()
+                && !snapshotIndexCache.awaitWarmed(30_000L)) {
+            throw new IllegalStateException("Rating snapshot index is still warming; retry shortly");
+        }
 
         LocalDate asOf = asOfDate == null ? LocalDate.now() : asOfDate;
         PlayerFeature p1 = getPlayerFeature(player1Id, asOf);

@@ -7,6 +7,7 @@ import com.ttl.tabletennis.dto.MatchupAnalysisDto;
 import com.ttl.tabletennis.dto.MatchupFeatureVectorDto;
 import com.ttl.tabletennis.mapper.PlayerMapper;
 import com.ttl.tabletennis.model.AdvancedPlayerStats;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,6 +22,7 @@ public class MatchupAnalysisService {
     private final AdvancedStatisticsService advancedStatisticsService;
     private final FeatureService featureService;
     private final PredictionFacade predictionFacade;
+    private SnapshotIndexCache snapshotIndexCache;
 
     public MatchupAnalysisService(PlayerService playerService,
                                   StatisticsService statisticsService,
@@ -34,6 +36,11 @@ public class MatchupAnalysisService {
         this.predictionFacade = predictionFacade;
     }
 
+    @Autowired(required = false)
+    void setSnapshotIndexCache(SnapshotIndexCache snapshotIndexCache) {
+        this.snapshotIndexCache = snapshotIndexCache;
+    }
+
     public MatchupAnalysisDto analyze(Long player1Id, Long player2Id) {
         return analyze(player1Id, player2Id, null);
     }
@@ -41,6 +48,12 @@ public class MatchupAnalysisService {
     public MatchupAnalysisDto analyze(Long player1Id, Long player2Id, String modelFamily) {
         if (player1Id.equals(player2Id)) {
             throw new IllegalArgumentException("Select two different players");
+        }
+        if (snapshotIndexCache != null
+                && snapshotIndexCache.isEnabled()
+                && !snapshotIndexCache.isWarmed()
+                && !snapshotIndexCache.awaitWarmed(30_000L)) {
+            throw new IllegalStateException("Rating snapshot index is still warming; retry shortly");
         }
 
         Player player1 = playerService.getPlayerOrThrow(player1Id);

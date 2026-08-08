@@ -14,11 +14,14 @@ import com.ttl.tabletennis.prediction.live.TableTennisLiveProbability;
 import com.ttl.tabletennis.repository.OddsQuoteRepository;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.ValueOpportunityRepository;
+import com.ttl.tabletennis.scrape.FeedClient;
+import com.ttl.tabletennis.scrape.HardRockFeedClient;
 import com.ttl.tabletennis.scrape.HardRockOddsScraper;
 import com.ttl.tabletennis.util.CorrelationContext;
 import com.ttl.tabletennis.util.NameUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -104,6 +107,7 @@ public class OddsValueEngineService {
     private final PredictionFacade predictionFacade;
     private final PlayerIdentityService playerIdentityService;
     private final HardRockOddsScraper hardRockOddsScraper;
+    private HardRockFeedClient hardRockFeedClient;
     private final OddsQuoteRepository oddsQuoteRepository;
     private final ValueOpportunityRepository valueOpportunityRepository;
     private final MatchRepository matchRepository;
@@ -144,6 +148,18 @@ public class OddsValueEngineService {
     }
 
     /**
+     * Route production market pulls through the Phase 01 feed adapter so the
+     * admin health surface and Redis shadow stream observe the exact traffic
+     * that powers the live board. Kept as an optional setter so focused unit
+     * tests can continue constructing this service with a mocked legacy
+     * scraper and no Spring context.
+     */
+    @Autowired(required = false)
+    void setHardRockFeedClient(HardRockFeedClient hardRockFeedClient) {
+        this.hardRockFeedClient = hardRockFeedClient;
+    }
+
+    /**
      * Eagerly warm the live-board prediction cache when the application is
      * ready. Without this, the first user request after boot only sees lite
      * rows (player names + odds) while the full predict-per-row compute runs
@@ -177,7 +193,7 @@ public class OddsValueEngineService {
     @Transactional
     public OddsRefreshResultDto refresh(String strategyRaw, String modelFamilyRaw) {
         try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
-            List<MatchOdds> fetched = hardRockOddsScraper.fetch();
+            List<MatchOdds> fetched = pullHardRockMarket("odds-engine-manual-refresh");
             return refreshFromQuotes(strategyRaw, modelFamilyRaw, fetched, "HARD_ROCK");
         }
     }
@@ -806,14 +822,15 @@ public class OddsValueEngineService {
         return out;
     }
 
-    @Transactional(readOnly = true)
     public List<LiveScoreSnapshotDto> liveScoreSnapshots(int limit, boolean includeUnresolved) {
         int take = Math.max(1, Math.min(limit, 1600));
+        // The sportsbook call is remote I/O. Player identity lookups below own
+        // short repository transactions; an outer read transaction would pin a
+        // pool connection for the entire network request.
         List<MatchOdds> fetched = hardRockOddsScraper.fetchScoreboard();
         return toLiveScoreSnapshots(fetched, take, includeUnresolved);
     }
 
-    @Transactional(readOnly = true)
     public List<LiveScoreSnapshotDto> liveScoreSnapshotsForEventIds(Collection<String> externalEventIds,
                                                                     int limit,
                                                                     boolean includeUnresolved) {
@@ -1063,7 +1080,7 @@ public class OddsValueEngineService {
         }
         return scrapeRefreshExecutor.submit(() -> {
             try {
-                List<MatchOdds> fresh = hardRockOddsScraper.fetch();
+                List<MatchOdds> fresh = pullHardRockMarket("odds-engine-live-board");
                 cachedScrape.set(new CachedScrape(
                         fresh == null ? List.of() : List.copyOf(fresh),
                         System.currentTimeMillis()));
@@ -1073,6 +1090,17 @@ public class OddsValueEngineService {
                 scrapeInflight.set(false);
             }
         });
+    }
+
+    private List<MatchOdds> pullHardRockMarket(String correlationId) {
+        HardRockFeedClient feedClient = hardRockFeedClient;
+        if (feedClient == null) {
+            return hardRockOddsScraper.fetch();
+        }
+        return feedClient.pullOnce(FeedClient.PullContext.now(correlationId)).stream()
+                .map(event -> event.payload())
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     private String normalizeStrategy(String strategyRaw) {

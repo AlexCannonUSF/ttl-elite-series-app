@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -28,11 +30,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 4 KB page reads — fast individually, but multiplied by ~30 players and 4
  * rating systems on every live-board recompute, requests took 10+ minutes.
  *
- * <p>This cache bulk-loads every rating-snapshot table into memory once at
- * boot (via {@link ApplicationReadyEvent}), keyed by {@code playerId → list
- * of snapshots sorted ascending by date}. Lookups are a HashMap fetch + a
- * binary search — sub-microsecond. Memory footprint is ~10 MB for the
- * working data set (≈500 players × ≈30 dates × 4 systems × ≈50 bytes).
+ * <p>This cache bulk-loads a bounded set of recent dates from every
+ * rating-snapshot table at boot (via {@link ApplicationReadyEvent}), keyed by
+ * {@code playerId → list of snapshots sorted ascending by date}. This avoids
+ * both a full-table window sort and hundreds of cold random-index probes.
  *
  * <p>The cache is intentionally read-only once warmed. New snapshots
  * written by the rating-rebuild path will not be visible until the next
@@ -45,6 +46,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class SnapshotIndexCache {
 
     private static final Logger log = LoggerFactory.getLogger(SnapshotIndexCache.class);
+    private static final String SYSTEM_ELO = "ELO";
+    private static final String SYSTEM_GLICKO2 = "GLICKO2";
+    private static final int RECENT_DATE_BUCKETS = 20;
 
     /**
      * A rating_snapshot row stripped of JPA overhead — just the fields
@@ -69,18 +73,19 @@ public class SnapshotIndexCache {
     private final Map<Long, List<WlRow>> wlByPlayer = new ConcurrentHashMap<>();
 
     private final AtomicBoolean warmed = new AtomicBoolean(false);
+    private final CountDownLatch initialWarmFinished = new CountDownLatch(1);
 
     /**
-     * Default ON: the loaders now fetch only the LATEST snapshot per
-     * (player_id, rating_system) via a ROW_NUMBER() OVER PARTITION BY query,
-     * so the in-memory footprint is bounded by the player count (~500 × 4
-     * rating systems ≈ 2k rows), not by history depth. Without this cache
+     * Default ON: the loaders fetch the most recent bounded date buckets
+     * through each table's date index, so the in-memory footprint is bounded
+     * by player count and {@link #RECENT_DATE_BUCKETS}, not total history.
+     * Without this cache
      * each live-board recompute issues ~50 random-IO queries per matchup
      * against the multi-GB MVStore and predictions never finish — exactly
      * the "model and edges blank" failure mode.
      * <p>An earlier version of this cache loaded full history and OOMed
-     * the JVM at ~6.5M rows; that's why the flag exists. The latest-row
-     * design is safe to leave enabled.
+     * the JVM at ~6.5M rows; that's why the flag exists. The bounded recent
+     * history design is safe to leave enabled.
      */
     @Value("${ttl.snapshotIndex.enabled:true}")
     private boolean enabled;
@@ -94,23 +99,19 @@ public class SnapshotIndexCache {
      *
      * <p>The warm itself runs on a single-thread background executor so it
      * does <strong>not</strong> block the main thread / Spring Boot startup.
-     * On a multi-GB MVStore the {@code ROW_NUMBER() OVER (PARTITION BY ...)}
-     * scans across {@code player_rating_ts2} + {@code player_rating_wl} can
-     * take up to a minute even when each only returns ~500 rows, because H2
-     * still has to walk every page. Blocking startup on that meant IntelliJ
-     * runs sat at "Started..." for 60–90 seconds; making it async drops
-     * apparent boot time back to ~10s.
+     * The loaders issue bounded recent-date reads through each table's date
+     * index. They still run off the main thread so IntelliJ can expose startup
+     * progress while the OS page cache is cold.
      *
-     * <p>It is safe to leave the cache cold for a short window: every reader
-     * (currently only {@link FeatureService#resolveSnapshotBundle}) checks
-     * {@link #isWarmed()} first and falls back to the JPA repository when it
-     * returns false. Early predictions therefore pay the per-call JPA price;
-     * once the warm finishes they all flip to the fast path.
+     * <p>Readers wait for this one intentional warm before starting a prediction,
+     * preventing concurrent fallback scans from exhausting the connection
+     * pool. Once the warm finishes they all use the fast path.
      */
     @EventListener(ApplicationReadyEvent.class)
     public void warmOnStartup() {
         if (!enabled) {
             log.info("[snapshot-index] disabled via ttl.snapshotIndex.enabled=false");
+            initialWarmFinished.countDown();
             return;
         }
         Thread warmer = new Thread(this::refreshQuietly, "snapshot-index-warmer");
@@ -128,28 +129,58 @@ public class SnapshotIndexCache {
 
     public synchronized void refresh() {
         long start = System.currentTimeMillis();
-        ratingSnapshotsByPlayer.clear();
-        ts2ByPlayer.clear();
-        wlByPlayer.clear();
+        try {
+            ratingSnapshotsByPlayer.clear();
+            ts2ByPlayer.clear();
+            wlByPlayer.clear();
 
-        long ratingRows = loadRatingSnapshots();
-        long ts2Rows = loadTs2();
-        long wlRows = loadWl();
+            long ratingRows = loadRatingSnapshots();
+            long ts2Rows = loadTs2();
+            long wlRows = loadWl();
 
-        warmed.set(true);
-        long elapsed = System.currentTimeMillis() - start;
-        log.info("[snapshot-index] warmed in {} ms — rating_snapshot={} player_rating_ts2={} player_rating_wl={} unique_players(ratings)={} unique_players(ts2)={} unique_players(wl)={}",
-                elapsed,
-                ratingRows,
-                ts2Rows,
-                wlRows,
-                ratingSnapshotsByPlayer.size(),
-                ts2ByPlayer.size(),
-                wlByPlayer.size());
+            warmed.set(true);
+            long elapsed = System.currentTimeMillis() - start;
+            log.info("[snapshot-index] warmed in {} ms — rating_snapshot={} player_rating_ts2={} player_rating_wl={} unique_players(ratings)={} unique_players(ts2)={} unique_players(wl)={}",
+                    elapsed,
+                    ratingRows,
+                    ts2Rows,
+                    wlRows,
+                    ratingSnapshotsByPlayer.size(),
+                    ts2ByPlayer.size(),
+                    wlByPlayer.size());
+        } finally {
+            initialWarmFinished.countDown();
+        }
     }
 
     public boolean isWarmed() {
         return warmed.get();
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * Wait without polling for the initial rating index to become usable.
+     * Callers use this before starting a cold prediction so the application
+     * never launches several multi-million-row fallback scans alongside the
+     * one intentional cache warm.
+     */
+    public boolean awaitWarmed(long timeoutMillis) {
+        if (warmed.get()) {
+            return true;
+        }
+        if (!enabled) {
+            return false;
+        }
+        try {
+            initialWarmFinished.await(Math.max(1L, timeoutMillis), TimeUnit.MILLISECONDS);
+            return warmed.get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     /**
@@ -207,21 +238,18 @@ public class SnapshotIndexCache {
 
     private long loadRatingSnapshots() {
         Map<Long, List<RatingRow>> staging = new HashMap<>();
-        // Load only the LATEST snapshot per (player_id, rating_system). On a
-        // multi-GB MVStore loading every row hammers the OS page cache for
-        // minutes; for the live-board use case we only ever need "most recent
-        // <= today", so one row per group is sufficient. Historical asOf
-        // lookups (asOf before the cached date) return Optional.empty() and
-        // callers fall through to the JPA repository.
-        String sql = "SELECT player_id, snapshot_date, rating_system, rating, rating_deviation, volatility FROM ("
-                + "  SELECT player_id, snapshot_date, rating_system, rating, rating_deviation, volatility,"
-                + "         ROW_NUMBER() OVER (PARTITION BY player_id, rating_system ORDER BY snapshot_date DESC) AS rn"
-                + "    FROM rating_snapshot"
-                + ") WHERE rn = 1";
+        // Keep a bounded recent history rather than window-sorting the whole
+        // table or issuing hundreds of cold random-index probes. H2 can satisfy
+        // DISTINCT snapshot_date from its date index, after which this returns
+        // only a few thousand rows and Java keeps them grouped by player.
+        String sql = "SELECT player_id, snapshot_date, rating_system, rating, rating_deviation, volatility "
+                + "FROM rating_snapshot WHERE rating_system = ? AND snapshot_date IN ("
+                + " SELECT snapshot_date FROM (SELECT DISTINCT snapshot_date FROM rating_snapshot "
+                + " WHERE rating_system = ? ORDER BY snapshot_date DESC LIMIT " + RECENT_DATE_BUCKETS + ")"
+                + ") ORDER BY player_id, snapshot_date";
         try {
-            jdbcTemplate.query(
-                    sql,
-                    rs -> {
+            for (String ratingSystem : List.of(SYSTEM_ELO, SYSTEM_GLICKO2)) {
+                jdbcTemplate.query(sql, rs -> {
                         Long playerId = rs.getLong("player_id");
                         Date d = rs.getDate("snapshot_date");
                         LocalDate snapshotDate = d == null ? null : d.toLocalDate();
@@ -232,7 +260,8 @@ public class SnapshotIndexCache {
                         if (snapshotDate == null || system == null) return;
                         staging.computeIfAbsent(playerId, k -> new ArrayList<>())
                                 .add(new RatingRow(snapshotDate, system, rating, rd, vol));
-                    });
+                    }, ratingSystem, ratingSystem);
+            }
         } catch (Exception ex) {
             log.warn("[snapshot-index] failed to load rating_snapshot: {}", ex.toString());
             return 0;
@@ -249,16 +278,12 @@ public class SnapshotIndexCache {
 
     private long loadTs2() {
         Map<Long, List<Ts2Row>> staging = new HashMap<>();
-        // Latest TS2 snapshot per player (see loadRatingSnapshots for rationale).
-        String sql = "SELECT player_id, snapshot_date, mu, sigma FROM ("
-                + "  SELECT player_id, snapshot_date, mu, sigma,"
-                + "         ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY snapshot_date DESC) AS rn"
-                + "    FROM player_rating_ts2"
-                + ") WHERE rn = 1";
+        String sql = "SELECT player_id, snapshot_date, mu, sigma FROM player_rating_ts2 "
+                + "WHERE snapshot_date IN (SELECT snapshot_date FROM (SELECT DISTINCT snapshot_date "
+                + "FROM player_rating_ts2 ORDER BY snapshot_date DESC LIMIT " + RECENT_DATE_BUCKETS + ")) "
+                + "ORDER BY player_id, snapshot_date";
         try {
-            jdbcTemplate.query(
-                    sql,
-                    rs -> {
+            jdbcTemplate.query(sql, rs -> {
                         Long playerId = rs.getLong("player_id");
                         Date d = rs.getDate("snapshot_date");
                         LocalDate snapshotDate = d == null ? null : d.toLocalDate();
@@ -284,16 +309,12 @@ public class SnapshotIndexCache {
 
     private long loadWl() {
         Map<Long, List<WlRow>> staging = new HashMap<>();
-        // Latest WL snapshot per player (see loadRatingSnapshots for rationale).
-        String sql = "SELECT player_id, snapshot_date, rating, uncertainty FROM ("
-                + "  SELECT player_id, snapshot_date, rating, uncertainty,"
-                + "         ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY snapshot_date DESC) AS rn"
-                + "    FROM player_rating_wl"
-                + ") WHERE rn = 1";
+        String sql = "SELECT player_id, snapshot_date, rating, uncertainty FROM player_rating_wl "
+                + "WHERE snapshot_date IN (SELECT snapshot_date FROM (SELECT DISTINCT snapshot_date "
+                + "FROM player_rating_wl ORDER BY snapshot_date DESC LIMIT " + RECENT_DATE_BUCKETS + ")) "
+                + "ORDER BY player_id, snapshot_date";
         try {
-            jdbcTemplate.query(
-                    sql,
-                    rs -> {
+            jdbcTemplate.query(sql, rs -> {
                         Long playerId = rs.getLong("player_id");
                         Date d = rs.getDate("snapshot_date");
                         LocalDate snapshotDate = d == null ? null : d.toLocalDate();

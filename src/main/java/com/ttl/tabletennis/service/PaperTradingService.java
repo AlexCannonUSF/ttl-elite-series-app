@@ -439,10 +439,15 @@ public class PaperTradingService {
         }
     }
 
-    @Transactional
     public PaperTradingSyncResultDto syncLiveSession(String strategyRaw,
                                                      String modelVersionRaw,
                                                      Integer limit) {
+        // Do not wrap the live scrape/model phase in one database transaction.
+        // A sync can spend tens of seconds waiting on remote score/market data;
+        // holding an H2/Hikari connection for that entire interval starves the
+        // live UI and async ingestion listeners. The in-process guard serializes
+        // syncs, repositories/extracted services own their short transactions,
+        // and ledger reconciliation repairs cached session totals at both ends.
         String requestedStrategy = normalizeStrategy(strategyRaw);
         String requestedModelVersion = StringUtils.hasText(modelVersionRaw)
                 ? modelVersionRaw.trim()
@@ -465,7 +470,7 @@ public class PaperTradingService {
         }
         try {
         try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
-            PaperTradeSession session = sessionLifecycleService.getOrCreateActiveSessionForUpdate();
+            PaperTradeSession session = sessionLifecycleService.getOrCreateActiveSession();
             sessionLedgerReconciler.reconcile(session);
             String strategy = requestedStrategy;
             String modelVersion = requestedModelVersion;
@@ -965,6 +970,14 @@ public class PaperTradingService {
             policyOpenPositions.add(toPolicyOpenPosition(bet, session, stake));
             placed++;
         }
+
+        recordVisibleBoardObservations(
+                session.getId(),
+                rows,
+                existingOpenBets,
+                placedEventKeys,
+                LocalDateTime.now()
+        );
 
         SettlementStats settlementStats = settlementFacade.settleOpenBets(
                 session,
@@ -1896,6 +1909,99 @@ public class PaperTradingService {
         observation.setPlayer1Name(safeText(row.player1Name(), bet.getPlayer1Name()));
         observation.setPlayer2Id(row.player2Id() != null ? row.player2Id() : bet.getPlayer2Id());
         observation.setPlayer2Name(safeText(row.player2Name(), bet.getPlayer2Name()));
+        observation.setLiveScore(score);
+        observation.setMatchPhase(phase);
+        observation.setScoreDetail(StringUtils.hasText(row.scoreDetail()) ? row.scoreDetail().trim() : null);
+        observation.setObservedAt(observedAt == null ? LocalDateTime.now() : observedAt);
+        provisionalScoreOutcomeTracker.annotate(observation);
+        trackedMatchObservationRepository.save(observation);
+    }
+
+    /**
+     * Persist visible board transitions even when no paper bet is attached.
+     * The bettor-facing "Live timeline" is a match timeline, not merely a
+     * wager audit, so live score/phase continuity must remain inspectable for
+     * ordinary watched matches as well. Open bets are excluded here because
+     * their richer identity-locked path records the same transition below.
+     */
+    private void recordVisibleBoardObservations(Long sessionId,
+                                                List<LiveOddsRecommendationDto> rows,
+                                                List<PaperTradeBet> existingOpenBets,
+                                                Set<String> placedEventKeys,
+                                                LocalDateTime observedAt) {
+        if (sessionId == null || rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<String> wagerEventKeys = existingOpenBets == null
+                ? new HashSet<>()
+                : existingOpenBets.stream()
+                .map(PaperTradeBet::getEventKey)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toCollection(HashSet::new));
+        if (placedEventKeys != null) {
+            wagerEventKeys.addAll(placedEventKeys);
+        }
+        for (LiveOddsRecommendationDto row : rows) {
+            if (row == null) {
+                continue;
+            }
+            String eventKey = resolveDecisionEventKey(row);
+            if (!StringUtils.hasText(eventKey) || wagerEventKeys.contains(eventKey)) {
+                continue;
+            }
+            recordVisibleBoardObservation(sessionId, eventKey, row, observedAt);
+        }
+    }
+
+    private void recordVisibleBoardObservation(Long sessionId,
+                                               String eventKey,
+                                               LiveOddsRecommendationDto row,
+                                               LocalDateTime observedAt) {
+        String score = StringUtils.hasText(row.liveScore()) ? row.liveScore().trim() : null;
+        String phase = StringUtils.hasText(row.matchPhase()) ? row.matchPhase().trim() : null;
+        String sourceKind = inferObservationSourceKind(row);
+        Optional<TrackedMatchObservation> previous = trackedMatchObservationRepository
+                .findTopByEventKeyOrderByObservedAtDesc(eventKey);
+        if (previous.isPresent()) {
+            TrackedMatchObservation last = previous.get();
+            boolean unchanged = safeText(score, "").equals(safeText(last.getLiveScore(), ""))
+                    && safeText(phase, "").equals(safeText(last.getMatchPhase(), ""))
+                    && sourceKind.equals(safeText(last.getSourceKind(), ""))
+                    && row.live() == last.isLive()
+                    && row.displayed() == last.isDisplayed()
+                    && row.resulted() == last.isResulted()
+                    && row.matchCompleted() == last.isMatchCompleted()
+                    && safeText(row.scoreDetail(), "").equals(safeText(last.getScoreDetail(), ""));
+            if (unchanged) {
+                return;
+            }
+        }
+
+        TrackedMatchObservation observation = new TrackedMatchObservation();
+        observation.setSessionId(sessionId);
+        observation.setEventKey(eventKey);
+        observation.setDedupeKey(row.suggestedDedupeKey());
+        observation.setExternalEventId(StringUtils.hasText(row.externalEventId())
+                ? row.externalEventId().trim()
+                : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.extractExternalEventId(row.source()));
+        observation.setSource(safeText(row.source(), "UNKNOWN"));
+        observation.setSourceKind(sourceKind);
+        observation.setSourceConfidence(observationSourceConfidence(row));
+        observation.setDisplayed(row.displayed());
+        observation.setResulted(row.resulted());
+        observation.setMatchCompleted(row.matchCompleted());
+        observation.setSourceFeedCode(StringUtils.hasText(row.sourceFeedCode()) ? row.sourceFeedCode().trim() : null);
+        observation.setSourceFeedEventId(StringUtils.hasText(row.sourceFeedEventId()) ? row.sourceFeedEventId().trim() : null);
+        observation.setLive(row.live());
+        observation.setTrackedAfterClose(false);
+        observation.setEventName(row.eventName());
+        observation.setCompetitionName(row.competitionName());
+        observation.setStartTimeIso(row.startTimeIso());
+        observation.setPlayer1Id(row.player1Id());
+        observation.setPlayer1Name(row.player1Name());
+        observation.setPlayer2Id(row.player2Id());
+        observation.setPlayer2Name(row.player2Name());
         observation.setLiveScore(score);
         observation.setMatchPhase(phase);
         observation.setScoreDetail(StringUtils.hasText(row.scoreDetail()) ? row.scoreDetail().trim() : null);
