@@ -17,7 +17,7 @@ public interface PaperTradeLearningSampleRepository extends JpaRepository<PaperT
 
     List<PaperTradeLearningSample> findByStatusInOrderBySettledAtDesc(Collection<String> statuses, Pageable pageable);
 
-    List<PaperTradeLearningSample> findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+    List<PaperTradeLearningSample> findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
             Collection<String> statuses,
             Pageable pageable
     );
@@ -26,11 +26,11 @@ public interface PaperTradeLearningSampleRepository extends JpaRepository<PaperT
 
     @org.springframework.data.jpa.repository.Query("""
             select s from PaperTradeLearningSample s
-            where s.calibrationEligible = true
+            where s.learningEligible = true
               and coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) >= :threshold
             order by coalesce(s.eventOccurredAt, s.placedAt, s.settledAt) asc
             """)
-    List<PaperTradeLearningSample> findCalibrationEligibleAfter(
+    List<PaperTradeLearningSample> findLearningEligibleAfter(
             @org.springframework.data.repository.query.Param("threshold") LocalDateTime threshold
     );
 

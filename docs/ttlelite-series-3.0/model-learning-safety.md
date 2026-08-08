@@ -32,6 +32,21 @@ become calibration truth. The settlement must also meet the confidence floor:
 - decisive live/targeted completion: at least `0.88`, eligible only at `0.90+`
 - heuristic last-score/near-finish inference: `0.45–0.70`, telemetry only
 
+The same `learningEligible` gate is now persisted on both the settlement
+evidence bundle and the immutable learning sample. The following classes are
+always retained as telemetry but quarantined from model learning:
+
+- archive ambiguity at `0.30+` (`AMBIGUOUS_ARCHIVE_SETTLEMENT`);
+- archive labels without a persisted ambiguity assessment or exact feed identity;
+- contradictory score evidence or an inferred-winner conflict;
+- invalid winner or selected-side identities;
+- non-binary outcomes;
+- any settlement whose final confidence is below `0.90`.
+
+Pre-Phase-4 archive labels upgrade as `LEGACY_ARCHIVE_UNVERIFIED`, and legacy
+evidence without a classifiable learning sample upgrades as
+`LEGACY_EVIDENCE_UNCLASSIFIED`; neither is assumed to be trusted truth.
+
 Provisional score-leader guesses never settle bets and never train the model.
 They are resolved later against trusted outcomes so each score rule gets its
 own accuracy and calibration record.
@@ -84,7 +99,7 @@ increase stake above the policy result.
 
 The report exposes:
 
-- trusted-label coverage and exclusions;
+- trusted and excluded settled-sample counts, coverage, and exclusion reasons;
 - raw and effective sample size;
 - Brier score, log loss, observed win rate, and calibration error;
 - trigger and favorite/balanced/underdog performance;
@@ -94,3 +109,7 @@ The report exposes:
 
 Zero eligible samples is a valid and important state: it means the application
 must collect better result provenance before any calibration can be promoted.
+
+The same counts are visible in Admin Command and ML Quality. New primary-path
+settlements also increment `ttl.model.learning.settled_samples`, tagged with
+`eligibility=trusted|excluded` and the eligibility reason.

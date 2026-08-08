@@ -40,7 +40,9 @@ class ModelLearningAuditServiceTests {
         PaperTradeLearningSample lost = sample(PaperTradeBet.STATUS_LOST, true, 0.60, -10.0);
         lost.setSideOrientation("P2");
         PaperTradeLearningSample lowConfidence = sample(PaperTradeBet.STATUS_WON, false, 0.70, 7.0);
+        lowConfidence.setLearningExclusionReason("LOW_CONFIDENCE_SETTLEMENT");
         PaperTradeLearningSample nonBinary = sample(PaperTradeBet.STATUS_VOIDED, false, 0.50, 0.0);
+        nonBinary.setLearningExclusionReason("NON_BINARY_OUTCOME");
         when(learningRepository.findLearningEvidenceAfter(any()))
                 .thenReturn(List.of(won, lost, lowConfidence, nonBinary));
 
@@ -55,10 +57,13 @@ class ModelLearningAuditServiceTests {
 
         assertEquals(NOW, audit.generatedAt());
         assertEquals(4, audit.outcomeQuality().totalSamples());
+        assertEquals(2, audit.outcomeQuality().trustedSettledSamples());
+        assertEquals(2, audit.outcomeQuality().excludedSettledSamples());
         assertEquals(2, audit.outcomeQuality().calibrationEligible());
         assertEquals(1, audit.outcomeQuality().lowConfidenceExcluded());
         assertEquals(1, audit.outcomeQuality().nonBinaryExcluded());
         assertEquals(50.0, audit.outcomeQuality().eligibleCoveragePct());
+        assertEquals(2, audit.outcomeQuality().exclusionReasons().size());
         assertEquals(2, audit.calibrationEvidence().rawSampleSize());
         assertEquals(2.0, audit.calibrationEvidence().effectiveSampleSize());
         assertEquals(0.60, audit.calibrationEvidence().meanPredicted());

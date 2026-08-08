@@ -1151,7 +1151,7 @@ public class PredictionModelService {
         int take = clamp(liveLearningWindow, 30, 1000);
         int minSamples = clamp(liveLearningMinSamples, 10, 400);
         List<PaperTradeLearningSample> rows =
-                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+                learningSampleRepository.findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
@@ -1247,7 +1247,7 @@ public class PredictionModelService {
 
         int take = clamp(regimeLearningWindow, 40, 800);
         List<PaperTradeLearningSample> rows =
-                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+                learningSampleRepository.findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
@@ -1481,7 +1481,7 @@ public class PredictionModelService {
     private List<ModelTrainingReportDto.RegimeMetricDto> buildOperationalRegimes() {
         int take = clamp(liveLearningWindow * 2, 80, 600);
         List<PaperTradeLearningSample> rows =
-                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+                learningSampleRepository.findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );

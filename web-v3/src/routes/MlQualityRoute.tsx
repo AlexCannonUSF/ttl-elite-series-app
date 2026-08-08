@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, AlertTriangle, BarChart3, RefreshCcw, ShieldCheck } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -6,11 +6,12 @@ import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchMlQuality } from '@/features/ml-quality/api'
+import { fetchMlQuality, fetchModelLearningAudit } from '@/features/ml-quality/api'
 import type {
   DailyCount,
   HistogramBin,
   MlQualityResponse,
+  ModelLearningAudit,
   ReliabilityBin,
   ReliabilitySnapshot,
 } from '@/features/ml-quality/types'
@@ -20,6 +21,7 @@ const REFRESH_INTERVAL_MS = 30000
 
 export function MlQualityRoute() {
   const [data, setData] = useState<MlQualityResponse | null>(null)
+  const [audit, setAudit] = useState<ModelLearningAudit | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -40,9 +42,13 @@ export function MlQualityRoute() {
       }
     }
     try {
-      const next = await fetchMlQuality({ windowDays: 14, binCount: 10 })
+      const [next, nextAudit] = await Promise.all([
+        fetchMlQuality({ windowDays: 14, binCount: 10 }),
+        fetchModelLearningAudit(180),
+      ])
       if (!mountedRef.current) return
       setData(next)
+      setAudit(nextAudit)
       setError(null)
     } catch (nextError) {
       if (!mountedRef.current) return
@@ -92,6 +98,40 @@ export function MlQualityRoute() {
           <span>{error}</span>
         </InlineAlert>
       ) : null}
+
+      <Card className="mb-5">
+        <CardHeader>
+          <Badge variant="accent" className="w-fit">Label trust gate</Badge>
+          <CardTitle>Only verified outcomes shape the model</CardTitle>
+          <CardDescription>
+            Every settlement remains visible, while ambiguous archives, contradictory scores, invalid identities, and
+            low-confidence outcomes are quarantined from calibration, trigger ROI, and regime tuning.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {audit ? (
+            <div className="grid gap-4">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <Stat label="Settled samples" value={String(audit.outcomeQuality.totalSamples)} />
+                <Stat label="Trusted labels" value={String(audit.outcomeQuality.trustedSettledSamples)} />
+                <Stat label="Excluded labels" value={String(audit.outcomeQuality.excludedSettledSamples)} />
+                <Stat label="Trusted coverage" value={`${audit.outcomeQuality.eligibleCoveragePct.toFixed(1)}%`} />
+              </div>
+              {audit.outcomeQuality.exclusionReasons?.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {(audit.outcomeQuality.exclusionReasons ?? []).map((item) => (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900" key={item.reason}>
+                      {humanizeCode(item.reason)} · {item.count}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-[var(--ink-muted)]">No excluded settlement labels in this window.</p>
+              )}
+            </div>
+          ) : <Placeholder label="Loading label eligibility…" />}
+        </CardContent>
+      </Card>
 
       <section className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
         <Card>
@@ -388,4 +428,12 @@ function formatDateTime(value: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}
+
+function humanizeCode(value: string) {
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }

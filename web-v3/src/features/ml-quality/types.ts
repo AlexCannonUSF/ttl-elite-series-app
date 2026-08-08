@@ -77,10 +77,16 @@ export type ModelLearningAudit = {
   windowDays: number
   outcomeQuality: {
     totalSamples: number
+    trustedSettledSamples: number
+    excludedSettledSamples: number
     calibrationEligible: number
     lowConfidenceExcluded: number
     nonBinaryExcluded: number
     eligibleCoveragePct: number
+    exclusionReasons: Array<{
+      reason: string
+      count: number
+    }>
   }
   calibrationEvidence: {
     rawSampleSize: number

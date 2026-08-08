@@ -172,6 +172,32 @@ class SettlementShadowAuditServiceTests {
     }
 
     @Test
+    void finalizesLearningEligibilityOnPersistedEvidence() {
+        SettlementEvidenceRecordRepository evidenceRepository = mock(SettlementEvidenceRecordRepository.class);
+        SettlementShadowAuditService service = new SettlementShadowAuditService(
+                evidenceRepository,
+                mock(SettlementContradictionRecordRepository.class),
+                mock(SettlementAuditRecordRepository.class),
+                new ObjectMapper()
+        );
+        SettlementEvidenceRecord record = existingEvidenceRecord(936L);
+        PaperTradeBet settled = bet(354L);
+        settled.setStatus(PaperTradeBet.STATUS_WON);
+        settled.setSidePlayerId(10L);
+        settled.setWinnerPlayerId(10L);
+        settled.setSettlementSource("OFFICIAL_RESULT");
+        settled.setSettlementAmbiguityScore(0.0);
+        when(evidenceRepository.findById(936L)).thenReturn(Optional.of(record));
+        when(evidenceRepository.save(record)).thenReturn(record);
+
+        service.recordLearningEligibility(936L, settled);
+
+        assertTrue(record.isLearningEligible());
+        assertEquals(null, record.getLearningExclusionReason());
+        verify(evidenceRepository).save(record);
+    }
+
+    @Test
     void newManualReviewSupersedesEarlierOpenReview() {
         SettlementEvidenceRecordRepository evidenceRepository = mock(SettlementEvidenceRecordRepository.class);
         SettlementAuditRecordRepository auditRepository = mock(SettlementAuditRecordRepository.class);

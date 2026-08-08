@@ -20,10 +20,16 @@ public record ModelLearningAuditDto(
         ClvEvidenceDto clv
 ) {
     public record OutcomeQualityDto(int totalSamples,
+                                    int trustedSettledSamples,
+                                    int excludedSettledSamples,
                                     int calibrationEligible,
                                     int lowConfidenceExcluded,
                                     int nonBinaryExcluded,
-                                    double eligibleCoveragePct) {
+                                    double eligibleCoveragePct,
+                                    List<ExclusionReasonCountDto> exclusionReasons) {
+    }
+
+    public record ExclusionReasonCountDto(String reason, int count) {
     }
 
     public record CalibrationEvidenceDto(int rawSampleSize,

@@ -11,5 +11,7 @@ public record ScoreTruthEvidenceSnapshotDto(Long evidenceId,
                                             String coverageState,
                                             double ambiguityScore,
                                             double confidence,
+                                            boolean learningEligible,
+                                            String learningExclusionReason,
                                             JsonNode payload) {
 }

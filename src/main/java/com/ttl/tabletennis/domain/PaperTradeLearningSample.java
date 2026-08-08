@@ -93,6 +93,16 @@ public class PaperTradeLearningSample {
     @Column(name = "calibration_eligible", nullable = false, columnDefinition = "boolean default false not null")
     private boolean calibrationEligible;
 
+    /**
+     * Canonical Phase 4 gate. A row may be retained for settlement telemetry
+     * while this flag prevents it from affecting any learning consumer.
+     */
+    @Column(name = "learning_eligible", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean learningEligible;
+
+    @Column(name = "learning_exclusion_reason", length = 64)
+    private String learningExclusionReason;
+
     @Column(name = "price_regime", length = 24)
     private String priceRegime;
 
@@ -334,6 +344,25 @@ public class PaperTradeLearningSample {
 
     public void setCalibrationEligible(boolean calibrationEligible) {
         this.calibrationEligible = calibrationEligible;
+        this.learningEligible = calibrationEligible;
+    }
+
+    public boolean isLearningEligible() {
+        return learningEligible;
+    }
+
+    public void setLearningEligible(boolean learningEligible) {
+        this.learningEligible = learningEligible;
+        // Keep the legacy column synchronized during the compatibility window.
+        this.calibrationEligible = learningEligible;
+    }
+
+    public String getLearningExclusionReason() {
+        return learningExclusionReason;
+    }
+
+    public void setLearningExclusionReason(String learningExclusionReason) {
+        this.learningExclusionReason = learningExclusionReason;
     }
 
     public String getPriceRegime() {

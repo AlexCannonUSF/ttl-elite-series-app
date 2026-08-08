@@ -18,6 +18,7 @@ import com.ttl.tabletennis.settlement.SettlementPolicy;
 import com.ttl.tabletennis.settlement.ScoreEvidenceAnalyzer;
 import com.ttl.tabletennis.settlement.ScoreEvidenceAssessment;
 import com.ttl.tabletennis.settlement.VoidDecision;
+import com.ttl.tabletennis.service.papertrade.LearningSampleQuality;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
@@ -48,6 +49,7 @@ import java.util.Objects;
 public class ScoreTruthPrimaryService {
 
     public static final String PRIMARY_STATE = "primary";
+    public static final String LEARNING_SETTLEMENT_METRIC = "ttl.model.learning.settled_samples";
 
     private static final Logger log = LoggerFactory.getLogger(ScoreTruthPrimaryService.class);
 
@@ -263,6 +265,7 @@ public class ScoreTruthPrimaryService {
         captureClosingLine(bet);
         recordScoreEvidence(bet, decision.reason());
         save(bet);
+        recordLearningEligibility(bet, audit);
     }
 
     private void applyVoid(PaperTradeBet bet,
@@ -283,6 +286,7 @@ public class ScoreTruthPrimaryService {
         captureClosingLine(bet);
         recordScoreEvidence(bet, decision.reason());
         save(bet);
+        recordLearningEligibility(bet, audit);
     }
 
     private boolean applyScoreEvidence(PaperTradeBet bet, ScoreEvidenceAssessment assessment) {
@@ -446,6 +450,21 @@ public class ScoreTruthPrimaryService {
                 "reason",
                 reason == null ? "UNKNOWN" : reason.name()
         ).increment();
+    }
+
+    private void recordLearningEligibility(PaperTradeBet bet,
+                                           SettlementShadowAuditService.AuditWriteResult audit) {
+        LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
+        if (auditService != null && audit != null) {
+            auditService.recordLearningEligibility(audit.evidenceId(), bet);
+        }
+        if (meterRegistry != null) {
+            meterRegistry.counter(
+                    LEARNING_SETTLEMENT_METRIC,
+                    "eligibility", assessment.learningEligible() ? "trusted" : "excluded",
+                    "reason", assessment.exclusionReason() == null ? "ELIGIBLE" : assessment.exclusionReason()
+            ).increment();
+        }
     }
 
     public record ClosureStats(int settled, int voided, int held, int reviewed, int skipped) {

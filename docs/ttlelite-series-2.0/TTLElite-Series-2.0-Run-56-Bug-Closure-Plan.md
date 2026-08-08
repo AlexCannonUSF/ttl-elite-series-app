@@ -19,8 +19,13 @@
 - Each explanation normalizes the selected archive match/date, player-set confidence, feed-identity match, archive confidence, late-score direction, score-evidence strength, coverage, ambiguity, trust band, and persisted contradiction kinds.
 - Automatic flags identify archive results absent from the recent completed ledger, archived winners that conflict with the late score direction, and same-player same-day candidate collisions.
 - The v3 Settlement Review page combines the automatic-settlement forensic ledger with the existing human review queue; the retained Operations UI exposes the same evidence in a compact scan table.
-- Flyway migrations `V20260729001` and `V20260729002` preserve the Phase 1 and Phase 2 evidence fields on upgrade.
-- Verification on 2026-08-07: 816 backend tests passed; both `web-v3` and legacy `web` production builds passed; the legacy frontend lint check passed; and the v3 Settlement Review route passed a local browser layout/console inspection.
+- Phase 4 is now implemented in code.
+- Settlement evidence and learning samples persist an explicit `learningEligible` decision plus a machine-readable exclusion reason; unmatched legacy evidence is quarantined rather than assumed trustworthy.
+- Ambiguous archives, contradictory score evidence, evidence/winner conflicts, invalid identities, non-binary outcomes, and sub-0.90 confidence labels are excluded from learning.
+- Trigger ROI, recent calibration, adaptive thresholds, and operational regime tuning all consume the same `learningEligible=true` contract.
+- The learning audit, Admin Command, ML Quality, and Match Evidence surfaces show trusted/excluded counts and the exclusion-reason breakdown; Micrometer publishes trusted/excluded settlement counters.
+- Flyway migrations `V20260729001`, `V20260729002`, and `V20260807001` preserve the evidence-integrity, score-evidence, and learning-eligibility fields on upgrade.
+- Verification on 2026-08-07: 823 backend tests passed with zero failures, the `web-v3` production build passed after the Phase 4 UI changes, both frontend production builds passed during the preceding Phase 3 check, and the v3 Settlement Review route passed a local browser layout/console inspection.
 
 ## Purpose
 

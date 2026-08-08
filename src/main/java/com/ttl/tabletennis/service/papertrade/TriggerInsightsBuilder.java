@@ -45,6 +45,9 @@ public final class TriggerInsightsBuilder {
 
         Map<String, TriggerAggregate> aggregateByTrigger = new LinkedHashMap<>();
         for (PaperTradeBet bet : settledRows) {
+            if (!LearningSampleQuality.assess(bet).learningEligible()) {
+                continue;
+            }
             String trigger = StringUtils.hasText(bet.getTopTrigger()) ? bet.getTopTrigger().trim() : "Unknown Trigger";
             TriggerAggregate aggregate = aggregateByTrigger.get(trigger);
             if (aggregate == null) {

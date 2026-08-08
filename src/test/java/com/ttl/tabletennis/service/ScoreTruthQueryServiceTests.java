@@ -41,6 +41,8 @@ class ScoreTruthQueryServiceTests {
         evidenceRecord.setCoverageState("FULL");
         evidenceRecord.setAmbiguityScore(0.24);
         evidenceRecord.setConfidence(0.93);
+        evidenceRecord.setLearningEligible(false);
+        evidenceRecord.setLearningExclusionReason("AMBIGUOUS_ARCHIVE_SETTLEMENT");
         evidenceRecord.setPayloadJson("{\"observations\":3}");
 
         SettlementContradictionRecord contradictionRecord = new SettlementContradictionRecord();
@@ -84,6 +86,8 @@ class ScoreTruthQueryServiceTests {
         assertEquals(501L, response.evidence().evidenceId());
         assertEquals(41L, response.evidence().betId());
         assertEquals("FULL", response.evidence().coverageState());
+        assertEquals(false, response.evidence().learningEligible());
+        assertEquals("AMBIGUOUS_ARCHIVE_SETTLEMENT", response.evidence().learningExclusionReason());
         assertEquals(3, response.evidence().payload().path("observations").asInt());
         assertEquals(1, response.contradictions().size());
         assertEquals("WINNER_DISAGREE", response.contradictions().get(0).kind());

@@ -144,7 +144,11 @@ export function MatchEvidenceRoute() {
                   <MetricTile label="Coverage" value={data.evidence.coverageState} icon={ShieldAlert} />
                   <MetricTile label="Ambiguity" value={toPercent(data.evidence.ambiguityScore)} icon={AlertTriangle} />
                   <MetricTile label="Confidence" value={toPercent(data.evidence.confidence)} icon={Clock3} />
-                  <MetricTile label="Timeline Rows" value={String(timeline.length)} icon={Waypoints} />
+                  <MetricTile
+                    label="Model Label"
+                    value={data.evidence.learningEligible ? 'Trusted' : 'Excluded'}
+                    icon={Waypoints}
+                  />
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -171,6 +175,14 @@ export function MatchEvidenceRoute() {
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.24em]">Bundle As Of</p>
                       <p className="mt-2 font-medium text-[var(--ink-strong)]">{formatDateTime(data.evidence.bundleAsOf)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.24em]">Learning Decision</p>
+                      <p className="mt-2 font-medium text-[var(--ink-strong)]">
+                        {data.evidence.learningEligible
+                          ? 'Eligible for model learning'
+                          : humanizeReason(data.evidence.learningExclusionReason)}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -514,6 +526,17 @@ function readBoolean(value: JsonValue | undefined) {
 
 function toPercent(value: number) {
   return `${(value * 100).toFixed(1)}%`
+}
+
+function humanizeReason(value: string | null) {
+  if (!value) {
+    return 'Not eligible for model learning'
+  }
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function formatDateTime(value: string | null) {

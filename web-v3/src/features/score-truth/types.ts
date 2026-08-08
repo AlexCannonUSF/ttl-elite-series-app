@@ -14,6 +14,8 @@ export type ScoreTruthEvidenceSnapshot = {
   coverageState: string
   ambiguityScore: number
   confidence: number
+  learningEligible: boolean
+  learningExclusionReason: string | null
   payload: { [key: string]: JsonValue } | null
 }
 

@@ -126,6 +126,8 @@ public class ScoreTruthQueryService {
                 record.getCoverageState(),
                 record.getAmbiguityScore(),
                 record.getConfidence(),
+                record.isLearningEligible(),
+                record.getLearningExclusionReason(),
                 parseJson(record.getPayloadJson())
         );
     }

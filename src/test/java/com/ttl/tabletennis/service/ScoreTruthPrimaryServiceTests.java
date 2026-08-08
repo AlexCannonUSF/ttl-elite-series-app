@@ -116,6 +116,11 @@ class ScoreTruthPrimaryServiceTests {
         assertEquals(LocalDateTime.of(2026, 5, 18, 19, 59), bet.getClosingObservedAt());
         assertEquals("HR_MKT", bet.getClosingSource());
         assertEquals("CLOSED", bet.getClosingMarketState());
+        verify(setup.auditService).recordLearningEligibility(501L, bet);
+        assertEquals(1.0, setup.meterRegistry.counter(
+                ScoreTruthPrimaryService.LEARNING_SETTLEMENT_METRIC,
+                "eligibility", "excluded",
+                "reason", "LOW_CONFIDENCE_SETTLEMENT").count(), 1e-9);
     }
 
     @Test
@@ -224,6 +229,10 @@ class ScoreTruthPrimaryServiceTests {
         assertEquals(0, stats.held());
         assertEquals(PaperTradeBet.STATUS_WON, bet.getStatus());
         verify(setup.betRepository).save(bet);
+        assertEquals(1.0, setup.meterRegistry.counter(
+                ScoreTruthPrimaryService.LEARNING_SETTLEMENT_METRIC,
+                "eligibility", "trusted",
+                "reason", "ELIGIBLE").count(), 1e-9);
     }
 
     @Test

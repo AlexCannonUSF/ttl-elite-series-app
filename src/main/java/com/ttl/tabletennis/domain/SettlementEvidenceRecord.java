@@ -71,6 +71,14 @@ public class SettlementEvidenceRecord {
     @Column(name = "score_inferred_winner_id")
     private Long scoreInferredWinnerId;
 
+    /** Final label decision. Evidence remains inspectable when false, but it
+     * must not flow into model adaptation. */
+    @Column(name = "learning_eligible", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean learningEligible;
+
+    @Column(name = "learning_exclusion_reason", length = 64)
+    private String learningExclusionReason;
+
     @Column(name = "correlation_id", length = 64)
     private String correlationId;
 
@@ -220,5 +228,21 @@ public class SettlementEvidenceRecord {
 
     public void setScoreInferredWinnerId(Long scoreInferredWinnerId) {
         this.scoreInferredWinnerId = scoreInferredWinnerId;
+    }
+
+    public boolean isLearningEligible() {
+        return learningEligible;
+    }
+
+    public void setLearningEligible(boolean learningEligible) {
+        this.learningEligible = learningEligible;
+    }
+
+    public String getLearningExclusionReason() {
+        return learningExclusionReason;
+    }
+
+    public void setLearningExclusionReason(String learningExclusionReason) {
+        this.learningExclusionReason = learningExclusionReason;
     }
 }

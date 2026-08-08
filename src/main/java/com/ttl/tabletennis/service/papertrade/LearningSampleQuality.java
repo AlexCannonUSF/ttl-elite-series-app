@@ -15,6 +15,13 @@ import java.util.Objects;
  */
 public final class LearningSampleQuality {
 
+    /**
+     * Archive ambiguity enters the scorer's REQUIRES_STRONG_EVIDENCE band at
+     * 0.30. Such a result may still be safe enough to close a paper position,
+     * but it is not clean enough to become a learning label.
+     */
+    static final double MAX_LEARNING_AMBIGUITY = 0.30;
+
     private LearningSampleQuality() {
     }
 
@@ -62,12 +69,33 @@ public final class LearningSampleQuality {
             confidence = Math.min(confidence, clamp01(bet.getSettlementConfidence()));
         }
 
-        boolean eligible = resolved && validWinner && validSide && confidence >= 0.90;
-        String exclusion = eligible ? null
-                : !resolved ? "NON_BINARY_OUTCOME"
+        boolean archiveSettlement = source.contains("OFFICIAL")
+                || source.contains("DATABASE")
+                || source.contains("ARCHIVE")
+                || reason.contains("OFFICIAL")
+                || reason.contains("DATABASE")
+                || reason.contains("ARCHIVE");
+        boolean archiveIdentityVerified = (bet.getSettlementAmbiguityScore() != null
+                && Double.isFinite(bet.getSettlementAmbiguityScore()))
+                || reason.contains("FEED_IDENTITY");
+        boolean archiveAmbiguous = archiveSettlement
+                && archiveIdentityVerified
+                && bet.getSettlementAmbiguityScore() != null
+                && bet.getSettlementAmbiguityScore() >= MAX_LEARNING_AMBIGUITY;
+        boolean evidenceWinnerConflict = bet.getScoreEvidenceInferredWinnerId() != null
+                && validWinner
+                && !Objects.equals(bet.getScoreEvidenceInferredWinnerId(), bet.getWinnerPlayerId());
+
+        String exclusion = !resolved ? "NON_BINARY_OUTCOME"
                 : !validWinner ? "INVALID_WINNER_IDENTITY"
                 : !validSide ? "INVALID_SIDE_IDENTITY"
-                : "LOW_CONFIDENCE_SETTLEMENT";
+                : archiveSettlement && !archiveIdentityVerified ? "UNVERIFIED_ARCHIVE_SETTLEMENT"
+                : archiveAmbiguous ? "AMBIGUOUS_ARCHIVE_SETTLEMENT"
+                : bet.isScoreEvidenceContradictory() ? "CONTRADICTORY_SCORE_EVIDENCE"
+                : evidenceWinnerConflict ? "EVIDENCE_WINNER_CONFLICT"
+                : confidence < 0.90 ? "LOW_CONFIDENCE_SETTLEMENT"
+                : null;
+        boolean eligible = exclusion == null;
         return new Assessment(round4(confidence), eligible, exclusion);
     }
 
@@ -129,6 +157,12 @@ public final class LearningSampleQuality {
         return Math.round(value * 10_000.0) / 10_000.0;
     }
 
-    public record Assessment(double confidence, boolean calibrationEligible, String exclusionReason) {
+    public record Assessment(double confidence, boolean learningEligible, String exclusionReason) {
+
+        /** Compatibility alias for older callers while learning eligibility
+         * becomes the single persisted contract. */
+        public boolean calibrationEligible() {
+            return learningEligible;
+        }
     }
 }

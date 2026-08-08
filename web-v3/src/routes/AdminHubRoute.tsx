@@ -125,7 +125,8 @@ export function AdminHubRoute() {
 
   const audit = snapshot?.audit
   const calibration = audit?.calibrationEvidence
-  const sampleProgress = Math.min(100, (calibration?.rawSampleSize ?? 0))
+  const outcomeQuality = audit?.outcomeQuality
+  const sampleProgress = Math.min(100, (outcomeQuality?.trustedSettledSamples ?? 0))
   const effectiveProgress = Math.min(100, ((calibration?.effectiveSampleSize ?? 0) / 50) * 100)
   const posture = useMemo(() => systemPosture(snapshot), [snapshot])
   const scorePosture = useMemo(() => scoreEvidencePosture(snapshot?.session), [snapshot?.session])
@@ -193,10 +194,11 @@ export function AdminHubRoute() {
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <DarkMetric label="Raw calibration sample" value={String(calibration?.rawSampleSize ?? 0)} />
+            <DarkMetric label="Trusted settled" value={String(outcomeQuality?.trustedSettledSamples ?? 0)} />
+            <DarkMetric label="Excluded settled" value={String(outcomeQuality?.excludedSettledSamples ?? 0)} />
             <DarkMetric label="Effective sample" value={formatNumber(calibration?.effectiveSampleSize)} />
             <DarkMetric label="Calibration error" value={formatPct(calibration?.calibrationError)} />
-            <DarkMetric label="Stake-weighted CLV" value={formatSignedPct(audit?.clv.stakeWeightedClvPct)} />
+            <DarkMetric label="Stake-weighted CLV" value={formatSignedPercentagePoints(audit?.clv.stakeWeightedClvPct)} />
             <DarkMetric label="Decision-grade scores" value={String(scorePosture.decisionGrade)} />
             <DarkMetric label="Score-backed closure" value={formatPct(scorePosture.scoreBackedShare)} />
           </div>
@@ -220,7 +222,7 @@ export function AdminHubRoute() {
           </CardHeader>
           <CardContent className="grid gap-5">
             <ProgressMetric
-              detail={`${calibration?.rawSampleSize ?? 0} of 100 resolved outcomes`}
+              detail={`${outcomeQuality?.trustedSettledSamples ?? 0} of 100 trusted outcomes`}
               label="Directional sample"
               progress={sampleProgress}
               value={`${Math.round(sampleProgress)}%`}
@@ -232,11 +234,26 @@ export function AdminHubRoute() {
               value={`${Math.round(effectiveProgress)}%`}
             />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Metric icon={Target} label="Eligible coverage" value={formatPct(audit?.outcomeQuality.eligibleCoveragePct)} />
+              <Metric icon={Target} label="Eligible coverage" value={formatPercentagePoints(outcomeQuality?.eligibleCoveragePct)} />
               <Metric icon={BarChart3} label="Brier score" value={formatNumber(calibration?.brierScore, 3)} />
-              <Metric icon={GitCompareArrows} label="CLV coverage" value={formatPct(audit?.clv.coveragePct)} />
-              <Metric icon={ShieldCheck} label="Excluded low trust" value={String(audit?.outcomeQuality.lowConfidenceExcluded ?? 0)} />
+              <Metric icon={GitCompareArrows} label="CLV coverage" value={formatPercentagePoints(audit?.clv.coveragePct)} />
+              <Metric icon={ShieldCheck} label="Excluded labels" value={String(outcomeQuality?.excludedSettledSamples ?? 0)} />
             </div>
+            {outcomeQuality?.exclusionReasons?.length ? (
+              <div className="rounded-[22px] border border-[var(--line)] bg-[rgba(255,255,255,0.66)] p-4">
+                <SectionLabel>Why labels were excluded</SectionLabel>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(outcomeQuality.exclusionReasons ?? []).map((item) => (
+                    <span
+                      className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900"
+                      key={item.reason}
+                    >
+                      {pretty(item.reason)} · {item.count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -411,7 +428,7 @@ function SignalTable({ segments }: { segments: LearningSegment[] }) {
               <td>{formatNumber(segment.effectiveSampleSize)}</td>
               <td>{formatPct(segment.winRate)}</td>
               <td>{formatSignedPct(segment.calibrationError)}</td>
-              <td className={segment.roiPct >= 0 ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>{formatSignedPct(segment.roiPct)}</td>
+              <td className={segment.roiPct >= 0 ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>{formatSignedPercentagePoints(segment.roiPct)}</td>
             </tr>
           ))}
         </tbody>
@@ -593,6 +610,16 @@ function formatSignedPct(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '—'
   const pct = value * 100
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
+}
+
+function formatPercentagePoints(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value.toFixed(1)}%`
+}
+
+function formatSignedPercentagePoints(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 }
 
 function formatCurrency(value: number | null | undefined) {

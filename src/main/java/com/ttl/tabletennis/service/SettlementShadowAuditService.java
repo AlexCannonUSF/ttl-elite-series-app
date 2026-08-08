@@ -20,6 +20,7 @@ import com.ttl.tabletennis.settlement.SettlementEvidence;
 import com.ttl.tabletennis.settlement.ScoreEvidenceAnalyzer;
 import com.ttl.tabletennis.settlement.ScoreEvidenceAssessment;
 import com.ttl.tabletennis.settlement.VoidDecision;
+import com.ttl.tabletennis.service.papertrade.LearningSampleQuality;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -123,6 +124,25 @@ public class SettlementShadowAuditService {
         return new AuditWriteResult(true, saved.getId(), null, null, decisionFingerprint);
     }
 
+    /**
+     * Finalizes whether the persisted evidence may become a model label. This
+     * is deliberately called only after the bet has received its terminal
+     * outcome, because identity validity and binary status are part of the
+     * eligibility contract.
+     */
+    @Transactional
+    public void recordLearningEligibility(Long evidenceId, PaperTradeBet settledBet) {
+        if (evidenceId == null || settledBet == null) {
+            return;
+        }
+        settlementEvidenceRecordRepository.findById(evidenceId).ifPresent(record -> {
+            LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(settledBet);
+            record.setLearningEligible(assessment.learningEligible());
+            record.setLearningExclusionReason(assessment.exclusionReason());
+            settlementEvidenceRecordRepository.save(record);
+        });
+    }
+
     private SettlementEvidenceRecord findOrCreateEvidenceRecord(SettlementEvidence evidence,
                                                                 String evidenceFingerprint) {
         Optional<SettlementEvidenceRecord> fingerprintMatch =
@@ -184,6 +204,8 @@ public class SettlementShadowAuditService {
         record.setScoreSourceCount(scoreEvidence.distinctSourceCount());
         record.setScoreCompletionSignalCount(scoreEvidence.completionSignalCount());
         record.setScoreInferredWinnerId(scoreEvidence.inferredWinnerPlayerId());
+        record.setLearningEligible(false);
+        record.setLearningExclusionReason("PENDING_SETTLEMENT_DECISION");
         SettlementEvidenceRecord saved = settlementEvidenceRecordRepository.save(record);
 
         if (!evidence.contradictions().isEmpty()) {

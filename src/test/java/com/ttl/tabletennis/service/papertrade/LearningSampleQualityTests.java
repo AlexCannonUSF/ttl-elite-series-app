@@ -14,6 +14,7 @@ class LearningSampleQualityTests {
     void officialBinaryOutcomeWithLockedIdentitiesIsEligible() {
         PaperTradeBet bet = resolvedBet();
         bet.setSettlementSource("OFFICIAL_RESULT");
+        bet.setSettlementAmbiguityScore(0.0);
 
         LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
 
@@ -26,6 +27,7 @@ class LearningSampleQualityTests {
     void databaseOutcomeNeedsResultIdentityForHighConfidence() {
         PaperTradeBet bet = resolvedBet();
         bet.setSettlementSource("DATABASE_MATCH");
+        bet.setSettlementAmbiguityScore(0.0);
 
         LearningSampleQuality.Assessment withoutResultId = LearningSampleQuality.assess(bet);
         assertEquals(0.82, withoutResultId.confidence());
@@ -56,6 +58,7 @@ class LearningSampleQualityTests {
     void explicitSettlementConfidencePreventsWeakEvidenceFromEnteringCalibration() {
         PaperTradeBet bet = resolvedBet();
         bet.setSettlementSource("SETTLED_FROM_OFFICIAL_RESULT_V3");
+        bet.setSettlementAmbiguityScore(0.0);
         bet.setSettlementConfidence(0.84);
 
         LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
@@ -124,12 +127,59 @@ class LearningSampleQualityTests {
     void outcomeIdentityMustMatchTheTrackedPlayers() {
         PaperTradeBet bet = resolvedBet();
         bet.setSettlementSource("OFFICIAL_RESULT");
+        bet.setSettlementAmbiguityScore(0.0);
         bet.setWinnerPlayerId(999L);
 
         LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
 
         assertFalse(assessment.calibrationEligible());
         assertEquals("INVALID_WINNER_IDENTITY", assessment.exclusionReason());
+    }
+
+    @Test
+    void ambiguousArchiveSettlementIsQuarantinedEvenWhenOfficial() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("SETTLED_FROM_OFFICIAL_RESULT_V3");
+        bet.setSettlementConfidence(0.98);
+        bet.setSettlementAmbiguityScore(0.30);
+
+        LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
+
+        assertFalse(assessment.learningEligible());
+        assertEquals("AMBIGUOUS_ARCHIVE_SETTLEMENT", assessment.exclusionReason());
+
+        bet.setSettlementAmbiguityScore(0.29);
+        assertTrue(LearningSampleQuality.assess(bet).learningEligible());
+    }
+
+    @Test
+    void archiveWithoutPersistedIdentityAssessmentRemainsTelemetryOnly() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("OFFICIAL_RESULT");
+
+        LearningSampleQuality.Assessment assessment = LearningSampleQuality.assess(bet);
+
+        assertFalse(assessment.learningEligible());
+        assertEquals("UNVERIFIED_ARCHIVE_SETTLEMENT", assessment.exclusionReason());
+
+        bet.setSettlementReason("SETTLED_FROM_OFFICIAL_RESULT_FEED_IDENTITY");
+        assertTrue(LearningSampleQuality.assess(bet).learningEligible());
+    }
+
+    @Test
+    void contradictoryOrWinnerConflictingEvidenceNeverBecomesALabel() {
+        PaperTradeBet bet = resolvedBet();
+        bet.setSettlementSource("OFFICIAL_RESULT");
+        bet.setSettlementAmbiguityScore(0.0);
+        bet.setScoreEvidenceContradictory(true);
+
+        assertEquals("CONTRADICTORY_SCORE_EVIDENCE",
+                LearningSampleQuality.assess(bet).exclusionReason());
+
+        bet.setScoreEvidenceContradictory(false);
+        bet.setScoreEvidenceInferredWinnerId(2L);
+        assertEquals("EVIDENCE_WINNER_CONFLICT",
+                LearningSampleQuality.assess(bet).exclusionReason());
     }
 
     @Test

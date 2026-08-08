@@ -2,6 +2,7 @@ package com.ttl.tabletennis.config;
 
 import db.migration.V20260729001__phase_01_evidence_integrity;
 import db.migration.V20260729002__phase_02_score_backed_settlement;
+import db.migration.V20260807001__phase_04_learning_eligibility;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.migration.Context;
 import org.junit.jupiter.api.Test;
@@ -352,6 +353,88 @@ class FlywayMigrationTests {
             assertTrue(columnExists(metaData, "settlement_evidence", "score_inferred_winner_id"));
             assertTrue(indexExists(metaData, "paper_trade_bet", "idx_paper_bet_score_evidence"));
             assertTrue(indexExists(metaData, "settlement_evidence", "idx_settlement_evidence_score_quality"));
+        }
+    }
+
+    @Test
+    void phase04LearningEligibilityMigrationBackfillsAndQuarantinesEvidence() throws Exception {
+        String url = "jdbc:h2:mem:phase-04-learning-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE paper_trade_learning_sample (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        bet_id BIGINT NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        calibration_eligible BOOLEAN DEFAULT FALSE NOT NULL,
+                        settlement_source VARCHAR(64) NULL,
+                        settlement_reason VARCHAR(120) NULL,
+                        event_occurred_at TIMESTAMP NULL
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE settlement_evidence (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        bet_id BIGINT NOT NULL,
+                        bundle_as_of TIMESTAMP NOT NULL
+                    )
+                    """);
+            statement.execute("""
+                    INSERT INTO paper_trade_learning_sample
+                        (bet_id, status, calibration_eligible, settlement_source, settlement_reason, event_occurred_at)
+                    VALUES (10, 'WON', TRUE, 'SCORE_BACKED', 'SCORE_BACKED_FINISHED', CURRENT_TIMESTAMP),
+                           (20, 'LOST', FALSE, 'HEURISTIC', 'LAST_SCORE', CURRENT_TIMESTAMP),
+                           (30, 'VOIDED', FALSE, 'TIMEOUT', 'VOID', CURRENT_TIMESTAMP),
+                           (40, 'WON', TRUE, 'OFFICIAL_RESULT', 'SETTLED_FROM_OFFICIAL_RESULT', CURRENT_TIMESTAMP)
+                    """);
+            statement.execute("""
+                    INSERT INTO settlement_evidence (bet_id, bundle_as_of)
+                    VALUES (10, CURRENT_TIMESTAMP), (20, CURRENT_TIMESTAMP), (99, CURRENT_TIMESTAMP)
+                    """);
+
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260807001__phase_04_learning_eligibility migration =
+                    new V20260807001__phase_04_learning_eligibility();
+
+            migration.migrate(context);
+            migration.migrate(context);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertTrue(columnExists(metaData, "paper_trade_learning_sample", "learning_eligible"));
+            assertTrue(columnExists(metaData, "paper_trade_learning_sample", "learning_exclusion_reason"));
+            assertTrue(columnExists(metaData, "settlement_evidence", "learning_eligible"));
+            assertTrue(indexExists(metaData, "paper_trade_learning_sample", "idx_paper_learning_eligible_event"));
+            assertTrue(indexExists(metaData, "settlement_evidence", "idx_settlement_evidence_learning"));
+
+            try (ResultSet samples = statement.executeQuery("""
+                    SELECT bet_id, learning_eligible, learning_exclusion_reason
+                    FROM paper_trade_learning_sample ORDER BY bet_id
+                    """)) {
+                assertTrue(samples.next());
+                assertEquals(10L, samples.getLong("bet_id"));
+                assertTrue(samples.getBoolean("learning_eligible"));
+                assertTrue(samples.next());
+                assertEquals("LEGACY_LOW_CONFIDENCE", samples.getString("learning_exclusion_reason"));
+                assertTrue(samples.next());
+                assertEquals("NON_BINARY_OUTCOME", samples.getString("learning_exclusion_reason"));
+                assertTrue(samples.next());
+                assertEquals(40L, samples.getLong("bet_id"));
+                assertEquals("LEGACY_ARCHIVE_UNVERIFIED", samples.getString("learning_exclusion_reason"));
+            }
+            try (ResultSet evidence = statement.executeQuery("""
+                    SELECT bet_id, learning_eligible, learning_exclusion_reason
+                    FROM settlement_evidence ORDER BY bet_id
+                    """)) {
+                assertTrue(evidence.next());
+                assertTrue(evidence.getBoolean("learning_eligible"));
+                assertTrue(evidence.next());
+                assertEquals("LEGACY_LOW_CONFIDENCE", evidence.getString("learning_exclusion_reason"));
+                assertTrue(evidence.next());
+                assertEquals("LEGACY_EVIDENCE_UNCLASSIFIED", evidence.getString("learning_exclusion_reason"));
+            }
         }
     }
 

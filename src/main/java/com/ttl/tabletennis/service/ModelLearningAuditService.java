@@ -52,13 +52,26 @@ public class ModelLearningAuditService {
         LocalDateTime cutoff = now.minusDays(windowDays);
         List<PaperTradeLearningSample> all = safeAll(cutoff);
         List<PaperTradeLearningSample> eligible = all.stream()
-                .filter(PaperTradeLearningSample::isCalibrationEligible)
+                .filter(PaperTradeLearningSample::isLearningEligible)
                 .filter(this::binaryOutcome)
                 .toList();
 
-        int nonBinary = (int) all.stream().filter(row -> !binaryOutcome(row)).count();
-        int lowConfidence = Math.max(0, all.size() - eligible.size() - nonBinary);
+        Map<String, Integer> exclusions = new LinkedHashMap<>();
+        all.stream()
+                .filter(row -> row == null || !row.isLearningEligible() || !binaryOutcome(row))
+                .map(this::exclusionReason)
+                .forEach(reason -> exclusions.merge(reason, 1, Integer::sum));
+        int nonBinary = exclusions.getOrDefault("NON_BINARY_OUTCOME", 0);
+        int lowConfidence = exclusions.entrySet().stream()
+                .filter(entry -> entry.getKey().contains("LOW_CONFIDENCE"))
+                .mapToInt(Map.Entry::getValue)
+                .sum();
         double coverage = all.isEmpty() ? 0.0 : eligible.size() * 100.0 / all.size();
+        List<ModelLearningAuditDto.ExclusionReasonCountDto> exclusionReasons = exclusions.entrySet().stream()
+                .map(entry -> new ModelLearningAuditDto.ExclusionReasonCountDto(entry.getKey(), entry.getValue()))
+                .sorted(Comparator.comparingInt(ModelLearningAuditDto.ExclusionReasonCountDto::count).reversed()
+                        .thenComparing(ModelLearningAuditDto.ExclusionReasonCountDto::reason))
+                .toList();
 
         return new ModelLearningAuditDto(
                 generatedAt,
@@ -66,9 +79,12 @@ public class ModelLearningAuditService {
                 new ModelLearningAuditDto.OutcomeQualityDto(
                         all.size(),
                         eligible.size(),
+                        Math.max(0, all.size() - eligible.size()),
+                        eligible.size(),
                         lowConfidence,
                         nonBinary,
-                        round2(coverage)
+                        round2(coverage),
+                        exclusionReasons
                 ),
                 calibration(eligible, now),
                 segments(eligible, now, PaperTradeLearningSample::getTopTrigger),
@@ -239,6 +255,16 @@ public class ModelLearningAuditService {
     private boolean binaryOutcome(PaperTradeLearningSample row) {
         return row != null && (PaperTradeBet.STATUS_WON.equalsIgnoreCase(row.getStatus())
                 || PaperTradeBet.STATUS_LOST.equalsIgnoreCase(row.getStatus()));
+    }
+
+    private String exclusionReason(PaperTradeLearningSample row) {
+        if (row == null || !binaryOutcome(row)) {
+            return "NON_BINARY_OUTCOME";
+        }
+        if (StringUtils.hasText(row.getLearningExclusionReason())) {
+            return row.getLearningExclusionReason().trim().toUpperCase(Locale.ROOT);
+        }
+        return "LEGACY_LOW_CONFIDENCE";
     }
 
     private List<FactorValue> parseFactors(String encoded) {

@@ -1265,6 +1265,7 @@ public class PaperTradingService {
                     officialResultRefreshContext
             );
             if (officialLedgerCandidate != null) {
+                recordUnambiguousArchiveSettlementSelection(bet);
                 applySettlement(
                         session,
                         bet,
@@ -1342,6 +1343,7 @@ public class PaperTradingService {
                 } else {
                     settlementReason = "SETTLED_FROM_OFFICIAL_RESULT";
                 }
+                recordUnambiguousArchiveSettlementSelection(bet);
                 applySettlement(session, bet, officialResultMatch, settlementReason);
                 saveBet(bet);
                 settled++;
@@ -1362,6 +1364,7 @@ public class PaperTradingService {
                     } else {
                         settlementReason = "SETTLED_FROM_DATABASE_RESULT";
                     }
+                    recordUnambiguousArchiveSettlementSelection(bet);
                     applySettlement(session, bet, resolvedMatch, settlementReason);
                     saveBet(bet);
                     settled++;
@@ -1509,6 +1512,18 @@ public class PaperTradingService {
 
     private void applySettlement(PaperTradeSession session, PaperTradeBet bet, Long winnerPlayerId, Long resultMatchId) {
         applySettlement(session, bet, winnerPlayerId, resultMatchId, null);
+    }
+
+    /**
+     * Archive resolvers only return after their identity, slot, duplicate, and
+     * conflicting-winner guards have accepted one result. Persist that decision
+     * so downstream learning can distinguish a verified archive label from a
+     * legacy row that has no ambiguity evidence at all.
+     */
+    private void recordUnambiguousArchiveSettlementSelection(PaperTradeBet bet) {
+        if (bet != null) {
+            bet.setSettlementAmbiguityScore(0.0);
+        }
     }
 
     private void applySettlement(PaperTradeSession session,
@@ -4011,7 +4026,8 @@ public class PaperTradingService {
         sample.setSettlementReason(bet.getSettlementReason());
         LearningSampleQuality.Assessment quality = LearningSampleQuality.assess(bet);
         sample.setSettlementConfidence(quality.confidence());
-        sample.setCalibrationEligible(quality.calibrationEligible());
+        sample.setLearningEligible(quality.learningEligible());
+        sample.setLearningExclusionReason(quality.exclusionReason());
         sample.setPriceRegime(LearningSampleQuality.priceRegime(bet.getImpliedProbability()));
         sample.setSideOrientation(Objects.equals(bet.getSidePlayerId(), bet.getPlayer1Id()) ? "P1"
                 : Objects.equals(bet.getSidePlayerId(), bet.getPlayer2Id()) ? "P2"
@@ -4070,13 +4086,13 @@ public class PaperTradingService {
         Set<Long> seenBetIds = new HashSet<>();
 
         List<PaperTradeLearningSample> learningRows =
-                learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+                learningSampleRepository.findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                 List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                 PageRequest.of(0, take)
         );
         if (learningRows.isEmpty()) {
             backfillLearningSamples(Math.max(500, take * 6));
-            learningRows = learningSampleRepository.findByCalibrationEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
+            learningRows = learningSampleRepository.findByLearningEligibleTrueAndStatusInOrderByEventOccurredAtDesc(
                     List.of(PaperTradeBet.STATUS_WON, PaperTradeBet.STATUS_LOST),
                     PageRequest.of(0, take)
             );
@@ -4117,7 +4133,7 @@ public class PaperTradingService {
             }
             persistLearningSample(bet);
             LearningSampleQuality.Assessment quality = LearningSampleQuality.assess(bet);
-            if (!quality.calibrationEligible()) {
+            if (!quality.learningEligible()) {
                 continue;
             }
             out.add(new AdaptiveDecisionSample(
