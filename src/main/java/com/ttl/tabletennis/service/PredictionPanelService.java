@@ -25,10 +25,8 @@ import java.util.Map;
  *   <li>Probability + interval (v2 prediction snapshot).</li>
  *   <li>SHAP top-K contributions (existing feature contributions on the
  *       v2 snapshot, trimmed to the K largest by absolute value).</li>
- *   <li>Conformal interval + label (derived from
- *       {@link ConformalPredictor} using a service-default Mondrian
- *       model — the production model will land via
- *       {@code CalibrationBundle} when the v3 facade ships).</li>
+ *   <li>Heuristic uncertainty envelope until an evaluated calibration
+ *       bundle is available end-to-end.</li>
  * </ul>
  *
  * <p>The reliability curve is the calibration bin set from the latest
@@ -129,7 +127,7 @@ public class PredictionPanelService {
                 result.intervalLow(),
                 result.intervalHigh(),
                 result.quantile(),
-                result.method(),
+                "heuristic-uncalibrated",
                 result.predictionSet().stream().map(Enum::name).sorted().toList(),
                 result.groupKey()
         );

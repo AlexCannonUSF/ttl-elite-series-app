@@ -94,6 +94,7 @@ public class RedisStreamsBus implements IngestionBus {
         if (recordId == null) {
             throw new IllegalStateException("Redis did not return a stream record id for " + event.topic());
         }
+        ingestMetricsRecorder.recordRedisPublished();
         // Bound retained replay history independently of consumer ACK state.
         // Without this cap, ttl:health can add 300k+ entries in a day and Redis
         // eventually pushes back on XADD, surfacing as publisher-side scrape

@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -41,6 +42,11 @@ class RedisStreamsConsumerTests {
     @BeforeEach
     void setUp() {
         when(redisTemplate.opsForStream()).thenReturn(streamOperations);
+        when(streamOperations.acknowledge(
+                eq("ttl:scores"),
+                eq("ttl-app"),
+                any(RecordId[].class)
+        )).thenReturn(1L);
         consumer = new RedisStreamsConsumer(
                 featureFlags,
                 Optional.of(redisTemplate),
@@ -116,6 +122,20 @@ class RedisStreamsConsumerTests {
                 eq("ttl-app"),
                 any(RecordId[].class)
         );
+    }
+
+    @Test
+    void failedAcknowledgementIsTransportFailureAndDoesNotCreateDlqEvidence() throws Exception {
+        MapRecord<String, Object, Object> record = validRecord();
+        when(streamOperations.acknowledge(
+                eq("ttl:scores"),
+                eq("ttl-app"),
+                any(RecordId[].class)
+        )).thenReturn(0L);
+
+        assertThrows(IllegalStateException.class, () -> consumer.handleRecord(record, "shadow"));
+
+        verify(dlqRepository, never()).save(any());
     }
 
     private MapRecord<String, Object, Object> validRecord() throws Exception {

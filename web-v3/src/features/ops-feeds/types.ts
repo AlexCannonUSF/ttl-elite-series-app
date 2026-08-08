@@ -4,6 +4,9 @@ export type OpsFeedStatus = {
   sourceId: string
   trustTier: string
   capabilities: string[]
+  lifecycle: 'ACTIVE' | 'STANDBY' | 'DISABLED'
+  demandState: string
+  cause: string
   status: FeedStatus
   liveTick: boolean
   successRate5m: number | null
@@ -21,6 +24,9 @@ export type OpsFeedStatus = {
 
 export type OpsFeedsSummary = {
   totalSources: number
+  activeSources: number
+  standbySources: number
+  disabledSources: number
   healthySources: number
   degradedSources: number
   downSources: number
@@ -40,6 +46,8 @@ export type OpsIngestBus = {
   redisAvailable: boolean
   activeBus: string
   streamPrefix: string
+  partitionLagWarning: number
+  partitionLagCritical: number
   detail: string
 }
 
@@ -61,14 +69,37 @@ export type OpsIngestPartition = {
   streamLength: number
   consumerGroups: number
   pendingCount: number
+  oldestPendingAgeSeconds: number | null
+  redeliveryCount: number
   lag: number | null
   lastGeneratedId: string | null
   detail: string
 }
 
+export type OpsIngestTelemetry = {
+  published: number
+  decoded: number
+  validated: number
+  dispatched: number
+  acknowledged: number
+  rejected: number
+  dlq: number
+  pollFailures: number
+  parityDelta: number
+  redeliveries: number
+  throughputPerMinute: number | null
+  consumerHeartbeatAt: string | null
+  lastProcessedAt: string | null
+  latestEventAgeMs: number | null
+  fullTrafficCoverage: boolean
+  soakSeconds: number | null
+  soakStatus: string
+}
+
 export type OpsIngestResponse = {
   generatedAt: string
   bus: OpsIngestBus
+  telemetry: OpsIngestTelemetry
   dlq: OpsIngestDlq
   partitions: OpsIngestPartition[]
 }
@@ -100,6 +131,9 @@ export type OpsStreamsSummary = {
   totalWorkers: number
   enabledWorkers: number
   offWorkers: number
+  activeWorkers: number
+  availableComponents: number
+  pipelineStatus: string
   routeOverrides: number
   routeWarnings: number
   roiTemplates: number

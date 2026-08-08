@@ -67,6 +67,9 @@ public class OpsStreamsService {
                 workers.size(),
                 (int) workers.stream().filter(OpsStreamWorkerDto::enabled).count(),
                 (int) workers.stream().filter(worker -> !worker.enabled()).count(),
+                0,
+                (int) workers.stream().filter(OpsStreamWorkerDto::enabled).count(),
+                "SCAFFOLD_NOT_RUNNING",
                 routeOverrideCount(),
                 streamRouteCatalog.warnings().size(),
                 roiTemplateCatalog.templates().size(),
@@ -85,7 +88,14 @@ public class OpsStreamsService {
 
     private OpsStreamWorkerDto worker(StreamCvComponentStatus status, String workerType) {
         String normalizedState = normalize(status.rolloutState());
-        String derivedStatus = status.enabled() ? "READY" : "OFF";
+        String derivedStatus;
+        if (!status.enabled()) {
+            derivedStatus = "DISABLED";
+        } else if ("VLM".equals(workerType)) {
+            derivedStatus = "CONTROL_HOOK_AVAILABLE";
+        } else {
+            derivedStatus = "CONFIGURED_NOT_RUNNING";
+        }
         return new OpsStreamWorkerDto(
                 status.component(),
                 workerType,

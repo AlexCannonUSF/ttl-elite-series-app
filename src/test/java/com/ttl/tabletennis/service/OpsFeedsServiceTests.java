@@ -37,12 +37,14 @@ class OpsFeedsServiceTests {
         FeedClient<Object> sofaScoreClient = mock(FeedClient.class);
 
         when(hardRockClient.source()).thenReturn(SourceId.HR_MKT);
+        when(hardRockClient.enabled()).thenReturn(true);
         when(hardRockClient.capabilities()).thenReturn(Set.of(
                 FeedClient.Capability.ODDS,
                 FeedClient.Capability.SCORES,
                 FeedClient.Capability.MARKET_STATE
         ));
         when(sofaScoreClient.source()).thenReturn(SourceId.SOFASCORE);
+        when(sofaScoreClient.enabled()).thenReturn(true);
         when(sofaScoreClient.capabilities()).thenReturn(Set.of(
                 FeedClient.Capability.SCORES,
                 FeedClient.Capability.RESULTS,
@@ -81,6 +83,8 @@ class OpsFeedsServiceTests {
         OpsFeedsDto snapshot = service.snapshot();
 
         assertEquals(2L, snapshot.summary().totalSources());
+        assertEquals(1L, snapshot.summary().activeSources());
+        assertEquals(1L, snapshot.summary().standbySources());
         assertEquals(0L, snapshot.summary().healthySources());
         assertEquals(1L, snapshot.summary().degradedSources());
         assertEquals(0L, snapshot.summary().downSources());
@@ -92,6 +96,8 @@ class OpsFeedsServiceTests {
                 .findFirst()
                 .orElseThrow();
         assertEquals("DEGRADED", hardRock.status());
+        assertEquals("ACTIVE", hardRock.lifecycle());
+        assertEquals("DEAD_LETTER_PRESSURE", hardRock.cause());
         assertEquals(List.of("MARKET_STATE", "ODDS", "SCORES"), hardRock.capabilities());
         assertEquals(3L, hardRock.dlqDepth());
         assertEquals(0.91, hardRock.successRate5m(), 1.0e-9);
@@ -102,6 +108,8 @@ class OpsFeedsServiceTests {
                 .findFirst()
                 .orElseThrow();
         assertEquals("IDLE", sofaScore.status());
+        assertEquals("STANDBY", sofaScore.lifecycle());
+        assertEquals("NO_CURRENT_DEMAND", sofaScore.cause());
         assertFalse(sofaScore.liveTick());
         assertNull(sofaScore.successRate5m());
         assertNull(sofaScore.stalenessSeconds());

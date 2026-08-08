@@ -609,7 +609,9 @@ function buildBetCommands(session: PaperTradingSession | null, navigate: Navigat
 }
 
 function buildAttentionFeedCommands(feeds: OpsFeedsResponse | null, navigate: NavigateFunction): PaletteCommand[] {
-  const attentionFeeds = feeds?.feeds.filter((feed) => feed.status !== 'HEALTHY').slice(0, 6) ?? []
+  const attentionFeeds = feeds?.feeds
+    .filter((feed) => feed.lifecycle === 'ACTIVE' && (feed.status === 'DEGRADED' || feed.status === 'DOWN'))
+    .slice(0, 6) ?? []
 
   return attentionFeeds.map((feed) => ({
     description: describeFeed(feed),

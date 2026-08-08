@@ -268,7 +268,7 @@ export function AdminHubRoute() {
               href="/admin/feeds"
               icon={RadioTower}
               label="Market feeds"
-              status={`${snapshot?.feeds?.summary.healthySources ?? 0}/${snapshot?.feeds?.summary.totalSources ?? 0} healthy`}
+              status={`${snapshot?.feeds?.summary.healthySources ?? 0}/${snapshot?.feeds?.summary.activeSources ?? 0} active healthy`}
               warning={(snapshot?.feeds?.summary.degradedSources ?? 0) + (snapshot?.feeds?.summary.downSources ?? 0) > 0}
             />
             <SystemRow
@@ -282,14 +282,14 @@ export function AdminHubRoute() {
               href="/admin/streams"
               icon={Activity}
               label="Stream workers"
-              status={`${snapshot?.streams?.summary.enabledWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0} enabled`}
-              warning={(snapshot?.streams?.summary.offWorkers ?? 0) > 0}
+              status={`${snapshot?.streams?.summary.activeWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0} active`}
+              warning={false}
             />
             <SystemRow
               href="/admin/scrape"
               icon={Database}
               label="Scraper"
-              status={snapshot?.scrape?.running ? `${snapshot.scrape.mode} running` : 'Idle / ready'}
+              status={snapshot?.scrape?.running ? `${snapshot.scrape.mode} running` : `Idle · last ${snapshot?.scrape?.lastRunStatus ?? 'unknown'}`}
               warning={Boolean(snapshot?.scrape?.error)}
             />
             <SystemRow
@@ -558,7 +558,6 @@ function PostureDot({ label, tone }: { label: string; tone: 'ok' | 'warn' }) {
 function systemPosture(snapshot: AdminSnapshot | null) {
   const warnings = (snapshot?.feeds?.summary.degradedSources ?? 0)
     + (snapshot?.feeds?.summary.downSources ?? 0)
-    + (snapshot?.streams?.summary.offWorkers ?? 0)
     + (snapshot?.ingest && !isHealthy(snapshot.ingest.bus.status) ? 1 : 0)
     + (snapshot?.errors.length ?? 0)
   return warnings > 0

@@ -25,6 +25,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.time.format.DateTimeFormatter;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,7 +65,8 @@ public class PredictionModelService {
     private static final double MIN_FEATURE_STD = 1.0e-3;
     private static final double MAX_STANDARDIZED_FEATURE = 6.0;
     private static final DateTimeFormatter VERSION_TS = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
-    private static final LocalDate MIN_REASONABLE_MATCH_DATE = LocalDate.of(1990, 1, 1);
+    private static final LocalDate MIN_REASONABLE_MATCH_DATE = LocalDate.of(2015, 1, 1);
+    private static final String MODEL_SCHEMA_VERSION = "java-prematch-v2";
 
     private static final String[] BASE_FEATURE_NAMES = new String[]{
             "Head-to-Head (Decayed)",
@@ -118,6 +122,12 @@ public class PredictionModelService {
 
     @Value("${ttl.prediction.holdoutRatio:0.2}")
     private double holdoutRatio;
+
+    @Value("${ttl.prediction.temporalGapDays:1}")
+    private int temporalGapDays;
+
+    @Value("${ttl.prediction.requireMarketBenchmark:true}")
+    private boolean requireMarketBenchmark;
 
     @Value("${ttl.prediction.minLiftForAdvanced:0.002}")
     private double minLiftForAdvanced;
@@ -293,7 +303,40 @@ public class PredictionModelService {
     }
 
     public ModelTrainingReportDto latestTrainingReport() {
-        return lastTrainingReport.get();
+        ModelTrainingReportDto cached = lastTrainingReport.get();
+        if (cached != null) {
+            return cached;
+        }
+        List<PredictionModelRegistryEntry> rows =
+                registryRepository.findRecentByFamily(null, PageRequest.of(0, 1));
+        if (rows.isEmpty() || !StringUtils.hasText(rows.get(0).getPayloadJson())) {
+            return null;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(rows.get(0).getPayloadJson()).path("trainingReport");
+            if (node.isMissingNode() || node.isNull()) {
+                return null;
+            }
+            ModelTrainingReportDto restored = objectMapper.treeToValue(node, ModelTrainingReportDto.class);
+            lastTrainingReport.compareAndSet(null, restored);
+            return lastTrainingReport.get();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns true only when the exact artifact is the independently gated
+     * product champion. Candidate families and historical versions remain
+     * inspectable, but cannot become actionable merely by selecting them.
+     */
+    public boolean isPromotedModel(String family, String version) {
+        if (!StringUtils.hasText(version) || FAMILY_BASELINE.equalsIgnoreCase(family)) {
+            return false;
+        }
+        ensureModelsReady();
+        TrainedModel champion = activeModels.get(FAMILY_ENSEMBLE);
+        return champion != null && champion.version.equalsIgnoreCase(version.trim());
     }
 
     public List<AdaptiveRegimeProfileDto> currentAdaptiveRegimeProfiles() {
@@ -398,43 +441,98 @@ public class PredictionModelService {
                 );
             }
 
-            int minimumTrainRows = samples.size() < 40 ? 8 : 12;
-            int holdout = Math.max(6, (int) Math.round(samples.size() * clamp(holdoutRatio, 0.1, 0.4)));
-            holdout = Math.min(holdout, samples.size() - minimumTrainRows);
-            holdout = Math.max(1, holdout);
-            List<TrainingSample> train = samples.subList(0, samples.size() - holdout);
-            List<TrainingSample> validation = samples.subList(samples.size() - holdout, samples.size());
+            TemporalSplit split = temporalSplit(samples);
+            List<TrainingSample> train = split.train();
+            List<TrainingSample> calibration = split.calibration();
+            List<TrainingSample> test = split.test();
             List<Double> lambdas = parseLambdas();
 
             double bestLambda = selectBestLambda(train, lambdas, FeatureSet.base());
             LogisticModel logistic = trainLogisticModel(train, bestLambda, FeatureSet.base(), trainEpochs, learningRate);
-            CandidateMetrics logisticMetrics = evaluateCandidate(logistic, validation);
-            maybeCalibrate(logistic, validation, logisticMetrics);
+            CandidateMetrics logisticCalibration = evaluateCandidate(logistic, calibration);
+            maybeCalibrate(logistic, calibration, logisticCalibration);
+            logisticCalibration = evaluateCandidate(logistic, calibration)
+                    .withCalibrationMethod(logistic.calibrator == null ? "NONE" : "PLATT");
 
             double gbtLambda = selectBestLambda(train, lambdas, FeatureSet.gbtLike());
             LogisticModel gbtLike = trainLogisticModel(train, gbtLambda, FeatureSet.gbtLike(), trainEpochs, learningRate);
-            CandidateMetrics gbtMetrics = evaluateCandidate(gbtLike, validation);
-            maybeCalibrate(gbtLike, validation, gbtMetrics);
+            CandidateMetrics gbtCalibration = evaluateCandidate(gbtLike, calibration);
+            maybeCalibrate(gbtLike, calibration, gbtCalibration);
+            gbtCalibration = evaluateCandidate(gbtLike, calibration)
+                    .withCalibrationMethod(gbtLike.calibrator == null ? "NONE" : "PLATT");
 
             RandomForestLikeModel rfLike = trainRandomForest(train, FeatureSet.base(), Math.max(10, rfTrees));
-            CandidateMetrics rfMetrics = evaluateCandidate(rfLike, validation);
+            CandidateMetrics rfCalibration = evaluateCandidate(rfLike, calibration);
 
-            CandidateMetrics bestAdvanced = gbtMetrics.brierScore <= rfMetrics.brierScore ? gbtMetrics : rfMetrics;
-            PredictModel bestAdvancedModel = bestAdvanced.brierScore <= rfMetrics.brierScore ? gbtLike : rfLike;
+            CandidateMetrics bestAdvanced = gbtCalibration.brierScore <= rfCalibration.brierScore
+                    ? gbtCalibration : rfCalibration;
+            PredictModel bestAdvancedModel = FAMILY_GBT_LIKE.equals(bestAdvanced.family) ? gbtLike : rfLike;
 
-            EnsembleModel ensemble = buildEnsemble(logistic, logisticMetrics, bestAdvancedModel, bestAdvanced);
-            CandidateMetrics ensembleMetrics = evaluateCandidate(ensemble, validation);
+            EnsembleModel ensemble = buildEnsemble(logistic, logisticCalibration, bestAdvancedModel, bestAdvanced);
+            CandidateMetrics ensembleCalibration = evaluateCandidate(ensemble, calibration);
 
-            List<CandidateMetrics> ranked = new ArrayList<>(List.of(logisticMetrics, gbtMetrics, rfMetrics, ensembleMetrics));
+            List<CandidateMetrics> ranked = new ArrayList<>(List.of(
+                    logisticCalibration, gbtCalibration, rfCalibration, ensembleCalibration));
             ranked.sort(Comparator.comparingDouble(c -> c.brierScore));
-            CandidateMetrics champion = ranked.get(0);
+            CandidateMetrics selectedOnCalibration = ranked.get(0);
+
+            CandidateMetrics logisticMetrics = evaluateCandidate(logistic, test)
+                    .withCalibrationMethod(logistic.calibrator == null ? "NONE" : "PLATT");
+            CandidateMetrics gbtMetrics = evaluateCandidate(gbtLike, test)
+                    .withCalibrationMethod(gbtLike.calibrator == null ? "NONE" : "PLATT");
+            CandidateMetrics rfMetrics = evaluateCandidate(rfLike, test);
+            CandidateMetrics ensembleMetrics = evaluateCandidate(ensemble, test);
+
+            Map<String, CandidateMetrics> testByFamily = Map.of(
+                    FAMILY_LOGISTIC, logisticMetrics,
+                    FAMILY_GBT_LIKE, gbtMetrics,
+                    FAMILY_RF_LIKE, rfMetrics,
+                    FAMILY_ENSEMBLE, ensembleMetrics
+            );
+            CandidateMetrics champion = testByFamily.get(selectedOnCalibration.family);
+            BenchmarkMetrics benchmarks = evaluateBenchmarks(train, test);
+            boolean timeSliceStable = stableAcrossTimeSlices(champion.model, train, test);
+            BootstrapStability bootstrap = bootstrapStability(champion.model, train, test);
+            boolean stable = timeSliceStable && bootstrap.passed();
+            boolean beatsKnownBaselines = champion.brierScore + minLiftForAdvanced < benchmarks.constantBrier()
+                    && champion.brierScore + minLiftForAdvanced < benchmarks.eloBrier()
+                    && champion.brierScore + minLiftForAdvanced < benchmarks.recentFormBrier();
+            boolean marketBenchmarkAvailable = false;
+            boolean promotionApproved = beatsKnownBaselines
+                    && stable
+                    && (!requireMarketBenchmark || marketBenchmarkAvailable);
 
             LocalDate trainFrom = train.get(0).matchDate;
             LocalDate trainTo = train.get(train.size() - 1).matchDate;
-            LocalDate valFrom = validation.get(0).matchDate;
-            LocalDate valTo = validation.get(validation.size() - 1).matchDate;
+            LocalDate valFrom = test.get(0).matchDate;
+            LocalDate valTo = test.get(test.size() - 1).matchDate;
             String jobId = "train-" + VERSION_TS.format(LocalDateTime.now());
             String championFamily = champion.family;
+
+            Map<String, Object> releaseEvidence = new LinkedHashMap<>();
+            releaseEvidence.put("datasetFingerprint", datasetFingerprint(samples));
+            releaseEvidence.put("calibrationFrom", calibration.get(0).matchDate.toString());
+            releaseEvidence.put("calibrationTo", calibration.get(calibration.size() - 1).matchDate.toString());
+            releaseEvidence.put("testFrom", valFrom.toString());
+            releaseEvidence.put("testTo", valTo.toString());
+            releaseEvidence.put("temporalGapDays", Math.max(0, temporalGapDays));
+            releaseEvidence.put("constantBrier", benchmarks.constantBrier());
+            releaseEvidence.put("eloBrier", benchmarks.eloBrier());
+            releaseEvidence.put("recentFormBrier", benchmarks.recentFormBrier());
+            releaseEvidence.put("marketBenchmark", "UNAVAILABLE_NO_HISTORICAL_CLOSING_PRICE_JOIN");
+            releaseEvidence.put("timeSliceStabilityPassed", timeSliceStable);
+            releaseEvidence.put("bootstrapSamples", bootstrap.samples());
+            releaseEvidence.put("bootstrapConstantSkillLower95", bootstrap.constantSkillLower95());
+            releaseEvidence.put("bootstrapEloSkillLower95", bootstrap.eloSkillLower95());
+            releaseEvidence.put("bootstrapRecentFormSkillLower95", bootstrap.recentFormSkillLower95());
+            releaseEvidence.put("bootstrapStabilityPassed", bootstrap.passed());
+            releaseEvidence.put("stabilityPassed", stable);
+            releaseEvidence.put("promotionApproved", promotionApproved);
+            releaseEvidence.put("promotionReason", promotionApproved
+                    ? "PASSED_UNTOUCHED_TEST_AND_STABILITY_GATES"
+                    : (!beatsKnownBaselines ? "FAILED_KNOWN_BASELINE_LIFT"
+                    : (!stable ? "FAILED_TEMPORAL_STABILITY"
+                    : "MARKET_BENCHMARK_UNAVAILABLE")));
 
             Map<String, TrainedModel> trained = new HashMap<>();
             trained.put(FAMILY_LOGISTIC, persistCandidate(
@@ -448,9 +546,9 @@ public class PredictionModelService {
                     logisticMetrics,
                     bestLambda,
                     cvFolds,
-                    FAMILY_LOGISTIC.equals(championFamily),
+                    promotionApproved && FAMILY_LOGISTIC.equals(championFamily),
                     "L2 logistic regression over historical feature vectors",
-                    null
+                    releaseEvidence
             ));
             trained.put(FAMILY_GBT_LIKE, persistCandidate(
                     jobId,
@@ -463,9 +561,9 @@ public class PredictionModelService {
                     gbtMetrics,
                     gbtLambda,
                     cvFolds,
-                    FAMILY_GBT_LIKE.equals(championFamily),
+                    promotionApproved && FAMILY_GBT_LIKE.equals(championFamily),
                     "Non-linear feature expansion (GBDT-like surrogate)",
-                    null
+                    releaseEvidence
             ));
             trained.put(FAMILY_RF_LIKE, persistCandidate(
                     jobId,
@@ -478,12 +576,12 @@ public class PredictionModelService {
                     rfMetrics,
                     null,
                     null,
-                    FAMILY_RF_LIKE.equals(championFamily),
+                    promotionApproved && FAMILY_RF_LIKE.equals(championFamily),
                     "Random forest style stump ensemble",
-                    null
+                    releaseEvidence
             ));
 
-            Map<String, Object> ensemblePayload = new LinkedHashMap<>();
+            Map<String, Object> ensemblePayload = new LinkedHashMap<>(releaseEvidence);
             ensemblePayload.put("logisticVersion", trained.get(FAMILY_LOGISTIC).version);
             String advancedFamily = bestAdvancedModel.family();
             TrainedModel advancedTrained = trained.get(advancedFamily);
@@ -502,29 +600,31 @@ public class PredictionModelService {
                     ensembleMetrics,
                     null,
                     null,
-                    FAMILY_ENSEMBLE.equals(championFamily),
+                    promotionApproved && FAMILY_ENSEMBLE.equals(championFamily),
                     "Weighted ensemble (logistic + best non-linear model)",
                     ensemblePayload
             ));
 
             activeModels.clear();
-            activeModels.putAll(trained);
-            if (!FAMILY_ENSEMBLE.equals(championFamily) && trained.get(championFamily) != null) {
-                // "ENSEMBLE" is the product's default selector. Route it to
-                // the validated champion when the ensemble did not win the
-                // holdout instead of silently serving an inactive candidate.
+            // Explicit family/version inspection remains available after a
+            // training run. The product default only receives a model after
+            // every release gate passes; otherwise it stays on the baseline.
+            activeModels.put(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC));
+            activeModels.put(FAMILY_GBT_LIKE, trained.get(FAMILY_GBT_LIKE));
+            activeModels.put(FAMILY_RF_LIKE, trained.get(FAMILY_RF_LIKE));
+            if (promotionApproved) {
                 activeModels.put(FAMILY_ENSEMBLE, trained.get(championFamily));
             }
 
             List<ModelTrainingReportDto.CandidateMetricDto> candidates = List.of(
-                    toCandidateDto(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC), logisticMetrics, FAMILY_LOGISTIC.equals(championFamily)),
-                    toCandidateDto(FAMILY_GBT_LIKE, trained.get(FAMILY_GBT_LIKE), gbtMetrics, FAMILY_GBT_LIKE.equals(championFamily)),
-                    toCandidateDto(FAMILY_RF_LIKE, trained.get(FAMILY_RF_LIKE), rfMetrics, FAMILY_RF_LIKE.equals(championFamily)),
-                    toCandidateDto(FAMILY_ENSEMBLE, trained.get(FAMILY_ENSEMBLE), ensembleMetrics, FAMILY_ENSEMBLE.equals(championFamily))
+                    toCandidateDto(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC), logisticMetrics, promotionApproved && FAMILY_LOGISTIC.equals(championFamily)),
+                    toCandidateDto(FAMILY_GBT_LIKE, trained.get(FAMILY_GBT_LIKE), gbtMetrics, promotionApproved && FAMILY_GBT_LIKE.equals(championFamily)),
+                    toCandidateDto(FAMILY_RF_LIKE, trained.get(FAMILY_RF_LIKE), rfMetrics, promotionApproved && FAMILY_RF_LIKE.equals(championFamily)),
+                    toCandidateDto(FAMILY_ENSEMBLE, trained.get(FAMILY_ENSEMBLE), ensembleMetrics, promotionApproved && FAMILY_ENSEMBLE.equals(championFamily))
             );
 
-            List<ModelTrainingReportDto.CalibrationBinDto> calibrationCurve = buildCalibrationCurve(champion.model, validation, 10);
-            List<ModelTrainingReportDto.RegimeMetricDto> validationRegimes = buildValidationRegimes(champion.model, validation);
+            List<ModelTrainingReportDto.CalibrationBinDto> calibrationCurve = buildCalibrationCurve(champion.model, test, 10);
+            List<ModelTrainingReportDto.RegimeMetricDto> validationRegimes = buildValidationRegimes(champion.model, test);
             List<ModelTrainingReportDto.RegimeMetricDto> operationalRegimes = buildOperationalRegimes();
             ModelTrainingReportDto report = new ModelTrainingReportDto(
                     jobId,
@@ -541,6 +641,7 @@ public class PredictionModelService {
                     operationalRegimes
             );
             lastTrainingReport.set(report);
+            persistTrainingReport(report, trained);
             return report;
         }
     }
@@ -777,13 +878,18 @@ public class PredictionModelService {
 
         List<Match> matches = matchRepository.findCompletedMatchesBetween(from, to);
         List<TrainingSample> samples = new ArrayList<>(matches.size());
+        Map<String, Boolean> seenIdentities = new HashMap<>();
         for (Match match : matches) {
             if (match.getPlayer1() == null || match.getPlayer2() == null || match.getDate() == null || match.getWinnerPlayerId() == null) {
                 continue;
             }
             Long p1Id = match.getPlayer1().getId();
             Long p2Id = match.getPlayer2().getId();
-            if (p1Id == null || p2Id == null) continue;
+            if (p1Id == null || p2Id == null || p1Id.equals(p2Id)) continue;
+            String identity = stableMatchIdentity(match);
+            if (!StringUtils.hasText(identity) || seenIdentities.putIfAbsent(identity, Boolean.TRUE) != null) {
+                continue;
+            }
             int label;
             if (Objects.equals(match.getWinnerPlayerId(), p1Id)) {
                 label = 1;
@@ -794,10 +900,197 @@ public class PredictionModelService {
             }
             LocalDate asOf = match.getDate().minusDays(1);
             MatchupFeatureVectorDto fv = featureService.buildMatchupFeatureVector(p1Id, p2Id, asOf);
-            samples.add(new TrainingSample(match.getDate(), toBaseFeatures(fv), label, trainingSampleWeight(fv)));
+            samples.add(new TrainingSample(
+                    match.getDate(), toBaseFeatures(fv), label, trainingSampleWeight(fv), identity));
         }
         samples.sort(Comparator.comparing(TrainingSample::matchDate));
         return samples;
+    }
+
+    private String stableMatchIdentity(Match match) {
+        if (StringUtils.hasText(match.getSourceFeedCode()) && StringUtils.hasText(match.getSourceFeedEventId())) {
+            return match.getSourceFeedCode().trim().toUpperCase(Locale.ROOT)
+                    + ":" + match.getSourceFeedEventId().trim();
+        }
+        if (StringUtils.hasText(match.getExternalId())) {
+            return "EXTERNAL:" + match.getExternalId().trim();
+        }
+        return null;
+    }
+
+    private TemporalSplit temporalSplit(List<TrainingSample> samples) {
+        List<LocalDate> dates = samples.stream()
+                .map(TrainingSample::matchDate)
+                .distinct()
+                .sorted()
+                .toList();
+        if (dates.size() < 8) {
+            throw new IllegalStateException("Training requires at least 8 distinct match dates for temporal isolation");
+        }
+        double fraction = clamp(holdoutRatio, 0.10, 0.25);
+        int calibrationDateIndex = Math.max(2, (int) Math.floor(dates.size() * (1.0 - (2.0 * fraction))));
+        int testDateIndex = Math.max(calibrationDateIndex + 2,
+                (int) Math.floor(dates.size() * (1.0 - fraction)));
+        testDateIndex = Math.min(testDateIndex, dates.size() - 2);
+        LocalDate calibrationStart = dates.get(calibrationDateIndex);
+        LocalDate testStart = dates.get(testDateIndex);
+        int gap = Math.max(0, temporalGapDays);
+        LocalDate trainEnd = calibrationStart.minusDays(gap + 1L);
+        LocalDate calibrationEnd = testStart.minusDays(gap + 1L);
+
+        List<TrainingSample> train = samples.stream()
+                .filter(sample -> !sample.matchDate().isAfter(trainEnd))
+                .toList();
+        List<TrainingSample> calibration = samples.stream()
+                .filter(sample -> !sample.matchDate().isBefore(calibrationStart)
+                        && !sample.matchDate().isAfter(calibrationEnd))
+                .toList();
+        List<TrainingSample> test = samples.stream()
+                .filter(sample -> !sample.matchDate().isBefore(testStart))
+                .toList();
+        if (train.size() < 8 || calibration.size() < 6 || test.size() < 6) {
+            throw new IllegalStateException(
+                    "Temporal train/calibration/test split is too small after purge gaps: "
+                            + train.size() + "/" + calibration.size() + "/" + test.size());
+        }
+        return new TemporalSplit(train, calibration, test);
+    }
+
+    private BenchmarkMetrics evaluateBenchmarks(List<TrainingSample> train, List<TrainingSample> test) {
+        double constant = constantProbability(train);
+        double constantBrier = 0.0;
+        double eloBrier = 0.0;
+        double recentFormBrier = 0.0;
+        double testWeight = 0.0;
+        for (TrainingSample sample : test) {
+            double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+            testWeight += weight;
+            constantBrier += weight * Math.pow(constant - sample.label(), 2.0);
+            double elo = clampProbability(0.5 + sample.baseFeatures()[4]);
+            double recentForm = clampProbability(0.5 + sample.baseFeatures()[1]);
+            eloBrier += weight * Math.pow(elo - sample.label(), 2.0);
+            recentFormBrier += weight * Math.pow(recentForm - sample.label(), 2.0);
+        }
+        return new BenchmarkMetrics(
+                constantBrier / Math.max(EPS, testWeight),
+                eloBrier / Math.max(EPS, testWeight),
+                recentFormBrier / Math.max(EPS, testWeight)
+        );
+    }
+
+    private double constantProbability(List<TrainingSample> train) {
+        double weightedWins = 0.0;
+        double trainWeight = 0.0;
+        for (TrainingSample sample : train) {
+            double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+            weightedWins += weight * sample.label();
+            trainWeight += weight;
+        }
+        return clampProbability(weightedWins / Math.max(EPS, trainWeight));
+    }
+
+    private boolean stableAcrossTimeSlices(PredictModel model,
+                                           List<TrainingSample> train,
+                                           List<TrainingSample> test) {
+        if (test.size() < 18) {
+            return false;
+        }
+        int segment = test.size() / 3;
+        for (int i = 0; i < 3; i++) {
+            int from = i * segment;
+            int to = i == 2 ? test.size() : (i + 1) * segment;
+            List<TrainingSample> window = test.subList(from, to);
+            if (window.size() < 6) {
+                return false;
+            }
+            double modelBrier = evaluateCandidate(model, window).brierScore;
+            BenchmarkMetrics baselines = evaluateBenchmarks(train, window);
+            if (modelBrier > baselines.constantBrier() + minLiftForAdvanced
+                    || modelBrier > baselines.eloBrier() + minLiftForAdvanced
+                    || modelBrier > baselines.recentFormBrier() + minLiftForAdvanced) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private BootstrapStability bootstrapStability(PredictModel model,
+                                                   List<TrainingSample> train,
+                                                   List<TrainingSample> test) {
+        final int samples = 500;
+        if (test.size() < 30) {
+            return new BootstrapStability(false, 0, -1.0, -1.0, -1.0);
+        }
+        double constant = constantProbability(train);
+        Random random = new Random(0x54544c4d4f44454cL);
+        List<Double> constantSkill = new ArrayList<>(samples);
+        List<Double> eloSkill = new ArrayList<>(samples);
+        List<Double> recentFormSkill = new ArrayList<>(samples);
+        for (int iteration = 0; iteration < samples; iteration++) {
+            double modelLoss = 0.0;
+            double constantLoss = 0.0;
+            double eloLoss = 0.0;
+            double recentFormLoss = 0.0;
+            double weightSum = 0.0;
+            for (int draw = 0; draw < test.size(); draw++) {
+                TrainingSample sample = test.get(random.nextInt(test.size()));
+                double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+                double label = sample.label();
+                double modelProbability = clampProbability(model.predict(sample.baseFeatures()));
+                double eloProbability = clampProbability(0.5 + sample.baseFeatures()[4]);
+                double recentProbability = clampProbability(0.5 + sample.baseFeatures()[1]);
+                weightSum += weight;
+                modelLoss += weight * Math.pow(modelProbability - label, 2.0);
+                constantLoss += weight * Math.pow(constant - label, 2.0);
+                eloLoss += weight * Math.pow(eloProbability - label, 2.0);
+                recentFormLoss += weight * Math.pow(recentProbability - label, 2.0);
+            }
+            double divisor = Math.max(EPS, weightSum);
+            constantSkill.add((constantLoss - modelLoss) / divisor);
+            eloSkill.add((eloLoss - modelLoss) / divisor);
+            recentFormSkill.add((recentFormLoss - modelLoss) / divisor);
+        }
+        double constantLower = lowerFivePercentile(constantSkill);
+        double eloLower = lowerFivePercentile(eloSkill);
+        double recentLower = lowerFivePercentile(recentFormSkill);
+        boolean passed = constantLower > minLiftForAdvanced
+                && eloLower > minLiftForAdvanced
+                && recentLower > minLiftForAdvanced;
+        return new BootstrapStability(passed, samples, constantLower, eloLower, recentLower);
+    }
+
+    private double lowerFivePercentile(List<Double> values) {
+        List<Double> sorted = new ArrayList<>(values);
+        sorted.sort(Double::compareTo);
+        int index = Math.max(0, (int) Math.floor((sorted.size() - 1) * 0.05));
+        return sorted.get(index);
+    }
+
+    private String datasetFingerprint(List<TrainingSample> samples) {
+        StringBuilder canonical = new StringBuilder(MODEL_SCHEMA_VERSION);
+        for (TrainingSample sample : samples) {
+            canonical.append('|').append(sample.identity())
+                    .append('|').append(sample.matchDate())
+                    .append('|').append(sample.label());
+            for (double value : sample.baseFeatures()) {
+                canonical.append('|').append(String.format(Locale.ROOT, "%.8f", value));
+            }
+        }
+        return sha256(canonical.toString());
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                out.append(String.format(Locale.ROOT, "%02x", b));
+            }
+            return out.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private double[] toBaseFeatures(MatchupFeatureVectorDto fv) {
@@ -1594,6 +1887,9 @@ public class PredictionModelService {
         entry.setActive(active);
         entry.setNotes(notes + " | job=" + jobId);
         Map<String, Object> payload = new LinkedHashMap<>(model.toPayload());
+        payload.put("schemaVersion", MODEL_SCHEMA_VERSION);
+        payload.put("baseFeatureCount", BASE_FEATURE_NAMES.length);
+        payload.put("featureSchemaHash", expectedFeatureSchemaHash());
         if (extraPayload != null && !extraPayload.isEmpty()) {
             payload.putAll(extraPayload);
         }
@@ -1612,12 +1908,33 @@ public class PredictionModelService {
         );
     }
 
+    private void persistTrainingReport(ModelTrainingReportDto report, Map<String, TrainedModel> trained) {
+        for (TrainedModel model : trained.values()) {
+            registryRepository.findByModelVersion(model.version).ifPresent(entry -> {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> payload = objectMapper.readValue(entry.getPayloadJson(), Map.class);
+                    payload.put("trainingReport", report);
+                    entry.setPayloadJson(serializePayload(payload));
+                    registryRepository.save(entry);
+                } catch (Exception ignored) {
+                    // The model payload remains valid even if report attachment
+                    // fails; latestTrainingReport() will truthfully return N/A.
+                }
+            });
+        }
+    }
+
     private String serializePayload(Map<String, Object> payload) {
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException e) {
             return "{\"error\":\"payload-serialization-failed\"}";
         }
+    }
+
+    private String expectedFeatureSchemaHash() {
+        return sha256(MODEL_SCHEMA_VERSION + "|" + String.join("|", BASE_FEATURE_NAMES));
     }
 
     private ModelRegistryEntryDto toRegistryDto(PredictionModelRegistryEntry e) {
@@ -1668,7 +1985,9 @@ public class PredictionModelService {
             logistic = activeModels.get(FAMILY_LOGISTIC);
             ensemble = activeModels.get(FAMILY_ENSEMBLE);
             if (logistic != null && ensemble != null) return;
-            trainModels(null, null);
+            // Prediction requests must never trigger an implicit retrain. An
+            // operator-reviewed training run may promote a compatible model;
+            // until then predict() deliberately falls back to the baseline.
         }
     }
 
@@ -1678,7 +1997,9 @@ public class PredictionModelService {
                                                 TrainedModel rfLike,
                                                 TrainedModel ensemble) {
         if (!StringUtils.hasText(requested)) {
-            return new ModelSelection(FAMILY_ENSEMBLE, ensemble, false);
+            return ensemble == null
+                    ? new ModelSelection(FAMILY_BASELINE, null, true)
+                    : new ModelSelection(FAMILY_ENSEMBLE, ensemble, false);
         }
         String trimmed = requested.trim();
         String upper = trimmed.toUpperCase(Locale.ROOT);
@@ -1692,6 +2013,9 @@ public class PredictionModelService {
                 case FAMILY_RF_LIKE -> rfLike;
                 default -> ensemble;
             };
+            if (FAMILY_ENSEMBLE.equals(upper) && selected == null) {
+                return new ModelSelection(FAMILY_BASELINE, null, true);
+            }
             return new ModelSelection(upper, selected, false);
         }
         TrainedModel byVersion = resolveModelByVersion(trimmed);
@@ -1732,10 +2056,6 @@ public class PredictionModelService {
         TrainedModel activeChampion = null;
 
         for (String family : List.of(FAMILY_LOGISTIC, FAMILY_GBT_LIKE, FAMILY_RF_LIKE)) {
-            loadLatestModelForFamily(family, loadedByVersion).ifPresent(model -> {
-                loadedByFamily.put(family, model);
-                loadedByVersion.put(model.version, model);
-            });
             List<PredictionModelRegistryEntry> activeRows =
                     registryRepository.findActiveByFamily(family, PageRequest.of(0, 1));
             if (!activeRows.isEmpty()) {
@@ -1748,10 +2068,6 @@ public class PredictionModelService {
             }
         }
         final TrainedModel nonEnsembleChampion = activeChampion;
-        loadLatestModelForFamily(FAMILY_ENSEMBLE, loadedByVersion).ifPresent(model -> {
-            loadedByFamily.put(FAMILY_ENSEMBLE, model);
-            loadedByVersion.put(model.version, model);
-        });
         List<PredictionModelRegistryEntry> activeEnsembleRows =
                 registryRepository.findActiveByFamily(FAMILY_ENSEMBLE, PageRequest.of(0, 1));
         if (!activeEnsembleRows.isEmpty()) {
@@ -1812,6 +2128,11 @@ public class PredictionModelService {
                                              Map<String, TrainedModel> knownByVersion) {
         try {
             JsonNode payload = objectMapper.readTree(entry.getPayloadJson());
+            if (!MODEL_SCHEMA_VERSION.equals(payload.path("schemaVersion").asText())
+                    || payload.path("baseFeatureCount").asInt(-1) != BASE_FEATURE_NAMES.length
+                    || !expectedFeatureSchemaHash().equals(payload.path("featureSchemaHash").asText())) {
+                return null;
+            }
             String payloadType = payload.path("type").asText(entry.getModelFamily()).toUpperCase(Locale.ROOT);
             return switch (payloadType) {
                 case FAMILY_LOGISTIC, FAMILY_GBT_LIKE -> restoreLogisticLike(payload);
@@ -1950,10 +2271,10 @@ public class PredictionModelService {
         if (featureCount == gbt.featureNames.length) {
             return gbt.transform;
         }
-        if (featureCount == 18) {
-            return FeatureSet.legacyGbtTransform();
+        if (featureCount == BASE_FEATURE_NAMES.length) {
+            return FeatureSet.base().transform;
         }
-        return x -> Arrays.copyOf(x, Math.min(featureCount, x.length));
+        throw new IllegalArgumentException("Unsupported prediction feature schema size: " + featureCount);
     }
 
     private String[] readStringArray(JsonNode node, int expectedLength) {
@@ -2093,7 +2414,28 @@ public class PredictionModelService {
                                      double ensembleProbability) {
     }
 
-    private record TrainingSample(LocalDate matchDate, double[] baseFeatures, int label, double sampleWeight) {
+    private record TrainingSample(LocalDate matchDate,
+                                  double[] baseFeatures,
+                                  int label,
+                                  double sampleWeight,
+                                  String identity) {
+    }
+
+    private record TemporalSplit(List<TrainingSample> train,
+                                 List<TrainingSample> calibration,
+                                 List<TrainingSample> test) {
+    }
+
+    private record BenchmarkMetrics(double constantBrier,
+                                    double eloBrier,
+                                    double recentFormBrier) {
+    }
+
+    private record BootstrapStability(boolean passed,
+                                      int samples,
+                                      double constantSkillLower95,
+                                      double eloSkillLower95,
+                                      double recentFormSkillLower95) {
     }
 
     private record ValidationObservation(double predicted, int label, double weight) {
@@ -2210,6 +2552,11 @@ public class PredictionModelService {
             this.logLoss = logLoss;
             this.brierScore = brierScore;
             this.calibrationMethod = calibrationMethod;
+        }
+
+        private CandidateMetrics withCalibrationMethod(String method) {
+            this.calibrationMethod = method;
+            return this;
         }
     }
 
@@ -2412,7 +2759,12 @@ public class PredictionModelService {
             payload.put("type", FAMILY_RF_LIKE);
             payload.put("featureNames", featureNames);
             payload.put("featureMeans", featureMeans);
-            payload.put("trees", stumps);
+            payload.put("trees", stumps.stream().map(stump -> Map.of(
+                    "featureIndex", stump.featureIndex,
+                    "threshold", stump.threshold,
+                    "leftProbability", stump.leftProbability,
+                    "rightProbability", stump.rightProbability
+            )).toList());
             return payload;
         }
     }

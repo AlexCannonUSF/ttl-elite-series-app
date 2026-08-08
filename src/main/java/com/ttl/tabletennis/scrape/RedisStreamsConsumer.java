@@ -22,12 +22,15 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Consumer-group bridge between Redis Streams and the existing typed Spring
@@ -60,9 +63,15 @@ public class RedisStreamsConsumer {
     private final long batchSize;
     private final AtomicBoolean groupsReady = new AtomicBoolean(false);
     private final Counter validatedCounter;
+    private final Counter decodedCounter;
     private final Counter dispatchedCounter;
+    private final Counter acknowledgedCounter;
+    private final Counter rejectedCounter;
     private final Counter dlqCounter;
     private final Counter pollFailureCounter;
+    private final AtomicLong heartbeatEpochMs = new AtomicLong();
+    private final AtomicLong lastProcessedEpochMs = new AtomicLong();
+    private final AtomicLong latestEventAgeMs = new AtomicLong();
 
     public RedisStreamsConsumer(
             FeatureFlagCatalog featureFlagCatalog,
@@ -85,9 +94,15 @@ public class RedisStreamsConsumer {
         this.consumerName = normalize(consumerName, "ttl-app-1");
         this.batchSize = Math.max(1L, batchSize);
         this.validatedCounter = counter(meterRegistry, "validated");
+        this.decodedCounter = counter(meterRegistry, "decoded");
         this.dispatchedCounter = counter(meterRegistry, "dispatched");
+        this.acknowledgedCounter = counter(meterRegistry, "acknowledged");
+        this.rejectedCounter = counter(meterRegistry, "rejected");
         this.dlqCounter = counter(meterRegistry, "dlq");
         this.pollFailureCounter = counter(meterRegistry, "poll_failure");
+        meterRegistry.gauge("ttl.ingest.redis.consumer.heartbeat.epoch_ms", heartbeatEpochMs);
+        meterRegistry.gauge("ttl.ingest.redis.consumer.last_processed.epoch_ms", lastProcessedEpochMs);
+        meterRegistry.gauge("ttl.ingest.redis.consumer.latest_event.age_ms", latestEventAgeMs);
     }
 
     @Scheduled(
@@ -116,6 +131,7 @@ public class RedisStreamsConsumer {
         ensureGroups();
         consume(mode, ReadOffset.from("0"));
         consume(mode, ReadOffset.lastConsumed());
+        heartbeatEpochMs.set(System.currentTimeMillis());
     }
 
     private void consume(String mode, ReadOffset readOffset) {
@@ -140,21 +156,29 @@ public class RedisStreamsConsumer {
     }
 
     void handleRecord(MapRecord<String, Object, Object> record, String mode) {
+        IngestEvent<?> event;
         try {
-            IngestEvent<?> event = codec.decode(record.getValue());
+            event = codec.decode(record.getValue());
+            decodedCounter.increment();
+            validatedCounter.increment();
             if ("on".equals(mode)) {
                 applicationEventPublisher.publishEvent(event);
                 dispatchedCounter.increment();
-            } else {
-                validatedCounter.increment();
             }
-            acknowledge(record);
         } catch (RuntimeException ex) {
+            rejectedCounter.increment();
             if (writeDlq(record, ex)) {
                 dlqCounter.increment();
                 acknowledge(record);
             }
+            return;
         }
+        // ACK failures are transport failures, not malformed business events;
+        // leave the record pending so the next poll can retry it.
+        acknowledge(record);
+        Instant now = Instant.now();
+        lastProcessedEpochMs.set(now.toEpochMilli());
+        latestEventAgeMs.set(Math.max(0L, Duration.between(event.observedAt(), now).toMillis()));
     }
 
     private void ensureGroups() {
@@ -185,11 +209,16 @@ public class RedisStreamsConsumer {
     }
 
     private void acknowledge(MapRecord<String, Object, Object> record) {
-        redisTemplate.orElseThrow().opsForStream().acknowledge(
+        Long acknowledged = redisTemplate.orElseThrow().opsForStream().acknowledge(
                 record.getStream(),
                 groupName,
                 record.getId()
         );
+        if (acknowledged == null || acknowledged <= 0L) {
+            throw new IllegalStateException(
+                    "Redis did not acknowledge stream record " + record.getStream() + "/" + record.getId());
+        }
+        acknowledgedCounter.increment();
     }
 
     private boolean writeDlq(MapRecord<String, Object, Object> record, RuntimeException failure) {

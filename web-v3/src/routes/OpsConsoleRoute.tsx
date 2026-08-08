@@ -202,23 +202,23 @@ export function OpsConsoleRoute() {
               tone={posture.feedWatch > 0 ? 'warn' : 'ok'}
             />
             <AttentionLink
-              detail={`${formatNumber(posture.maxLag)} max stream lag (warn ≥ ${LAG_WARN_THRESHOLD}), bus ${snapshot?.ingest?.bus.status ?? 'unknown'}.`}
+              detail={`${formatNumber(posture.maxLag)} max stream lag (warn ≥ ${snapshot?.ingest?.bus.partitionLagWarning ?? LAG_WARN_THRESHOLD}), bus ${snapshot?.ingest?.bus.status ?? 'unknown'}.`}
               icon={DatabaseZap}
               label="Inspect ingestion bus"
               to="/admin/ingest"
               tone={
-                posture.maxLag >= LAG_WARN_THRESHOLD
+                posture.maxLag >= (snapshot?.ingest?.bus.partitionLagWarning ?? LAG_WARN_THRESHOLD)
                   || isIngestBusUnhealthy(snapshot?.ingest?.bus.status)
                   ? 'warn'
                   : 'ok'
               }
             />
             <AttentionLink
-              detail={`${snapshot?.streams?.summary.enabledWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0} workers enabled, ${snapshot?.streams?.summary.activeForceRequests ?? 0} force request(s).`}
+              detail={`${snapshot?.streams?.summary.activeWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0} workers active; ${snapshot?.streams?.summary.availableComponents ?? 0} components configured.`}
               icon={Activity}
               label="Inspect stream workers"
               to="/admin/streams"
-              tone={(snapshot?.streams?.summary.offWorkers ?? 0) > 0 ? 'warn' : 'ok'}
+              tone="ok"
             />
             <AttentionLink
               detail={`${formatNumber(posture.diffRows)} filtered disagreement row(s), ${snapshot?.diffs?.summary.contradictionRows ?? 0} contradiction(s).`}
@@ -244,7 +244,7 @@ export function OpsConsoleRoute() {
           href="/admin/feeds"
           icon={RadioTower}
           metrics={[
-            ['Healthy', `${snapshot?.feeds?.summary.healthySources ?? 0}/${snapshot?.feeds?.summary.totalSources ?? 0}`],
+            ['Healthy', `${snapshot?.feeds?.summary.healthySources ?? 0}/${snapshot?.feeds?.summary.activeSources ?? 0} active`],
             ['Degraded', String(snapshot?.feeds?.summary.degradedSources ?? 0)],
             ['Down', String(snapshot?.feeds?.summary.downSources ?? 0)],
           ]}
@@ -266,7 +266,7 @@ export function OpsConsoleRoute() {
           href="/admin/streams"
           icon={Activity}
           metrics={[
-            ['Ready', `${snapshot?.streams?.summary.enabledWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0}`],
+            ['Active', `${snapshot?.streams?.summary.activeWorkers ?? 0}/${snapshot?.streams?.summary.totalWorkers ?? 0}`],
             ['ROI', String(snapshot?.streams?.summary.roiTemplates ?? 0)],
             ['VLM', String(snapshot?.streams?.summary.activeForceRequests ?? 0)],
           ]}
@@ -310,7 +310,8 @@ export function OpsConsoleRoute() {
           href="/admin/scrape"
           icon={Database}
           metrics={[
-            ['State', snapshot?.scrape ? (snapshot.scrape.running ? 'Running' : 'Idle') : '—'],
+            ['State', snapshot?.scrape?.currentState ?? '—'],
+            ['Last outcome', snapshot?.scrape?.lastRunStatus ?? '—'],
             ['Saved (last run)', snapshot?.scrape ? formatNumber(snapshot.scrape.savedMatches) : '—'],
             ['Mode', snapshot?.scrape?.mode ?? '—'],
           ]}
@@ -467,7 +468,6 @@ function summarizePosture(snapshot: OpsConsoleSnapshot | null) {
   const feedWatch = snapshot
     ? (snapshot.feeds?.summary.degradedSources ?? 0)
       + (snapshot.feeds?.summary.downSources ?? 0)
-      + (snapshot.feeds?.summary.idleSources ?? 0)
     : 0
   const dlqDepth = (snapshot?.feeds?.summary.totalDlqDepth ?? 0) + (snapshot?.ingest?.dlq.totalDepth ?? 0)
   const diffRows = snapshot?.diffs?.summary.disagreementRows ?? 0

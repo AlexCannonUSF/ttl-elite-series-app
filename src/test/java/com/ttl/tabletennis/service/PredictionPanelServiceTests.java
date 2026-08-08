@@ -48,7 +48,7 @@ class PredictionPanelServiceTests {
         assertEquals(0.1, panel.conformal().alpha(), 1e-9);
         assertTrue(List.of("CONFIDENT_TOP", "CONFIDENT_BOT", "AMBIGUOUS", "ANOMALOUS")
                 .contains(panel.conformal().label()));
-        assertEquals("mondrian-split-conformal", panel.conformal().method());
+        assertEquals("heuristic-uncalibrated", panel.conformal().method());
 
         assertEquals(2, panel.reliabilityCurve().size());
         assertEquals(50, panel.reliabilityCurve().get(0).count());

@@ -5,5 +5,7 @@ public record OpsIngestBusDto(String mode,
                               boolean redisAvailable,
                               String activeBus,
                               String streamPrefix,
+                              long partitionLagWarning,
+                              long partitionLagCritical,
                               String detail) {
 }

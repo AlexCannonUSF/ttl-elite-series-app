@@ -10,6 +10,7 @@ import com.ttl.tabletennis.dto.MatchupFeatureVectorDto;
 import com.ttl.tabletennis.dto.OddsRefreshResultDto;
 import com.ttl.tabletennis.dto.ValueOpportunityDto;
 import com.ttl.tabletennis.model.MatchOdds;
+import com.ttl.tabletennis.prediction.live.TableTennisLiveProbability;
 import com.ttl.tabletennis.repository.OddsQuoteRepository;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.ValueOpportunityRepository;
@@ -123,6 +124,9 @@ public class OddsValueEngineService {
 
     @Value("${ttl.odds.maxCompletedDataAgeDays:14}")
     private int maxCompletedDataAgeDays;
+
+    @Value("${ttl.prediction.liveScoreModelValidated:false}")
+    private boolean liveScoreModelValidated;
 
     public OddsValueEngineService(PredictionFacade predictionFacade,
                                   PlayerIdentityService playerIdentityService,
@@ -630,8 +634,6 @@ public class OddsValueEngineService {
                 LiveAdjustedProbability adjusted = applyLiveContext(
                         prediction.player1Probability(),
                         prediction.player2Probability(),
-                        implied1,
-                        implied2,
                         prediction.player1ConfidenceLow(),
                         prediction.player1ConfidenceHigh(),
                         odds
@@ -639,14 +641,16 @@ public class OddsValueEngineService {
                 PredictionModelService.AdaptiveRegimeTuning p1RegimeTuning = predictionFacade.currentAdaptiveRegimeTuning(
                         odds.isLive(),
                         odds.getMatchPhase(),
-                        implied1
+                        odds.isLive() ? 0.5 : implied1
                 );
                 PredictionModelService.AdaptiveRegimeTuning p2RegimeTuning = predictionFacade.currentAdaptiveRegimeTuning(
                         odds.isLive(),
                         odds.getMatchPhase(),
-                        implied2
+                        odds.isLive() ? 0.5 : implied2
                 );
-                adjusted = applyRegimeTuning(adjusted, p1RegimeTuning, p2RegimeTuning);
+                if (!odds.isLive()) {
+                    adjusted = applyRegimeTuning(adjusted, p1RegimeTuning, p2RegimeTuning);
+                }
 
                 double edge1 = adjusted.player1Probability() - implied1;
                 double edge2 = adjusted.player2Probability() - implied2;
@@ -659,12 +663,18 @@ public class OddsValueEngineService {
                 double confidenceLow = pickPlayer1 ? adjusted.player1ConfidenceLow() : adjusted.player2ConfidenceLow();
                 double confidenceHigh = pickPlayer1 ? adjusted.player1ConfidenceHigh() : adjusted.player2ConfidenceHigh();
                 boolean confidenceOk = pickPlayer1 ? p1ConfidenceOk : p2ConfidenceOk;
+                boolean promotedModel = predictionFacade.isPromotedModel(
+                        prediction.modelFamily(),
+                        prediction.modelVersion()
+                );
                 int suggestedAmericanOdds = pickPlayer1 ? decimalToAmerican(odds.getOddsA()) : decimalToAmerican(odds.getOddsB());
                 boolean longshotRisk = suggestedAmericanOdds > Math.abs(maxRecommendedAmericanOdds);
                 boolean recommended = suggestedEdge >= threshold
                         && confidenceOk
                         && !longshotRisk
-                        && modelDataFresh;
+                        && modelDataFresh
+                        && promotedModel
+                        && (!odds.isLive() || liveScoreModelValidated);
                 String topTrigger = null;
                 Double topTriggerContribution = null;
                 if (prediction.featureContributions() != null && !prediction.featureContributions().isEmpty()) {
@@ -696,6 +706,15 @@ public class OddsValueEngineService {
                 if (!modelDataFresh) {
                     rationale += " Recommendation paused: completed-match data is stale"
                             + (latestCompleted == null ? "." : " (latest " + latestCompleted + ").");
+                }
+                if (!promotedModel) {
+                    rationale += " Recommendation paused: no candidate has passed the independent promotion gates.";
+                }
+                if (odds.isLive()) {
+                    rationale += " Score-conditioned table-tennis estimate; sportsbook price is used only to measure edge.";
+                    if (!liveScoreModelValidated) {
+                        rationale += " Live recommendations remain watch-only until early/mid/late/deuce validation passes.";
+                    }
                 }
 
                 out.add(new LiveOddsRecommendationDto(
@@ -1078,6 +1097,9 @@ public class OddsValueEngineService {
                             double confidenceLow,
                             double confidenceHigh,
                             boolean recommended) {
+        if (!recommended) {
+            return "WATCH";
+        }
         double ciWidth = Math.max(0.0, confidenceHigh - confidenceLow);
         double score = edge * 100.0;
         score += recommended ? 3.0 : 0.0;
@@ -1233,8 +1255,6 @@ public class OddsValueEngineService {
 
     private LiveAdjustedProbability applyLiveContext(double baseP1,
                                                      double baseP2,
-                                                     double impliedP1,
-                                                     double impliedP2,
                                                      double p1Low,
                                                      double p1High,
                                                      MatchOdds odds) {
@@ -1244,76 +1264,35 @@ public class OddsValueEngineService {
         double high = clamp(p1High, 0.01, 0.99);
 
         if (odds != null && odds.isLive()) {
-            String phase = StringUtils.hasText(odds.getMatchPhase())
-                    ? odds.getMatchPhase().trim().toUpperCase(Locale.ROOT)
-                    : "LIVE";
             ScoreContext scoreContext = parseScoreContext(odds.getLiveScore());
-
-            double marketBlend = switch (phase) {
-                case "LIVE_EARLY" -> 0.18;
-                case "LIVE_MID" -> 0.28;
-                case "LIVE_LATE" -> 0.40;
-                default -> 0.26;
-            };
-            p1 = ((1.0 - marketBlend) * p1) + (marketBlend * impliedP1);
-
             if (scoreContext != null) {
-                if (scoreContext.setsP1 != null && scoreContext.setsP2 != null) {
-                    int setDelta = scoreContext.setsP1 - scoreContext.setsP2;
-                    double setBiasPerSet = switch (phase) {
-                        case "LIVE_EARLY" -> 0.05;
-                        case "LIVE_MID" -> 0.08;
-                        case "LIVE_LATE" -> 0.12;
-                        default -> 0.07;
-                    };
-                    p1 = clamp(p1 + clamp(setDelta * setBiasPerSet, -0.30, 0.30), 0.01, 0.99);
-
-                    int setsTop = Math.max(scoreContext.setsP1, scoreContext.setsP2);
-                    int setsMargin = Math.abs(setDelta);
-                    if (setsTop >= 3 && setsMargin >= 1) {
-                        p1 = setDelta > 0 ? 0.965 : 0.035;
-                    }
-                }
-
-                if (scoreContext.pointsP1 != null && scoreContext.pointsP2 != null) {
-                    int pointDelta = scoreContext.pointsP1 - scoreContext.pointsP2;
-                    int topPoints = Math.max(scoreContext.pointsP1, scoreContext.pointsP2);
-                    double pointWeight = switch (phase) {
-                        case "LIVE_EARLY" -> 0.012;
-                        case "LIVE_MID" -> 0.018;
-                        case "LIVE_LATE" -> 0.024;
-                        default -> 0.016;
-                    };
-                    if (topPoints >= 10) {
-                        pointWeight *= 1.5;
-                    } else if (topPoints >= 8) {
-                        pointWeight *= 1.2;
-                    }
-                    p1 = clamp(p1 + clamp(pointDelta * pointWeight, -0.14, 0.14), 0.01, 0.99);
-                    if (topPoints >= 10 && Math.abs(pointDelta) >= 1) {
-                        double gamePointBias = clamp(Math.abs(pointDelta) * 0.012, 0.012, 0.05);
-                        p1 = clamp(p1 + (pointDelta > 0 ? gamePointBias : -gamePointBias), 0.01, 0.99);
-                    }
-                }
+                p1 = TableTennisLiveProbability.estimate(
+                        p1,
+                        scoreContext.setsP1,
+                        scoreContext.setsP2,
+                        scoreContext.pointsP1,
+                        scoreContext.pointsP2
+                ).player1MatchProbability();
+                low = TableTennisLiveProbability.estimate(
+                        low,
+                        scoreContext.setsP1,
+                        scoreContext.setsP2,
+                        scoreContext.pointsP1,
+                        scoreContext.pointsP2
+                ).player1MatchProbability();
+                high = TableTennisLiveProbability.estimate(
+                        high,
+                        scoreContext.setsP1,
+                        scoreContext.setsP2,
+                        scoreContext.pointsP1,
+                        scoreContext.pointsP2
+                ).player1MatchProbability();
             } else {
-                p1 = 0.5 + ((p1 - 0.5) * 0.88);
+                p1 = 0.5 + ((p1 - 0.5) * 0.90);
+                double spread = Math.max(0.04, (high - low) * 0.60);
+                low = clamp(p1 - spread, 0.01, 0.99);
+                high = clamp(p1 + spread, 0.01, 0.99);
             }
-
-            double spread = (high - low) * 0.5;
-            if (scoreContext != null && scoreContext.setsP1 != null && scoreContext.setsP2 != null) {
-                int setDeltaAbs = Math.abs(scoreContext.setsP1 - scoreContext.setsP2);
-                spread *= Math.max(0.45, 1.0 - (setDeltaAbs * 0.22));
-            } else {
-                spread *= 1.10;
-            }
-            if ("LIVE_LATE".equals(phase)) {
-                spread *= 0.78;
-            } else if ("LIVE_EARLY".equals(phase)) {
-                spread *= 1.06;
-            }
-            spread = clamp(spread, 0.02, 0.40);
-            low = clamp(p1 - spread, 0.01, 0.99);
-            high = clamp(p1 + spread, 0.01, 0.99);
         }
 
         p1 = clamp(p1, 0.01, 0.99);
@@ -1410,7 +1389,7 @@ public class OddsValueEngineService {
 
         for (int i = 1; i < pairs.size(); i++) {
             int[] pair = pairs.get(i);
-            if (pointsP1 == null && isLikelyPointScore(pair[0], pair[1])) {
+            if (pointsP1 == null && isPlausiblePointScore(pair[0], pair[1])) {
                 pointsP1 = pair[0];
                 pointsP2 = pair[1];
                 continue;
@@ -1435,11 +1414,15 @@ public class OddsValueEngineService {
     }
 
     private boolean isLikelySetScore(int left, int right) {
-        return Math.max(left, right) <= 7;
+        return Math.max(left, right) <= 3;
     }
 
     private boolean isLikelyPointScore(int left, int right) {
         return Math.max(left, right) >= 8;
+    }
+
+    private boolean isPlausiblePointScore(int left, int right) {
+        return left >= 0 && right >= 0 && Math.max(left, right) <= 99;
     }
 
     private String buildMatchupKey(Long player1Id,

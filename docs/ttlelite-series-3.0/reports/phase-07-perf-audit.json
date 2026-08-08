@@ -1,96 +1,116 @@
 {
-  "generatedAt": "2026-07-29T17:57:47.054Z",
+  "generatedAt": "2026-08-08T04:17:16.991Z",
   "budgets": {
     "initialJsGzKb": 450,
     "lcpMs": 2000,
     "ttiMs": 1500
   },
   "bundle": {
-    "indexHtmlBytes": 563,
-    "indexHtmlGzBytes": 348,
-    "initialJsGzBytes": 114325,
-    "initialCssGzBytes": 7994,
+    "indexHtmlBytes": 572,
+    "indexHtmlGzBytes": 357,
+    "initialJsGzBytes": 96775,
+    "initialCssGzBytes": 11228,
     "jsAssets": [
       {
-        "href": "/v3/assets/index-CmO2AJk3.js",
-        "file": "assets/index-CmO2AJk3.js",
-        "bytes": 358199,
-        "gzBytes": 114325
+        "href": "/v3/assets/index-7m3kFwYC.js",
+        "file": "assets/index-7m3kFwYC.js",
+        "bytes": 300068,
+        "gzBytes": 96775
       }
     ],
     "cssAssets": [
       {
-        "href": "/v3/assets/index-CHbgC9F8.css",
-        "file": "assets/index-CHbgC9F8.css",
-        "bytes": 39112,
-        "gzBytes": 7994
+        "href": "/v3/assets/index-By4nOVXE.css",
+        "file": "assets/index-By4nOVXE.css",
+        "bytes": 59625,
+        "gzBytes": 11228
       }
     ],
     "allAssets": [
       {
-        "file": "index-CmO2AJk3.js",
-        "bytes": 358199,
-        "gzBytes": 114325
+        "file": "index-7m3kFwYC.js",
+        "bytes": 300068,
+        "gzBytes": 96775
       },
       {
-        "file": "LiveBoardRoute-HgldDc3t.js",
-        "bytes": 189563,
-        "gzBytes": 61073
+        "file": "card-BDR_7XY1.js",
+        "bytes": 51509,
+        "gzBytes": 17214
       },
       {
-        "file": "index-CHbgC9F8.css",
-        "bytes": 39112,
-        "gzBytes": 7994
+        "file": "index-By4nOVXE.css",
+        "bytes": 59625,
+        "gzBytes": 11228
       },
       {
-        "file": "MatchDetailRoute-G-KrVxSW.js",
-        "bytes": 27731,
-        "gzBytes": 7935
+        "file": "ReviewRoute-DMccCcZO.js",
+        "bytes": 34997,
+        "gzBytes": 10394
       },
       {
-        "file": "ReviewRoute-DcPZKOpb.js",
-        "bytes": 24350,
-        "gzBytes": 7863
+        "file": "MatchDetailRoute-DJolBF52.js",
+        "bytes": 29287,
+        "gzBytes": 8482
       },
       {
-        "file": "OpsConsoleRoute-DKxoSvfE.js",
-        "bytes": 11681,
-        "gzBytes": 4070
+        "file": "LiveBoardRoute-BycsDY_V.js",
+        "bytes": 22871,
+        "gzBytes": 7540
       },
       {
-        "file": "ScrapeRoute-Bi8Vnd6l.js",
-        "bytes": 12941,
-        "gzBytes": 3978
+        "file": "AdminHubRoute-BTDzTKKt.js",
+        "bytes": 19530,
+        "gzBytes": 6377
       },
       {
-        "file": "OpsDiffsRoute-Z2ldxEkb.js",
-        "bytes": 12161,
-        "gzBytes": 3830
+        "file": "BettorMatchupPanel-DnbJpFoL.js",
+        "bytes": 17499,
+        "gzBytes": 4963
       },
       {
-        "file": "OpsFeedsRoute-DOT5uSoH.js",
-        "bytes": 11860,
-        "gzBytes": 3762
+        "file": "OpsConsoleRoute-BZiaUKd9.js",
+        "bytes": 11730,
+        "gzBytes": 4088
       },
       {
-        "file": "MlQualityRoute-DYwelIBu.js",
-        "bytes": 10508,
-        "gzBytes": 3565
+        "file": "ScrapeRoute-CT7sd9-M.js",
+        "bytes": 12972,
+        "gzBytes": 3987
       },
       {
-        "file": "OpsStreamsRoute-nrHX3MC5.js",
-        "bytes": 11202,
-        "gzBytes": 3456
+        "file": "MlQualityRoute-C7rzjX-x.js",
+        "bytes": 11664,
+        "gzBytes": 3849
       },
       {
-        "file": "OpsIngestRoute-CYtfGFHI.js",
-        "bytes": 9872,
-        "gzBytes": 3054
+        "file": "OpsDiffsRoute-Bjxjw2QE.js",
+        "bytes": 12150,
+        "gzBytes": 3828
       },
       {
-        "file": "api-CYqFZpRN.js",
-        "bytes": 1124,
-        "gzBytes": 516
+        "file": "OpsFeedsRoute-DIe4MrvD.js",
+        "bytes": 11976,
+        "gzBytes": 3704
+      },
+      {
+        "file": "OpsIngestRoute-COI8Szv-.js",
+        "bytes": 11680,
+        "gzBytes": 3620
+      },
+      {
+        "file": "OpsStreamsRoute-BP9wkrM3.js",
+        "bytes": 11251,
+        "gzBytes": 3465
+      },
+      {
+        "file": "api-DZ1QdZ6t.js",
+        "bytes": 1472,
+        "gzBytes": 586
+      },
+      {
+        "file": "api-B4Nn2Sql.js",
+        "bytes": 1199,
+        "gzBytes": 498
       },
       {
         "file": "api-wfhLC4dg.js",
@@ -99,8 +119,8 @@
       },
       {
         "file": "index.html",
-        "bytes": 563,
-        "gzBytes": 348
+        "bytes": 572,
+        "gzBytes": 357
       },
       {
         "file": "api-C9DPuymP.js",
@@ -108,69 +128,76 @@
         "gzBytes": 324
       },
       {
-        "file": "shield-alert-BK3m2Fkp.js",
+        "file": "shield-alert-HmcUj-90.js",
         "bytes": 354,
-        "gzBytes": 262
+        "gzBytes": 261
       },
       {
-        "file": "radio-BCTtLDkC.js",
+        "file": "radio-Dzna87EH.js",
         "bytes": 375,
-        "gzBytes": 251
+        "gzBytes": 250
       },
       {
-        "file": "database-zap-CBcw6n-d.js",
+        "file": "database-zap-1SMUzGke.js",
         "bytes": 340,
         "gzBytes": 246
       },
       {
-        "file": "triangle-alert-B4zriUSs.js",
-        "bytes": 266,
-        "gzBytes": 215
-      },
-      {
-        "file": "timer-reset-0m9swzOm.js",
+        "file": "timer-reset-Bl_JR8Nl.js",
         "bytes": 270,
-        "gzBytes": 210
+        "gzBytes": 207
       },
       {
-        "file": "chart-column-C7iQDJBS.js",
-        "bytes": 252,
-        "gzBytes": 195
+        "file": "dollar-sign-YxpIz-i7.js",
+        "bytes": 220,
+        "gzBytes": 189
       },
       {
-        "file": "chevron-right-BmxUsWsD.js",
-        "bytes": 213,
-        "gzBytes": 178
-      },
-      {
-        "file": "circle-check-kCRY5Ykn.js",
+        "file": "circle-check-zFdmEwWP.js",
         "bytes": 174,
-        "gzBytes": 166
+        "gzBytes": 164
       },
       {
-        "file": "clock-3-BrmhLISS.js",
+        "file": "clock-3-oB-yoFxb.js",
         "bytes": 165,
-        "gzBytes": 165
+        "gzBytes": 164
+      },
+      {
+        "file": "target-CfvgKMl7.js",
+        "bytes": 222,
+        "gzBytes": 158
+      },
+      {
+        "file": "loader-circle-BRQK-jkZ.js",
+        "bytes": 140,
+        "gzBytes": 153
+      },
+      {
+        "file": "chevron-left-DyvOxNew.js",
+        "bytes": 131,
+        "gzBytes": 144
       }
     ]
   },
   "runtime": {
     "samples": 3,
-    "lcpMs": 374,
-    "ttiMs": 61.60000002384186,
-    "fcpMs": 374,
+    "lcpMs": 136,
+    "ttiMs": 52.5,
+    "fcpMs": 136,
     "rawLcp": [
-      548,
-      200
+      224,
+      136,
+      132
     ],
     "rawTti": [
-      228.79999995231628,
-      54.39999997615814,
-      61.60000002384186
+      77.19999992847443,
+      52.5,
+      46.799999952316284
     ],
     "rawFcp": [
-      548,
-      200
+      224,
+      136,
+      132
     ]
   }
 }

@@ -1,48 +1,53 @@
 # Phase 07 Performance Audit
-Generated: 2026-07-29T17:57:47.069Z
+Generated: 2026-08-08T04:17:16.998Z
 ## Budgets vs measured
 | Metric | Budget | Measured | Status |
 | --- | ---: | ---: | :---: |
-| Initial JS bundle (gz) | 450 KB | 111.65 KB (24.8% of budget) | PASS |
-| Initial CSS bundle (gz) | (no spec budget) | 7.81 KB | INFO |
-| LCP (median of 3) | 2000 ms | 374 ms | PASS |
-| TTI proxy (domInteractive, median of 3) | 1500 ms | 62 ms | PASS |
-| FCP (median of 3) | (informational) | 374 ms | INFO |
+| Initial JS bundle (gz) | 450 KB | 94.51 KB (21.0% of budget) | PASS |
+| Initial CSS bundle (gz) | (no spec budget) | 10.96 KB | INFO |
+| LCP (median of 3) | 2000 ms | 136 ms | PASS |
+| TTI proxy (domInteractive, median of 3) | 1500 ms | 53 ms | PASS |
+| FCP (median of 3) | (informational) | 136 ms | INFO |
 ## Initial-payload composition
 | Asset | bytes | gz bytes |
 | --- | ---: | ---: |
-| `assets/index-CmO2AJk3.js` | 358199 | 114325 |
-| `assets/index-CHbgC9F8.css` | 39112 | 7994 |
-| **Total JS gz** |  | **114325 (111.65 KB)** |
-| **Total CSS gz** |  | **7994 (7.81 KB)** |
+| `assets/index-7m3kFwYC.js` | 300068 | 96775 |
+| `assets/index-By4nOVXE.css` | 59625 | 11228 |
+| **Total JS gz** |  | **96775 (94.51 KB)** |
+| **Total CSS gz** |  | **11228 (10.96 KB)** |
 ## All built assets (gz desc)
 | Asset | bytes | gz bytes |
 | --- | ---: | ---: |
-| `index-CmO2AJk3.js` | 358199 | 114325 |
-| `LiveBoardRoute-HgldDc3t.js` | 189563 | 61073 |
-| `index-CHbgC9F8.css` | 39112 | 7994 |
-| `MatchDetailRoute-G-KrVxSW.js` | 27731 | 7935 |
-| `ReviewRoute-DcPZKOpb.js` | 24350 | 7863 |
-| `OpsConsoleRoute-DKxoSvfE.js` | 11681 | 4070 |
-| `ScrapeRoute-Bi8Vnd6l.js` | 12941 | 3978 |
-| `OpsDiffsRoute-Z2ldxEkb.js` | 12161 | 3830 |
-| `OpsFeedsRoute-DOT5uSoH.js` | 11860 | 3762 |
-| `MlQualityRoute-DYwelIBu.js` | 10508 | 3565 |
-| `OpsStreamsRoute-nrHX3MC5.js` | 11202 | 3456 |
-| `OpsIngestRoute-CYtfGFHI.js` | 9872 | 3054 |
-| `api-CYqFZpRN.js` | 1124 | 516 |
+| `index-7m3kFwYC.js` | 300068 | 96775 |
+| `card-BDR_7XY1.js` | 51509 | 17214 |
+| `index-By4nOVXE.css` | 59625 | 11228 |
+| `ReviewRoute-DMccCcZO.js` | 34997 | 10394 |
+| `MatchDetailRoute-DJolBF52.js` | 29287 | 8482 |
+| `LiveBoardRoute-BycsDY_V.js` | 22871 | 7540 |
+| `AdminHubRoute-BTDzTKKt.js` | 19530 | 6377 |
+| `BettorMatchupPanel-DnbJpFoL.js` | 17499 | 4963 |
+| `OpsConsoleRoute-BZiaUKd9.js` | 11730 | 4088 |
+| `ScrapeRoute-CT7sd9-M.js` | 12972 | 3987 |
+| `MlQualityRoute-C7rzjX-x.js` | 11664 | 3849 |
+| `OpsDiffsRoute-Bjxjw2QE.js` | 12150 | 3828 |
+| `OpsFeedsRoute-DIe4MrvD.js` | 11976 | 3704 |
+| `OpsIngestRoute-COI8Szv-.js` | 11680 | 3620 |
+| `OpsStreamsRoute-BP9wkrM3.js` | 11251 | 3465 |
+| `api-DZ1QdZ6t.js` | 1472 | 586 |
+| `api-B4Nn2Sql.js` | 1199 | 498 |
 | `api-wfhLC4dg.js` | 1432 | 428 |
-| `index.html` | 563 | 348 |
+| `index.html` | 572 | 357 |
 | `api-C9DPuymP.js` | 467 | 324 |
-| `shield-alert-BK3m2Fkp.js` | 354 | 262 |
-| `radio-BCTtLDkC.js` | 375 | 251 |
-| `database-zap-CBcw6n-d.js` | 340 | 246 |
-| `triangle-alert-B4zriUSs.js` | 266 | 215 |
-| `timer-reset-0m9swzOm.js` | 270 | 210 |
-| `chart-column-C7iQDJBS.js` | 252 | 195 |
-| `chevron-right-BmxUsWsD.js` | 213 | 178 |
-| `circle-check-kCRY5Ykn.js` | 174 | 166 |
-| `clock-3-BrmhLISS.js` | 165 | 165 |
+| `shield-alert-HmcUj-90.js` | 354 | 261 |
+| `radio-Dzna87EH.js` | 375 | 250 |
+| `database-zap-1SMUzGke.js` | 340 | 246 |
+| `timer-reset-Bl_JR8Nl.js` | 270 | 207 |
+| `dollar-sign-YxpIz-i7.js` | 220 | 189 |
+| `circle-check-zFdmEwWP.js` | 174 | 164 |
+| `clock-3-oB-yoFxb.js` | 165 | 164 |
+| `target-CfvgKMl7.js` | 222 | 158 |
+| `loader-circle-BRQK-jkZ.js` | 140 | 153 |
+| `chevron-left-DyvOxNew.js` | 131 | 144 |
 ## Notes
 - Initial JS gz size sums every `<script>` and `<link rel="modulepreload">` referenced from `index.html`; this is what the browser is forced to fetch and parse before the first interactive paint.
 - LCP is captured via a `PerformanceObserver` with `buffered: true` against the served `/v3/` Home route in headless Chrome at viewport 1440×1100; samples are run from a fresh context each time and reported as median.

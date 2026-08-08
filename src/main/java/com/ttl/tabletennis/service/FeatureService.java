@@ -18,10 +18,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -509,7 +507,11 @@ public class FeatureService {
     }
 
     private LocalDate toDateBucket(LocalDate date) {
-        return date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        // Historical feature vectors are date-sensitive. A weekly bucket lets a
+        // vector computed for Monday leak into later matches in the same week,
+        // making training output depend on request order. Cache exact as-of
+        // dates instead; the TTL still prevents repeated database work.
+        return date;
     }
 
     private boolean isCacheValid(CacheEntry<?> entry) {

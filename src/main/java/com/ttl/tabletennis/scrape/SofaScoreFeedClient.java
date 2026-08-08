@@ -112,6 +112,11 @@ public class SofaScoreFeedClient implements FeedClient<MirrorObservationPayload>
     }
 
     @Override
+    public boolean enabled() {
+        return enabled;
+    }
+
+    @Override
     public List<IngestEvent<MirrorObservationPayload>> pullOnce(PullContext ctx) {
         if (!enabled) {
             return List.of();

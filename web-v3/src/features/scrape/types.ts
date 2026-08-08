@@ -2,11 +2,14 @@
 
 export type ScrapeStatus = {
   running: boolean
+  currentState: string
   mode: string
+  lastRunStatus: string
   startedAt: string | null
   finishedAt: string | null
   savedMatches: number
   error: string | null
+  errorClass: string | null
 }
 
 export type ScrapeRunRecord = {

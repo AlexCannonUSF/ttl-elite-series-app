@@ -71,9 +71,12 @@ public class OpsFeedsService {
 
         OpsFeedsSummaryDto summary = new OpsFeedsSummaryDto(
                 feeds.size(),
-                countByStatus(feeds, "HEALTHY"),
-                countByStatus(feeds, "DEGRADED"),
-                countByStatus(feeds, "DOWN"),
+                countByLifecycle(feeds, "ACTIVE"),
+                countByLifecycle(feeds, "STANDBY"),
+                countByLifecycle(feeds, "DISABLED"),
+                countActiveByStatus(feeds, "HEALTHY"),
+                countActiveByStatus(feeds, "DEGRADED"),
+                countActiveByStatus(feeds, "DOWN"),
                 countByStatus(feeds, "IDLE"),
                 feeds.stream().mapToLong(OpsFeedStatusDto::dlqDepth).sum()
         );
@@ -83,11 +86,18 @@ public class OpsFeedsService {
     private OpsFeedStatusDto toDto(FeedHealth health, FeedClient<?> feedClient, Instant generatedAt) {
         long dlqDepth = ingestDlqRepository.countBySourceId(health.source());
         String status = classify(health, dlqDepth);
+        String lifecycle = lifecycle(health, feedClient, generatedAt);
+        String demandState = "ACTIVE".equals(lifecycle)
+                ? (health.inFlight() > 0 ? "IN_FLIGHT" : "SCHEDULED")
+                : ("STANDBY".equals(lifecycle) ? "NO_CURRENT_DEMAND" : "NOT_CONFIGURED");
 
         return new OpsFeedStatusDto(
                 health.source().id(),
                 health.source().tier().name(),
                 capabilities(feedClient),
+                lifecycle,
+                demandState,
+                cause(lifecycle, status, health, dlqDepth),
                 status,
                 isLiveTick(health, generatedAt),
                 successRateOrNull(health, status),
@@ -102,6 +112,37 @@ public class OpsFeedsService {
                 health.lastFailure(),
                 latestSampleAt(health.source())
         );
+    }
+
+    private String lifecycle(FeedHealth health, FeedClient<?> feedClient, Instant generatedAt) {
+        if (feedClient == null || !feedClient.enabled()) {
+            return "DISABLED";
+        }
+        if (health.source() == SourceId.HR_MKT || health.inFlight() > 0 || hasRecentActivity(health, generatedAt)) {
+            return "ACTIVE";
+        }
+        return "STANDBY";
+    }
+
+    private boolean hasRecentActivity(FeedHealth health, Instant generatedAt) {
+        Instant latest = health.lastSuccess();
+        if (health.lastFailure() != null && (latest == null || health.lastFailure().isAfter(latest))) {
+            latest = health.lastFailure();
+        }
+        return latest != null
+                && Duration.between(latest, generatedAt).abs().toSeconds() <= DOWN_STALENESS_SECONDS;
+    }
+
+    private String cause(String lifecycle, String status, FeedHealth health, long dlqDepth) {
+        if ("DISABLED".equals(lifecycle)) return "CLIENT_NOT_CONFIGURED";
+        if ("STANDBY".equals(lifecycle)) return "NO_CURRENT_DEMAND";
+        if (dlqDepth > 0) return "DEAD_LETTER_PRESSURE";
+        if (hasActiveBackoff(health.backoffState())) return "BACKOFF_ACTIVE";
+        if (hasText(health.lastError()) && isErrorRecent(health)) return "RECENT_FAILURE";
+        if ("DOWN".equals(status)) return "STALE_OR_UNREACHABLE";
+        if ("DEGRADED".equals(status)) return "SLA_OUTSIDE_GUARDRAIL";
+        if ("IDLE".equals(status)) return "AWAITING_FIRST_POLL";
+        return "NOMINAL";
     }
 
     private List<String> capabilities(FeedClient<?> feedClient) {
@@ -206,5 +247,16 @@ public class OpsFeedsService {
         return feeds.stream()
                 .filter(feed -> status.equals(feed.status()))
                 .count();
+    }
+
+    private long countActiveByStatus(List<OpsFeedStatusDto> feeds, String status) {
+        return feeds.stream()
+                .filter(feed -> "ACTIVE".equals(feed.lifecycle()))
+                .filter(feed -> status.equals(feed.status()))
+                .count();
+    }
+
+    private long countByLifecycle(List<OpsFeedStatusDto> feeds, String lifecycle) {
+        return feeds.stream().filter(feed -> lifecycle.equals(feed.lifecycle())).count();
     }
 }

@@ -241,6 +241,31 @@ export function OpsIngestRoute() {
 
       <Card className="mt-5">
         <CardHeader>
+          <Badge variant="accent" className="w-fit">Parity & Soak</Badge>
+          <CardTitle>Redis process-lifetime delivery evidence</CardTitle>
+          <CardDescription>
+            Publisher, decoder, acknowledgement, rejection, and soak counters are shown separately. A seven-day pass
+            is never inferred from an empty stream or a restarted process.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {data ? (
+            <>
+              <MetricTile label="Published / Ack" value={`${formatNumber(data.telemetry.published)} / ${formatNumber(data.telemetry.acknowledged)}`} icon={RadioTower} />
+              <MetricTile label="Parity Delta" value={formatNumber(data.telemetry.parityDelta)} icon={Gauge} />
+              <MetricTile label="Rejected / DLQ" value={`${formatNumber(data.telemetry.rejected)} / ${formatNumber(data.telemetry.dlq)}`} icon={ListRestart} />
+              <MetricTile label="Soak" value={formatState(data.telemetry.soakStatus)} icon={DatabaseZap} />
+              <MetricTile label="Validated / Sent" value={`${formatNumber(data.telemetry.validated)} / ${formatNumber(data.telemetry.dispatched)}`} icon={ShieldCheck} />
+              <MetricTile label="Throughput" value={`${formatDecimal(data.telemetry.throughputPerMinute)} / min`} icon={Activity} />
+              <MetricTile label="Consumer Heartbeat" value={formatDateTime(data.telemetry.consumerHeartbeatAt)} icon={TimerReset} />
+              <MetricTile label="Latest Event Age" value={formatMilliseconds(data.telemetry.latestEventAgeMs)} icon={Gauge} />
+            </>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-5">
+        <CardHeader>
           <Badge variant="accent" className="w-fit">
             Redis Streams
           </Badge>
@@ -294,7 +319,13 @@ function PartitionRow({ partition }: { partition: OpsIngestPartition }) {
         {formatNumber(partition.streamLength)}
       </td>
       <td className="px-3 py-4 align-top text-sm text-[var(--ink)]">{formatNumber(partition.consumerGroups)}</td>
-      <td className="px-3 py-4 align-top text-sm text-[var(--ink)]">{formatNumber(partition.pendingCount)}</td>
+      <td className="px-3 py-4 align-top text-sm text-[var(--ink)]">
+        <p>{formatNumber(partition.pendingCount)}</p>
+        <p className="mt-1 text-xs text-[var(--ink-muted)]">
+          {partition.oldestPendingAgeSeconds === null ? 'No pending age' : `oldest ${formatSeconds(partition.oldestPendingAgeSeconds)}`}
+          {' · '}{formatNumber(partition.redeliveryCount)} redeliveries
+        </p>
+      </td>
       <td className="px-3 py-4 align-top text-sm font-medium text-[var(--ink-strong)]">{formatLag(partition.lag)}</td>
       <td className="rounded-r-[22px] px-3 py-4 align-top text-sm text-[var(--ink-muted)]">
         {partition.lastGeneratedId ?? 'None'}
@@ -365,6 +396,30 @@ function formatTrustTier(value: string) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
+}
+
+function formatDecimal(value: number | null) {
+  if (value === null) {
+    return 'N/A'
+  }
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value)
+}
+
+function formatMilliseconds(value: number | null) {
+  if (value === null) {
+    return 'N/A'
+  }
+  return value < 1000 ? `${formatNumber(value)} ms` : formatSeconds(Math.round(value / 1000))
+}
+
+function formatSeconds(value: number) {
+  if (value < 60) {
+    return `${formatNumber(value)}s`
+  }
+  if (value < 3600) {
+    return `${Math.floor(value / 60)}m ${value % 60}s`
+  }
+  return `${Math.floor(value / 3600)}h ${Math.floor((value % 3600) / 60)}m`
 }
 
 function formatLag(value: number | null) {

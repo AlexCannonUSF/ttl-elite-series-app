@@ -84,6 +84,11 @@ abstract class AbstractJsonMirrorFeedClient implements FeedClient<MirrorObservat
     }
 
     @Override
+    public boolean enabled() {
+        return enabled;
+    }
+
+    @Override
     public SourceId source() {
         return source;
     }

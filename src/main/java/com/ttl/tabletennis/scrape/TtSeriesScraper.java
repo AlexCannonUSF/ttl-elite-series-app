@@ -1194,14 +1194,70 @@ public class TtSeriesScraper {
     }
 
     public ScrapeStatus status() {
+        boolean running = scrapeRunning.get();
+        if (!running) {
+            List<ScrapeRun> recent = scrapeRunRepository.findRecent(null, null, PageRequest.of(0, 1));
+            if (!recent.isEmpty()) {
+                ScrapeRun last = recent.get(0);
+                String error = last.getErrorMessage();
+                return new ScrapeStatus(
+                        false,
+                        "IDLE",
+                        last.getMode(),
+                        last.getStatus(),
+                        last.getStartedAt(),
+                        last.getFinishedAt(),
+                        last.getMatchesAdded(),
+                        error,
+                        errorClass(error)
+                );
+            }
+        }
         return new ScrapeStatus(
-                scrapeRunning.get(),
+                running,
+                running ? "RUNNING" : "IDLE",
                 lastMode.get(),
+                running ? "RUNNING" : (lastError.get() == null ? "UNKNOWN" : "FAILED"),
                 lastStartedAt.get(),
                 lastFinishedAt.get(),
                 lastSavedMatches.get(),
-                lastError.get()
+                lastError.get(),
+                errorClass(lastError.get())
         );
+    }
+
+    private String errorClass(String error) {
+        if (!StringUtils.hasText(error)) return null;
+        String normalized = error.toLowerCase(Locale.ROOT);
+        if (normalized.contains("entitymanager")
+                || normalized.contains("transaction")
+                || normalized.contains("database")
+                || normalized.contains("jdbc")
+                || normalized.contains("sql")) {
+            return "DATABASE";
+        }
+        if (normalized.contains("timeout") || normalized.contains("timed out")) {
+            return "TIMEOUT";
+        }
+        if (normalized.contains("parse")
+                || normalized.contains("selector")
+                || normalized.contains("json")
+                || normalized.contains("malformed")) {
+            return "PARSE";
+        }
+        if (normalized.contains("identity")
+                || normalized.contains("unresolved player")
+                || normalized.contains("player alias")) {
+            return "IDENTITY";
+        }
+        if (normalized.contains("http")
+                || normalized.contains("connection")
+                || normalized.contains("upstream")
+                || normalized.contains("dns")
+                || normalized.contains("socket")) {
+            return "UPSTREAM";
+        }
+        return "OTHER";
     }
 
     public List<ScrapeRunRecord> recentRuns(String status, String mode, Integer limit) {
@@ -1513,11 +1569,14 @@ public class TtSeriesScraper {
     }
 
     public record ScrapeStatus(boolean running,
+                               String currentState,
                                String mode,
+                               String lastRunStatus,
                                LocalDateTime startedAt,
                                LocalDateTime finishedAt,
                                int savedMatches,
-                               String error) {
+                               String error,
+                               String errorClass) {
     }
 
     public record ScrapeRunRecord(int runId,

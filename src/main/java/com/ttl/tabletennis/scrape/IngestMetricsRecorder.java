@@ -14,11 +14,16 @@ import java.util.Map;
 public class IngestMetricsRecorder {
 
     private final MeterRegistry meterRegistry;
+    private final Counter redisPublishedCounter;
     private final Map<SourceId, Counter> eventCounters = new EnumMap<>(SourceId.class);
     private final Map<SourceId, DistributionSummary> latencySummaries = new EnumMap<>(SourceId.class);
 
     public IngestMetricsRecorder(MeterRegistry meterRegistry) {
         this.meterRegistry = meterRegistry;
+        this.redisPublishedCounter = Counter.builder("ttl.ingest.redis.publisher.records")
+                .description("Redis ingestion publisher records by outcome")
+                .tag("outcome", "published")
+                .register(meterRegistry);
     }
 
     public void recordPublished(IngestEvent<?> event) {
@@ -28,6 +33,10 @@ public class IngestMetricsRecorder {
 
         counter(event.source()).increment();
         latencySummary(event.source()).record(latencyMillis(event.observedAt()));
+    }
+
+    public void recordRedisPublished() {
+        redisPublishedCounter.increment();
     }
 
     private Counter counter(SourceId sourceId) {

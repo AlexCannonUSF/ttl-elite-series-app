@@ -20,6 +20,11 @@ public interface FeedClient<T> {
 
     FeedHealth currentHealth();
 
+    /** Whether this integration is configured to perform work in this process. */
+    default boolean enabled() {
+        return true;
+    }
+
     default BackoffPolicy backoff() {
         return BackoffPolicy.phaseZeroDefault();
     }

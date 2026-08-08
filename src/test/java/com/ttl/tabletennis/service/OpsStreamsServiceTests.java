@@ -82,6 +82,9 @@ class OpsStreamsServiceTests {
         assertEquals(6, snapshot.summary().totalWorkers());
         assertEquals(6, snapshot.summary().enabledWorkers());
         assertEquals(0, snapshot.summary().offWorkers());
+        assertEquals(0, snapshot.summary().activeWorkers());
+        assertEquals(6, snapshot.summary().availableComponents());
+        assertEquals("SCAFFOLD_NOT_RUNNING", snapshot.summary().pipelineStatus());
         assertEquals(2, snapshot.summary().routeOverrides());
         assertEquals(1, snapshot.summary().roiTemplates());
         assertEquals(1, snapshot.summary().activeForceRequests());
@@ -107,7 +110,7 @@ class OpsStreamsServiceTests {
         assertEquals(0, snapshot.summary().enabledWorkers());
         assertEquals(6, snapshot.summary().offWorkers());
         assertEquals("OFF", snapshot.vlmUsage().meteringState());
-        assertTrue(snapshot.workers().stream().allMatch(worker -> "OFF".equals(worker.status())));
+        assertTrue(snapshot.workers().stream().allMatch(worker -> "DISABLED".equals(worker.status())));
     }
 
     private OpsStreamsService service(FeatureFlagCatalog flags,

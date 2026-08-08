@@ -6,10 +6,17 @@ import com.ttl.tabletennis.dto.OpsIngestDlqDto;
 import com.ttl.tabletennis.dto.OpsIngestDlqSourceDto;
 import com.ttl.tabletennis.dto.OpsIngestDto;
 import com.ttl.tabletennis.dto.OpsIngestPartitionDto;
+import com.ttl.tabletennis.dto.OpsIngestTelemetryDto;
 import com.ttl.tabletennis.repository.IngestDlqRepository;
 import com.ttl.tabletennis.scrape.SourceId;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.RedisSystemException;
+import org.springframework.data.redis.connection.stream.PendingMessage;
+import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.StreamInfo;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StreamOperations;
@@ -18,6 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.lang.management.ManagementFactory;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -41,6 +49,12 @@ public class OpsIngestService {
     private final String streamPrefix;
     private final long partitionLagWarning;
     private final long partitionLagCritical;
+    private final MeterRegistry meterRegistry;
+    private final java.util.concurrent.atomic.AtomicReference<SoakBaseline> soakBaseline =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    @Value("${ttl.ingestion.redis.consumer.group:ttl-app}")
+    private String consumerGroupName = "ttl-app";
 
     public OpsIngestService(FeatureFlagCatalog featureFlagCatalog,
                             IngestDlqRepository ingestDlqRepository,
@@ -48,12 +62,25 @@ public class OpsIngestService {
                             @Value("${ttl.ingestion.redis.streamPrefix:ttl}") String streamPrefix,
                             @Value("${ttl.ops.ingest.partitionLagWarning:1000}") long partitionLagWarning,
                             @Value("${ttl.ops.ingest.partitionLagCritical:10000}") long partitionLagCritical) {
+        this(featureFlagCatalog, ingestDlqRepository, redisTemplate, streamPrefix,
+                partitionLagWarning, partitionLagCritical, null);
+    }
+
+    @Autowired
+    public OpsIngestService(FeatureFlagCatalog featureFlagCatalog,
+                            IngestDlqRepository ingestDlqRepository,
+                            Optional<StringRedisTemplate> redisTemplate,
+                            @Value("${ttl.ingestion.redis.streamPrefix:ttl}") String streamPrefix,
+                            @Value("${ttl.ops.ingest.partitionLagWarning:1000}") long partitionLagWarning,
+                            @Value("${ttl.ops.ingest.partitionLagCritical:10000}") long partitionLagCritical,
+                            MeterRegistry meterRegistry) {
         this.featureFlagCatalog = featureFlagCatalog;
         this.ingestDlqRepository = ingestDlqRepository;
         this.redisTemplate = redisTemplate == null ? Optional.empty() : redisTemplate;
         this.streamPrefix = normalizeStreamPrefix(streamPrefix);
         this.partitionLagWarning = Math.max(0L, partitionLagWarning);
         this.partitionLagCritical = Math.max(this.partitionLagWarning, partitionLagCritical);
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional(readOnly = true)
@@ -69,9 +96,87 @@ public class OpsIngestService {
         return new OpsIngestDto(
                 generatedAt,
                 bus(mode, redisAvailable, partitions, dlq.totalDepth()),
+                telemetry(mode, redisAvailable, partitions, generatedAt),
                 dlq,
                 partitions
         );
+    }
+
+    private OpsIngestTelemetryDto telemetry(String mode,
+                                            boolean redisAvailable,
+                                            List<OpsIngestPartitionDto> partitions,
+                                            Instant generatedAt) {
+        long published = counter("ttl.ingest.redis.publisher.records", "published");
+        long decoded = counter("ttl.ingest.redis.consumer.records", "decoded");
+        long validated = counter("ttl.ingest.redis.consumer.records", "validated");
+        long dispatched = counter("ttl.ingest.redis.consumer.records", "dispatched");
+        long acknowledged = counter("ttl.ingest.redis.consumer.records", "acknowledged");
+        long rejected = counter("ttl.ingest.redis.consumer.records", "rejected");
+        long dlq = counter("ttl.ingest.redis.consumer.records", "dlq");
+        long pollFailures = counter("ttl.ingest.redis.consumer.records", "poll_failure");
+        boolean redisMode = "shadow".equals(mode) || "on".equals(mode);
+        boolean fullTrafficCoverage = redisMode && redisAvailable && partitions.stream()
+                .allMatch(partition -> partition.streamLength() > 0 && partition.consumerGroups() > 0);
+        if (!fullTrafficCoverage) {
+            soakBaseline.set(null);
+        } else {
+            soakBaseline.compareAndSet(null, new SoakBaseline(
+                    generatedAt, published, acknowledged, rejected, dlq, pollFailures));
+        }
+        SoakBaseline baseline = soakBaseline.get();
+        long parityDelta = baseline == null
+                ? published - acknowledged
+                : (published - baseline.published()) - (acknowledged - baseline.acknowledged());
+        long rejectedDuringSoak = baseline == null ? rejected : rejected - baseline.rejected();
+        long dlqDuringSoak = baseline == null ? dlq : dlq - baseline.dlq();
+        long pollFailuresDuringSoak = baseline == null
+                ? pollFailures
+                : pollFailures - baseline.pollFailures();
+        Instant startedAt = baseline == null ? null : baseline.startedAt();
+        Long soakSeconds = startedAt == null ? null
+                : Math.max(0L, java.time.Duration.between(startedAt, generatedAt).toSeconds());
+        String soakStatus;
+        if (!redisMode) soakStatus = "NOT_APPLICABLE";
+        else if (!redisAvailable) soakStatus = "REDIS_UNAVAILABLE";
+        else if (!fullTrafficCoverage) soakStatus = "WAITING_FOR_FULL_TRAFFIC";
+        else if (parityDelta != 0) soakStatus = "PARITY_MISMATCH";
+        else if (rejectedDuringSoak > 0 || dlqDuringSoak > 0 || pollFailuresDuringSoak > 0) {
+            soakStatus = "FAILED_PROCESS_LIFETIME_CHECKS";
+        }
+        else if (soakSeconds != null && soakSeconds >= 604_800L) soakStatus = "PASSED_7_DAY_SOAK";
+        else soakStatus = "SOAKING";
+        long redeliveries = partitions.stream().mapToLong(OpsIngestPartitionDto::redeliveryCount).sum();
+        double uptimeMinutes = Math.max(1.0 / 60.0,
+                ManagementFactory.getRuntimeMXBean().getUptime() / 60_000.0);
+        return new OpsIngestTelemetryDto(
+                published, decoded, validated, dispatched, acknowledged, rejected, dlq, pollFailures,
+                parityDelta,
+                redeliveries,
+                acknowledged / uptimeMinutes,
+                gaugeInstant("ttl.ingest.redis.consumer.heartbeat.epoch_ms"),
+                gaugeInstant("ttl.ingest.redis.consumer.last_processed.epoch_ms"),
+                gaugeLong("ttl.ingest.redis.consumer.latest_event.age_ms"),
+                fullTrafficCoverage,
+                soakSeconds,
+                soakStatus);
+    }
+
+    private long counter(String name, String outcome) {
+        if (meterRegistry == null) return 0L;
+        Counter counter = meterRegistry.find(name).tag("outcome", outcome).counter();
+        return counter == null ? 0L : Math.round(counter.count());
+    }
+
+    private Instant gaugeInstant(String name) {
+        Long epochMs = gaugeLong(name);
+        return epochMs == null || epochMs <= 0L ? null : Instant.ofEpochMilli(epochMs);
+    }
+
+    private Long gaugeLong(String name) {
+        if (meterRegistry == null) return null;
+        var gauge = meterRegistry.find(name).gauge();
+        if (gauge == null || !Double.isFinite(gauge.value())) return null;
+        return Math.max(0L, Math.round(gauge.value()));
     }
 
     private OpsIngestBusDto bus(String mode,
@@ -108,6 +213,8 @@ public class OpsIngestService {
                 redisAvailable,
                 activeBus,
                 streamPrefix,
+                partitionLagWarning,
+                partitionLagCritical,
                 detail
         );
     }
@@ -150,6 +257,7 @@ public class OpsIngestService {
             StreamInfo.XInfoGroups groups = streamGroups(streamOps, key);
             long groupCount = groups == null ? 0L : groups.size();
             long pending = pendingCount(groups);
+            PendingStats pendingStats = pendingStats(streamOps, key, pending);
             Long lag = lag(length, groups, pending);
             String status = partitionStatus(length, lag);
             String detail = groupCount == 0L && length > 0L
@@ -163,12 +271,39 @@ public class OpsIngestService {
                     length,
                     groupCount,
                     pending,
+                    pendingStats.oldestAgeSeconds(),
+                    pendingStats.redeliveryCount(),
                     lag,
                     info == null ? null : blankToNull(info.lastGeneratedId()),
                     detail
             );
         } catch (RuntimeException ex) {
             return unavailable(key, family.label(), ex.getMessage());
+        }
+    }
+
+    private PendingStats pendingStats(StreamOperations<String, Object, Object> streamOps,
+                                      String key,
+                                      long pendingCount) {
+        if (pendingCount <= 0L) return new PendingStats(null, 0L);
+        try {
+            long sampleSize = Math.min(1_000L, pendingCount);
+            PendingMessages messages = streamOps.pending(
+                    key,
+                    consumerGroupName,
+                    Range.unbounded(),
+                    sampleSize
+            );
+            long oldestSeconds = 0L;
+            long redeliveries = 0L;
+            for (PendingMessage message : messages) {
+                oldestSeconds = Math.max(oldestSeconds,
+                        Math.max(0L, message.getElapsedTimeSinceLastDelivery().toSeconds()));
+                redeliveries += Math.max(0L, message.getTotalDeliveryCount() - 1L);
+            }
+            return new PendingStats(oldestSeconds, redeliveries);
+        } catch (RuntimeException ignored) {
+            return new PendingStats(null, 0L);
         }
     }
 
@@ -246,6 +381,8 @@ public class OpsIngestService {
                 0L,
                 0L,
                 null,
+                0L,
+                null,
                 null,
                 detail == null || detail.isBlank() ? "Redis stream info is unavailable." : detail
         );
@@ -284,5 +421,16 @@ public class OpsIngestService {
     }
 
     private record StreamFamily(String suffix, String label) {
+    }
+
+    private record PendingStats(Long oldestAgeSeconds, long redeliveryCount) {
+    }
+
+    private record SoakBaseline(Instant startedAt,
+                                long published,
+                                long acknowledged,
+                                long rejected,
+                                long dlq,
+                                long pollFailures) {
     }
 }

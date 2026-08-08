@@ -147,7 +147,7 @@ export function OpsStreamsRoute() {
             {data ? (
               <>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <MetricTile label="Workers Ready" value={`${data.summary.enabledWorkers}/${data.summary.totalWorkers}`} icon={Cpu} />
+                  <MetricTile label="Workers Active" value={`${data.summary.activeWorkers}/${data.summary.totalWorkers}`} icon={Cpu} />
                   <MetricTile label="Route Overrides" value={String(data.summary.routeOverrides)} icon={Route} />
                   <MetricTile label="ROI Templates" value={String(data.summary.roiTemplates)} icon={Eye} />
                   <MetricTile label="Force VLM" value={String(data.summary.activeForceRequests)} icon={Zap} />
@@ -161,7 +161,7 @@ export function OpsStreamsRoute() {
                       <p className="mt-2 text-sm font-medium text-[var(--ink-strong)]">{formatDateTime(data.generatedAt)}</p>
                     </div>
                     <div className="text-right text-sm text-[var(--ink-muted)]">
-                      <p>{refreshing ? 'Refreshing in place…' : 'Live polling active'}</p>
+                      <p>{refreshing ? 'Refreshing in place…' : data.summary.pipelineStatus.replaceAll('_', ' ')}</p>
                       <p className="mt-1">{data.summary.routeWarnings} route catalog warning(s)</p>
                     </div>
                   </div>

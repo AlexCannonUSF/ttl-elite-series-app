@@ -71,6 +71,7 @@ class OddsValueEngineServiceTests {
         // different mock return). Reset it before every test so each test's
         // when(hardRockOddsScraper.fetch()) hook is actually exercised.
         oddsValueEngineService.clearScrapeCacheForTest();
+        when(predictionFacade.isPromotedModel(any(), any())).thenReturn(true);
     }
 
     @Test
@@ -165,6 +166,46 @@ class OddsValueEngineServiceTests {
         assertTrue(row.rationale().contains("overall"));
         assertTrue(row.rationale().contains("model agreement"));
         assertTrue(row.rationale().contains("Regime tuning:"));
+    }
+
+    @Test
+    void unpromotedCandidateRemainsWatchOnlyEvenWhenItsEdgePasses() {
+        Player p1 = playerRepository.save(new Player("Candidate", "Alpha"));
+        Player p2 = playerRepository.save(new Player("Candidate", "Beta"));
+
+        when(playerIdentityService.findCanonicalPlayer("Candidate Alpha")).thenReturn(Optional.of(p1));
+        when(playerIdentityService.findCanonicalPlayer("Candidate Beta")).thenReturn(Optional.of(p2));
+        when(hardRockOddsScraper.fetch()).thenReturn(List.of(
+                new MatchOdds("Candidate Alpha", "Candidate Beta", 2.20, 1.70)));
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+                .thenReturn(PredictionModelService.AdaptiveRegimeTuning.neutral("All Settled"));
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("LOGISTIC")))
+                .thenReturn(new PredictionModelService.PredictionSnapshot(
+                        "LOGISTIC",
+                        "candidate-logistic-1",
+                        "PLATT",
+                        0.78,
+                        0.22,
+                        0.72,
+                        0.84,
+                        List.of(new MatchupAnalysisDto.FeatureContributionDto("Recent Form Delta", 0.25)),
+                        reliabilityFeatureVector(p1.getId(), p2.getId()),
+                        0.60,
+                        0.78,
+                        0.62,
+                        0.76,
+                        0.74,
+                        0.77
+                ));
+        when(predictionFacade.isPromotedModel("LOGISTIC", "candidate-logistic-1")).thenReturn(false);
+
+        LiveOddsRecommendationDto row = oddsValueEngineService
+                .liveOddsRecommendations("CONSERVATIVE", "LOGISTIC", 10, false)
+                .get(0);
+
+        assertFalse(row.recommended());
+        assertEquals("WATCH", row.grade());
+        assertTrue(row.rationale().contains("no candidate has passed the independent promotion gates"));
     }
 
     @Test

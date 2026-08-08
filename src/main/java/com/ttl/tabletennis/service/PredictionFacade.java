@@ -117,6 +117,10 @@ public class PredictionFacade {
         return record("latestTrainingReport", predictionModelService::latestTrainingReport);
     }
 
+    public boolean isPromotedModel(String family, String version) {
+        return predictionModelService.isPromotedModel(family, version);
+    }
+
     public List<AdaptiveRegimeProfileDto> currentAdaptiveRegimeProfiles() {
         return record("currentAdaptiveRegimeProfiles", predictionModelService::currentAdaptiveRegimeProfiles);
     }
@@ -131,7 +135,12 @@ public class PredictionFacade {
     }
 
     public ModelTrainingReportDto trainModels(LocalDate fromDate, LocalDate toDate) {
-        return record("trainModels", () -> predictionModelService.trainModels(fromDate, toDate));
+        ModelTrainingReportDto report = record(
+                "trainModels",
+                () -> predictionModelService.trainModels(fromDate, toDate)
+        );
+        predictCache.clear();
+        return report;
     }
 
     private void fireShadow(Long player1Id,

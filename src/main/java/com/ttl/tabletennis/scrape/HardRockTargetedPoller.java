@@ -38,6 +38,11 @@ public class HardRockTargetedPoller implements FeedClient<MatchOdds> {
     }
 
     @Override
+    public boolean enabled() {
+        return enabled;
+    }
+
+    @Override
     public List<IngestEvent<MatchOdds>> pullOnce(PullContext ctx) {
         if (!enabled) {
             return List.of();

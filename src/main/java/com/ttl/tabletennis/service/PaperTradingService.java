@@ -170,7 +170,7 @@ public class PaperTradingService {
     @Value("${ttl.paper.requireRecommendation:false}")
     private boolean requireRecommendation;
 
-    @Value("${ttl.paper.allowLive:true}")
+    @Value("${ttl.paper.allowLive:false}")
     private boolean allowLive;
 
     @Value("${ttl.paper.allowPrematch:true}")

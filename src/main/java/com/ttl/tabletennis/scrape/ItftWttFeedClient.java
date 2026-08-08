@@ -92,6 +92,11 @@ public class ItftWttFeedClient implements FeedClient<ItftWttHistoricalPayload> {
     }
 
     @Override
+    public boolean enabled() {
+        return enabled;
+    }
+
+    @Override
     public List<IngestEvent<ItftWttHistoricalPayload>> pullOnce(PullContext ctx) {
         if (!enabled) {
             return List.of();

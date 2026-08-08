@@ -106,7 +106,9 @@ export function OpsFeedsRoute() {
     if (!data) {
       return []
     }
-    return data.feeds.filter((feed) => feed.status !== 'HEALTHY').slice(0, 4)
+    return data.feeds
+      .filter((feed) => feed.lifecycle === 'ACTIVE' && (feed.status === 'DEGRADED' || feed.status === 'DOWN'))
+      .slice(0, 4)
   }, [data])
 
   const orderedFeeds = useMemo(() => {
@@ -171,8 +173,8 @@ export function OpsFeedsRoute() {
             {data ? (
               <>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <MetricTile label="Total Sources" value={String(data.summary.totalSources)} icon={Waves} />
-                  <MetricTile label="Healthy" value={String(data.summary.healthySources)} icon={Clock3} />
+                  <MetricTile label="Active Sources" value={String(data.summary.activeSources)} icon={Waves} />
+                  <MetricTile label="Healthy Active" value={String(data.summary.healthySources)} icon={Clock3} />
                   <MetricTile
                     label="Watchlist"
                     value={String(data.summary.degradedSources + data.summary.downSources)}
@@ -213,14 +215,14 @@ export function OpsFeedsRoute() {
             <Badge className="w-fit">Attention Now</Badge>
             <CardTitle>Sources that need a closer look</CardTitle>
             <CardDescription>
-              Degraded, down, or idle sources are surfaced here first so we can judge where score continuity or later
-              fallback work may be vulnerable.
+              Only active, demanded sources are health-alerted. Standby and disabled integrations remain visible in
+              inventory without creating false incidents.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
             {attentionFeeds.length === 0 && data ? (
               <div className="rounded-[22px] border border-[var(--line)] bg-[rgba(255,255,255,0.72)] p-4 text-sm text-[var(--ink-muted)]">
-                No feeds are currently outside the healthy band.
+                No active feeds are currently outside the healthy band.
               </div>
             ) : null}
 
@@ -265,6 +267,7 @@ export function OpsFeedsRoute() {
               <thead>
                 <tr className="text-left text-xs uppercase tracking-[0.22em] text-[var(--ink-muted)]">
                   <th className="px-3 pb-1 font-semibold">Source</th>
+                  <th className="px-3 pb-1 font-semibold">Lifecycle</th>
                   <th className="px-3 pb-1 font-semibold">Health</th>
                   <th className="px-3 pb-1 font-semibold">Success 5m</th>
                   <th className="px-3 pb-1 font-semibold">Latency</th>
@@ -334,6 +337,11 @@ function FeedRow({ feed, focused }: { feed: OpsFeedStatus; focused: boolean }) {
             ))}
           </div>
         </div>
+      </td>
+      <td className="px-3 py-4 align-top text-sm text-[var(--ink)]">
+        <p className="font-medium text-[var(--ink-strong)]">{feed.lifecycle}</p>
+        <p className="mt-1 text-[var(--ink-muted)]">{feed.demandState.replaceAll('_', ' ')}</p>
+        <p className="mt-1 text-[var(--ink-muted)]">{feed.cause.replaceAll('_', ' ')}</p>
       </td>
       <td className="px-3 py-4 align-top">
         <div className="space-y-2">
