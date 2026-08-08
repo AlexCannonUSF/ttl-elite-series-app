@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  BadgeDollarSign,
   CheckCircle2,
   CircleDotDashed,
   Eye,
@@ -84,7 +85,7 @@ export function ModelPerformanceScorecard() {
             </Badge>
             <CardTitle className="mt-2">Model winner scorecard</CardTitle>
             <CardDescription className="mt-2 max-w-3xl">
-              Grades the higher-probability winner on every observed match. This is prediction accuracy—not betting ROI—and a value bet can be on a different side.
+              Grades the higher-probability winner on every observed match and tracks a separate flat-$1 return at the captured Hard Rock price. The real paper trader still uses its own value and risk gates.
             </CardDescription>
           </div>
           <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading || refreshing}>
@@ -95,7 +96,7 @@ export function ModelPerformanceScorecard() {
       </CardHeader>
 
       <CardContent className="grid gap-5 p-5 sm:p-6">
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
           <ScoreMetric
             icon={UserCheck}
             label="Your live progress"
@@ -116,6 +117,21 @@ export function ModelPerformanceScorecard() {
             value={`${data?.correct ?? 0}–${data?.incorrect ?? 0}`}
             detail={`${data?.settledCalls ?? 0} finished · ${data?.noLean ?? 0} no lean`}
             tone="neutral"
+          />
+          <ScoreMetric
+            icon={BadgeDollarSign}
+            label="$1 every model lean"
+            value={
+              (data?.flatStakeSettled ?? 0) > 0
+                ? `${formatSignedNumber(data?.flatStakeRoiPct)}%`
+                : 'Collecting'
+            }
+            detail={
+              (data?.flatStakeSettled ?? 0) > 0
+                ? `${formatSignedMoney(data?.flatStakeNetProfit)} net · ${data?.flatStakeWins ?? 0}–${data?.flatStakeLosses ?? 0}`
+                : 'Flat-stake ROI after results settle'
+            }
+            tone={(data?.flatStakeRoiPct ?? 0) > 0 ? 'positive' : 'neutral'}
           />
           <ScoreMetric
             icon={Gauge}
@@ -205,6 +221,7 @@ export function ModelPerformanceScorecard() {
 function CompletedCallRow({ result }: { result: ModelCallResult }) {
   const correct = result.outcome === 'CORRECT'
   const noLean = result.outcome === 'NO_LEAN'
+  const flatStakeNet = flatStakeProfit(result)
   const OutcomeIcon = noLean ? MinusCircle : correct ? CheckCircle2 : XCircle
   return (
     <Link to={`/user/tracking/${result.callId}`} className="grid gap-3 rounded-[20px] border border-[var(--line)] bg-white/70 p-4 transition hover:border-emerald-300 hover:bg-white lg:grid-cols-[minmax(220px,1.3fr)_minmax(190px,1fr)_minmax(190px,0.95fr)_auto] lg:items-center">
@@ -242,6 +259,16 @@ function CompletedCallRow({ result }: { result: ModelCallResult }) {
         <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--ink-muted)]">Hard Rock at capture</p>
         <p className="mt-1 font-mono text-sm font-bold text-[var(--ink-strong)]">{formatAmerican(result.hardRockAmericanOdds)}</p>
         <p className="mt-1 text-xs text-[var(--ink-muted)]">{formatProbability(result.hardRockNoVigProbability)} no-vig</p>
+        {flatStakeNet == null ? null : (
+          <p
+            className={cn(
+              'mt-1 font-mono text-xs font-semibold',
+              flatStakeNet > 0 ? 'text-emerald-700' : 'text-rose-700'
+            )}
+          >
+            Flat $1 {formatSignedMoney(flatStakeNet)}
+          </p>
+        )}
       </div>
 
       <div className="min-w-[150px] rounded-[14px] bg-slate-50 px-3 py-2 lg:text-right">
@@ -308,6 +335,23 @@ function formatProbability(value: number | null | undefined) {
 function formatAmerican(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return 'N/A'
   return value > 0 ? `+${value}` : String(value)
+}
+
+function flatStakeProfit(result: ModelCallResult) {
+  const odds = result.hardRockAmericanOdds
+  if (result.outcome === 'NO_LEAN' || odds == null || !Number.isFinite(odds) || odds === 0) return null
+  if (result.outcome !== 'CORRECT') return -1
+  return odds > 0 ? odds / 100 : 100 / Math.abs(odds)
+}
+
+function formatSignedNumber(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '0.0'
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}`
+}
+
+function formatSignedMoney(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '$0.00'
+  return `${value > 0 ? '+' : value < 0 ? '−' : ''}$${Math.abs(value).toFixed(2)}`
 }
 
 function formatDate(value: string | null) {

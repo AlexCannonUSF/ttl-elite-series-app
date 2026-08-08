@@ -171,6 +171,13 @@ export type ModelCallScorecard = {
   liveFirstAccuracyPct: number
   averageConfidencePct: number
   brierScore: number | null
+  flatStakeSettled: number
+  flatStakeWins: number
+  flatStakeLosses: number
+  flatStakeWagered: number
+  flatStakeReturned: number
+  flatStakeNetProfit: number
+  flatStakeRoiPct: number
   viewerGradedCalls: number
   viewerCorrect: number
   viewerIncorrect: number

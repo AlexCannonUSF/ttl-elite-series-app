@@ -139,6 +139,13 @@ class ModelCallLedgerServiceTests {
         assertEquals(100.0, scorecard.pregameAccuracyPct());
         assertEquals(0, scorecard.awaitingResult());
         assertEquals(0.1444, scorecard.brierScore());
+        assertEquals(1, scorecard.flatStakeSettled());
+        assertEquals(1, scorecard.flatStakeWins());
+        assertEquals(0, scorecard.flatStakeLosses());
+        assertEquals(1.0, scorecard.flatStakeWagered());
+        assertEquals(1.69, scorecard.flatStakeReturned());
+        assertEquals(0.69, scorecard.flatStakeNetProfit());
+        assertEquals(68.97, scorecard.flatStakeRoiPct());
         assertEquals(0, scorecard.viewerGradedCalls());
         assertEquals(0, scorecard.viewerCorrect());
         assertEquals("CORRECT", scorecard.recentResults().get(0).outcome());

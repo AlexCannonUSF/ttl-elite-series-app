@@ -194,6 +194,10 @@ public class ModelCallLedgerService {
         int confidenceCount = 0;
         double brierSum = 0.0;
         int brierCount = 0;
+        int flatStakeSettled = 0;
+        int flatStakeWins = 0;
+        int flatStakeLosses = 0;
+        double flatStakeReturned = 0.0;
         int viewerGraded = 0;
         int viewerCorrect = 0;
         int viewerIncorrect = 0;
@@ -243,6 +247,16 @@ public class ModelCallLedgerService {
                 double target = isCorrect ? 1.0 : 0.0;
                 brierSum += Math.pow(probability - target, 2);
                 brierCount++;
+                Double decimalPrice = americanDecimal(call.getHardRockAmericanOdds());
+                if (decimalPrice != null) {
+                    flatStakeSettled++;
+                    if (isCorrect) {
+                        flatStakeWins++;
+                        flatStakeReturned += decimalPrice;
+                    } else {
+                        flatStakeLosses++;
+                    }
+                }
             }
             if (results.size() < take) {
                 results.add(toResult(call, outcome, hasLean, isCorrect));
@@ -250,6 +264,8 @@ public class ModelCallLedgerService {
         }
 
         int graded = correct + incorrect;
+        double flatStakeWagered = flatStakeSettled;
+        double flatStakeNetProfit = flatStakeReturned - flatStakeWagered;
         return new ModelCallScorecardDto(
                 session.getId(),
                 session.getLabel(),
@@ -269,6 +285,13 @@ public class ModelCallLedgerService {
                 percentage(liveCorrect, liveSettled),
                 percentage(confidenceSum, confidenceCount),
                 brierCount == 0 ? null : round4(brierSum / brierCount),
+                flatStakeSettled,
+                flatStakeWins,
+                flatStakeLosses,
+                round2(flatStakeWagered),
+                round2(flatStakeReturned),
+                round2(flatStakeNetProfit),
+                percentage(flatStakeNetProfit, flatStakeSettled),
                 viewerGraded,
                 viewerCorrect,
                 viewerIncorrect,
@@ -538,6 +561,11 @@ public class ModelCallLedgerService {
     private static Double americanImplied(Integer odds) {
         if (odds == null || odds == 0) return null;
         return odds > 0 ? 100.0 / (odds + 100.0) : (-odds) / ((-odds) + 100.0);
+    }
+
+    private static Double americanDecimal(Integer odds) {
+        if (odds == null || odds == 0) return null;
+        return odds > 0 ? 1.0 + (odds / 100.0) : 1.0 + (100.0 / -odds);
     }
 
     private static String iso(LocalDateTime value) {
@@ -922,6 +950,7 @@ public class ModelCallLedgerService {
                 0, 0, 0, 0, 0, 0, 0.0,
                 0, 0, 0.0, 0, 0, 0.0,
                 0.0, null,
+                0, 0, 0, 0.0, 0.0, 0.0, 0.0,
                 0, 0, 0, 0.0, 0, 0,
                 List.of());
     }
