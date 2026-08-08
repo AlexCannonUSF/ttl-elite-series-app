@@ -73,6 +73,7 @@ public class OddsValueEngineService {
      *  prediction-enriched compute finishes. Lite rows have odds + player
      *  identities but no predictions, so they're cheap (~ms) to recompute. */
     private static final long LIVE_LITE_CACHE_TTL_MS = 5_000L;
+    private static final int LIVE_RECS_CACHE_ROW_LIMIT = 250;
     private final java.util.concurrent.atomic.AtomicReference<CachedScrape> cachedScrape =
             new java.util.concurrent.atomic.AtomicReference<>(null);
     private final java.util.concurrent.atomic.AtomicBoolean scrapeInflight =
@@ -97,7 +98,7 @@ public class OddsValueEngineService {
             });
 
     private record CachedScrape(List<MatchOdds> rows, long capturedAtMillis) { }
-    private record RecsKey(String strategy, String modelSelector, int take, boolean includeUnresolved) { }
+    private record RecsKey(String strategy, String modelSelector) { }
     private record CachedRecs(List<LiveOddsRecommendationDto> rows, long capturedAtMillis) { }
 
     private final PredictionFacade predictionFacade;
@@ -155,37 +156,21 @@ public class OddsValueEngineService {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void warmLiveBoardOnStartup() {
-        recsRefreshExecutor.submit(() -> {
+        // Delay on the scrape executor, then enter the same per-key refresh
+        // path as request traffic. A first browser poll can therefore share
+        // this future instead of queuing a duplicate full-board calculation.
+        scrapeRefreshExecutor.submit(() -> {
             try {
-                // Slight delay so the boot-time scrape finishes first; this
-                // gives the warmup a populated MatchOdds list.
-                try {
-                    Thread.sleep(2_000L);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-                String strategy = STRATEGY_CONSERVATIVE;
-                String modelSelector = StringUtils.hasText(defaultModelFamily) ? defaultModelFamily : "ENSEMBLE";
-                int take = 250;
-                boolean includeUnresolved = true;
-                double threshold = strategyThreshold(strategy);
-                RecsKey key = new RecsKey(strategy, modelSelector, take, includeUnresolved);
-                long startMs = System.currentTimeMillis();
-                log.info("[odds-engine] warmup begin — strategy={} model={} take={} includeUnresolved={}",
-                        strategy, modelSelector, take, includeUnresolved);
-                List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
-                        strategy, modelSelector, take, includeUnresolved, threshold, /* liteMode */ false);
-                cachedRecs.put(key, new CachedRecs(
-                        fresh == null ? List.of() : List.copyOf(fresh),
-                        System.currentTimeMillis()));
-                long elapsedMs = System.currentTimeMillis() - startMs;
-                log.info("[odds-engine] warmup complete — rows={} elapsedMs={}",
-                        fresh == null ? 0 : fresh.size(), elapsedMs);
-            } catch (RuntimeException ex) {
-                log.warn("[odds-engine] warmup failed (cache will fill from request traffic instead): {}",
-                        ex.toString());
+                Thread.sleep(2_000L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
             }
+            String strategy = STRATEGY_CONSERVATIVE;
+            String modelSelector = StringUtils.hasText(defaultModelFamily) ? defaultModelFamily : "ENSEMBLE";
+            RecsKey key = new RecsKey(strategy, modelSelector);
+            log.info("[odds-engine] warmup scheduled — strategy={} model={}", strategy, modelSelector);
+            triggerRecsBackgroundRefresh(key);
         });
     }
 
@@ -233,14 +218,14 @@ public class OddsValueEngineService {
             }
             resolved++;
 
-            double implied1Raw = 1.0 / odds.getOddsA();
-            double implied2Raw = 1.0 / odds.getOddsB();
-            double total = implied1Raw + implied2Raw;
-            if (total <= 0.0) {
+            double breakEven1 = 1.0 / odds.getOddsA();
+            double breakEven2 = 1.0 / odds.getOddsB();
+            double bookImpliedTotal = breakEven1 + breakEven2;
+            if (bookImpliedTotal <= 0.0) {
                 continue;
             }
-            double implied1 = implied1Raw / total;
-            double implied2 = implied2Raw / total;
+            double noVigMarket1 = breakEven1 / bookImpliedTotal;
+            double noVigMarket2 = breakEven2 / bookImpliedTotal;
 
             PredictionModelService.PredictionSnapshot prediction = predictionFacade.predict(
                     p1.getId(),
@@ -261,8 +246,8 @@ public class OddsValueEngineService {
                             1.0 - prediction.player1ConfidenceHigh(),
                             1.0 - prediction.player1ConfidenceLow()
                     ),
-                    predictionFacade.currentAdaptiveRegimeTuning(odds.isLive(), odds.getMatchPhase(), implied1),
-                    predictionFacade.currentAdaptiveRegimeTuning(odds.isLive(), odds.getMatchPhase(), implied2)
+                    predictionFacade.currentAdaptiveRegimeTuning(odds.isLive(), odds.getMatchPhase(), noVigMarket1),
+                    predictionFacade.currentAdaptiveRegimeTuning(odds.isLive(), odds.getMatchPhase(), noVigMarket2)
             );
 
             double threshold = strategyThreshold(strategy);
@@ -277,7 +262,7 @@ public class OddsValueEngineService {
                     tunedSnapshot.player1Probability(),
                     tunedSnapshot.player1ConfidenceLow(),
                     tunedSnapshot.player1ConfidenceHigh(),
-                    implied1,
+                    breakEven1,
                     quote.getAmericanOddsPlayer1(),
                     now
             );
@@ -293,7 +278,7 @@ public class OddsValueEngineService {
                     tunedSnapshot.player2Probability(),
                     tunedSnapshot.player2ConfidenceLow(),
                     tunedSnapshot.player2ConfidenceHigh(),
-                    implied2,
+                    breakEven2,
                     quote.getAmericanOddsPlayer2(),
                     now
             );
@@ -357,26 +342,26 @@ public class OddsValueEngineService {
         String modelSelector = StringUtils.hasText(modelSelectorRaw)
                 ? modelSelectorRaw.trim()
                 : defaultModelFamily;
-        RecsKey key = new RecsKey(strategy, modelSelector, take, includeUnresolved);
+        RecsKey key = new RecsKey(strategy, modelSelector);
 
         long now = System.currentTimeMillis();
         // ── Tier 1: full predictions, cached for LIVE_RECS_CACHE_TTL_MS. ──
         CachedRecs current = cachedRecs.get(key);
         if (current != null && (now - current.capturedAtMillis()) < LIVE_RECS_CACHE_TTL_MS) {
-            return current.rows();
+            return viewForRequest(current.rows(), take, includeUnresolved);
         }
         // Either stale or missing — kick off a background full recompute.
         java.util.concurrent.Future<?> refresh = triggerRecsBackgroundRefresh(key);
         if (current != null) {
             // Stale-while-revalidate: serve previous full rows immediately.
-            return current.rows();
+            return viewForRequest(current.rows(), take, includeUnresolved);
         }
         // ── Tier 2: lite rows. If we have a fresh lite cache entry, serve
         //   it instantly while the background full compute continues. This
         //   is the path almost all polls take once the lite cache is warm. ──
         CachedRecs lite = cachedLiteRecs.get(key);
         if (lite != null && (now - lite.capturedAtMillis()) < LIVE_LITE_CACHE_TTL_MS) {
-            return lite.rows();
+            return viewForRequest(lite.rows(), take, includeUnresolved);
         }
         // ── First paint only (lite cache never populated). Wait briefly for
         //   the full compute (cheap in tests with mocked deps and once the
@@ -387,7 +372,7 @@ public class OddsValueEngineService {
                 refresh.get(LIVE_RECS_FIRST_HIT_BUDGET_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
                 CachedRecs justComputed = cachedRecs.get(key);
                 if (justComputed != null) {
-                    return justComputed.rows();
+                    return viewForRequest(justComputed.rows(), take, includeUnresolved);
                 }
             } catch (java.util.concurrent.TimeoutException ex) {
                 log.info("[odds-engine] first-hit recs compute exceeded {} ms budget; falling back to lite rows while compute continues",
@@ -402,16 +387,34 @@ public class OddsValueEngineService {
         try {
             double threshold = strategyThreshold(strategy);
             List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
-                    strategy, modelSelector, take, includeUnresolved, threshold, /* liteMode */ true);
+                    strategy,
+                    modelSelector,
+                    LIVE_RECS_CACHE_ROW_LIMIT,
+                    true,
+                    threshold,
+                    /* liteMode */ true);
             CachedRecs cached = new CachedRecs(
                     fresh == null ? List.of() : List.copyOf(fresh),
                     System.currentTimeMillis());
             cachedLiteRecs.put(key, cached);
-            return cached.rows();
+            return viewForRequest(cached.rows(), take, includeUnresolved);
         } catch (RuntimeException ex) {
             log.warn("[odds-engine] synchronous lite compute failed: {}", ex.toString());
-            return lite == null ? List.of() : lite.rows();
+            return lite == null ? List.of() : viewForRequest(lite.rows(), take, includeUnresolved);
         }
+    }
+
+    private List<LiveOddsRecommendationDto> viewForRequest(List<LiveOddsRecommendationDto> rows,
+                                                            int take,
+                                                            boolean includeUnresolved) {
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        return rows.stream()
+                .filter(row -> includeUnresolved
+                        || (row.player1Id() != null && row.player2Id() != null))
+                .limit(take)
+                .toList();
     }
 
     /**
@@ -434,8 +437,8 @@ public class OddsValueEngineService {
                     List<LiveOddsRecommendationDto> fresh = computeLiveOddsRecommendations(
                             k.strategy(),
                             k.modelSelector(),
-                            k.take(),
-                            k.includeUnresolved(),
+                            LIVE_RECS_CACHE_ROW_LIMIT,
+                            true,
                             threshold,
                             /* liteMode */ false);
                     cachedRecs.put(k, new CachedRecs(
@@ -475,14 +478,15 @@ public class OddsValueEngineService {
                     continue;
                 }
 
-                double implied1Raw = 1.0 / odds.getOddsA();
-                double implied2Raw = 1.0 / odds.getOddsB();
-                double total = implied1Raw + implied2Raw;
-                if (total <= 0.0) {
+                double breakEven1 = 1.0 / odds.getOddsA();
+                double breakEven2 = 1.0 / odds.getOddsB();
+                double bookImpliedTotal = breakEven1 + breakEven2;
+                if (bookImpliedTotal <= 0.0) {
                     continue;
                 }
-                double implied1 = implied1Raw / total;
-                double implied2 = implied2Raw / total;
+                double noVigMarket1 = breakEven1 / bookImpliedTotal;
+                double noVigMarket2 = breakEven2 / bookImpliedTotal;
+                double bookMargin = bookImpliedTotal - 1.0;
 
                 Optional<Player> p1Opt = playerIdentityService.findCanonicalPlayer(odds.getPlayerA());
                 Optional<Player> p2Opt = playerIdentityService.findCanonicalPlayer(odds.getPlayerB());
@@ -526,8 +530,8 @@ public class OddsValueEngineService {
                             odds.getOddsB(),
                             decimalToAmerican(odds.getOddsA()),
                             decimalToAmerican(odds.getOddsB()),
-                            implied1,
-                            implied2,
+                            breakEven1,
+                            breakEven2,
                             null,
                             null,
                             null,
@@ -595,8 +599,8 @@ public class OddsValueEngineService {
                             odds.getOddsB(),
                             decimalToAmerican(odds.getOddsA()),
                             decimalToAmerican(odds.getOddsB()),
-                            implied1,
-                            implied2,
+                            breakEven1,
+                            breakEven2,
                             null, null,           // modelProbabilityPlayer1/2
                             null, null,           // edgePlayer1/2
                             null, null,           // modelFairAmericanOddsPlayer1/2
@@ -641,21 +645,21 @@ public class OddsValueEngineService {
                 PredictionModelService.AdaptiveRegimeTuning p1RegimeTuning = predictionFacade.currentAdaptiveRegimeTuning(
                         odds.isLive(),
                         odds.getMatchPhase(),
-                        odds.isLive() ? 0.5 : implied1
+                        odds.isLive() ? 0.5 : noVigMarket1
                 );
                 PredictionModelService.AdaptiveRegimeTuning p2RegimeTuning = predictionFacade.currentAdaptiveRegimeTuning(
                         odds.isLive(),
                         odds.getMatchPhase(),
-                        odds.isLive() ? 0.5 : implied2
+                        odds.isLive() ? 0.5 : noVigMarket2
                 );
                 if (!odds.isLive()) {
                     adjusted = applyRegimeTuning(adjusted, p1RegimeTuning, p2RegimeTuning);
                 }
 
-                double edge1 = adjusted.player1Probability() - implied1;
-                double edge2 = adjusted.player2Probability() - implied2;
-                boolean p1ConfidenceOk = adjusted.player1ConfidenceLow() > implied1;
-                boolean p2ConfidenceOk = adjusted.player2ConfidenceLow() > implied2;
+                double edge1 = adjusted.player1Probability() - breakEven1;
+                double edge2 = adjusted.player2Probability() - breakEven2;
+                boolean p1ConfidenceOk = adjusted.player1ConfidenceLow() > breakEven1;
+                boolean p2ConfidenceOk = adjusted.player2ConfidenceLow() > breakEven2;
                 boolean pickPlayer1 = edge1 >= edge2;
 
                 String suggestedSide = pickPlayer1 ? p1.getName() : p2.getName();
@@ -710,8 +714,12 @@ public class OddsValueEngineService {
                 if (!promotedModel) {
                     rationale += " Recommendation paused: no candidate has passed the independent promotion gates.";
                 }
+                rationale += String.format(
+                        " Executable edge is measured against the offered Hard Rock break-even price and includes its %.2f%% two-way margin.",
+                        bookMargin * 100.0
+                );
                 if (odds.isLive()) {
-                    rationale += " Score-conditioned table-tennis estimate; sportsbook price is used only to measure edge.";
+                    rationale += " Score-conditioned table-tennis estimate.";
                     if (!liveScoreModelValidated) {
                         rationale += " Live recommendations remain watch-only until early/mid/late/deuce validation passes.";
                     }
@@ -735,8 +743,8 @@ public class OddsValueEngineService {
                         odds.getOddsB(),
                         decimalToAmerican(odds.getOddsA()),
                         decimalToAmerican(odds.getOddsB()),
-                        implied1,
-                        implied2,
+                        breakEven1,
+                        breakEven2,
                         adjusted.player1Probability(),
                         adjusted.player2Probability(),
                         edge1,
@@ -1136,7 +1144,7 @@ public class OddsValueEngineService {
         );
         String regimeNote = buildRegimeNote(regimeTuning);
         return String.format(
-                "%s: %s edge %.2f%% vs threshold %.2f%%, confidence range %.1f%%-%.1f%%.%s%s%s",
+                "%s: %s executable edge %.2f%% vs threshold %.2f%%, confidence range %.1f%%-%.1f%%.%s%s%s",
                 verdict,
                 side,
                 edge * 100.0,

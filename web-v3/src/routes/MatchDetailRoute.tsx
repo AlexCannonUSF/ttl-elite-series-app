@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveBoard, fetchMatchTimeline, fetchMatchupAnalysis } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
+import { calculateBookMargin } from '@/features/live-studio/marketMath'
 import type {
   LiveOddsRecommendation,
   MatchupAnalysis,
@@ -308,7 +309,7 @@ export function MatchDetailRoute() {
             <MetricTile icon={FileSearch2} label="Evidence" value={evidence ? evidence.evidence.coverageState : 'N/A'} />
             <MetricTile icon={Brain} label="Prediction" value={prediction ? formatPct(prediction.pTop.value) : 'N/A'} />
             <MetricTile icon={Activity} label="History Rows" value={String(timeline.length)} />
-            <MetricTile icon={TrendingUp} label="Market Edge" value={formatSignedPct(marketRow?.suggestedEdge)} />
+            <MetricTile icon={TrendingUp} label="Executable Edge" value={formatSignedPct(marketRow?.suggestedEdge)} />
           </div>
 
           <nav aria-label="Match detail tabs" className="grid gap-3 lg:grid-cols-4">
@@ -647,6 +648,8 @@ function MarketTab({
     return <EmptyTab icon={BarChart3} title="No market row" detail={error ?? 'This match is not on the current live board snapshot.'} />
   }
 
+  const bookMargin = calculateBookMargin(row.decimalOddsPlayer1, row.decimalOddsPlayer2)
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
       <Card>
@@ -659,9 +662,10 @@ function MarketTab({
         </CardHeader>
         <CardContent className="grid gap-4">
           {error ? <InlineAlert>{error}</InlineAlert> : null}
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <MetricTile icon={Activity} label="Phase" value={row.matchPhase ?? (row.live ? 'LIVE' : 'UPCOMING')} />
-            <MetricTile icon={TrendingUp} label="Suggested Edge" value={formatSignedPct(row.suggestedEdge)} />
+            <MetricTile icon={TrendingUp} label="Executable Edge" value={formatSignedPct(row.suggestedEdge)} />
+            <MetricTile icon={GitCompareArrows} label="Hard Rock Margin" value={formatPct(bookMargin)} />
             <MetricTile icon={Shield} label="Reliability" value={formatPct(row.overallReliability)} />
             <MetricTile icon={GitCompareArrows} label="Trigger" value={row.topTrigger ?? 'N/A'} />
           </div>
@@ -672,9 +676,9 @@ function MarketTab({
                 <tr className="text-left text-xs uppercase tracking-[0.2em] text-[var(--ink-muted)]">
                   <th className="px-3 pb-1 font-semibold">Side</th>
                   <th className="px-3 pb-1 text-right font-semibold">Odds</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Implied</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Break-even</th>
                   <th className="px-3 pb-1 text-right font-semibold">Model</th>
-                  <th className="px-3 pb-1 text-right font-semibold">Edge</th>
+                  <th className="px-3 pb-1 text-right font-semibold">Bet edge</th>
                   <th className="px-3 pb-1 text-right font-semibold">Fair</th>
                 </tr>
               </thead>

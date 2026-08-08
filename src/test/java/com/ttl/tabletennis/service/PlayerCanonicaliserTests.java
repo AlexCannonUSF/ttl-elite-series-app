@@ -102,6 +102,20 @@ class PlayerCanonicaliserTests {
         assertEquals(1.0, result.acceptedMatch().orElseThrow().similarity(), 0.000001);
     }
 
+    @Test
+    void canonicaliseRejectsSharedFirstNameWhenSurnamesAreUnrelated() {
+        Player wrongTarget = player(50L, "Mateusz", "Kalinowski");
+
+        PlayerCanonicaliser.CanonicalisationResult result = canonicaliser.canonicalise(
+                new PlayerCanonicaliser.CanonicalisationRequest("Sikon, Mateusz", null),
+                List.of(candidate(wrongTarget, "Mateusz Kalinowski", null, null))
+        );
+
+        assertFalse(result.resolved());
+        assertFalse(result.ambiguous());
+        assertTrue(result.rankedCandidates().isEmpty());
+    }
+
     private PlayerCanonicaliser.PlayerCandidate candidate(Player player,
                                                           String candidateName,
                                                           String countryCode,

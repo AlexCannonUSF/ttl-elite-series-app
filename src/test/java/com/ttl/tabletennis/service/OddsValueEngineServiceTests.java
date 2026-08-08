@@ -35,6 +35,8 @@ import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 @SpringBootTest
 @Transactional
@@ -123,6 +125,92 @@ class OddsValueEngineServiceTests {
         assertFalse(opportunities.isEmpty());
         assertEquals("20260212170000-ENSEMBLE-1", opportunities.get(0).getModelVersion());
         assertEquals("CONSERVATIVE", opportunities.get(0).getStrategy());
+    }
+
+    @Test
+    void refreshDoesNotPersistFalseEdgeCreatedByRemovingTheSportsbookMargin() {
+        Player p1 = playerRepository.save(new Player("Margin", "Favorite"));
+        Player p2 = playerRepository.save(new Player("Margin", "Underdog"));
+
+        when(playerIdentityService.findCanonicalPlayer("Margin Favorite")).thenReturn(Optional.of(p1));
+        when(playerIdentityService.findCanonicalPlayer("Margin Underdog")).thenReturn(Optional.of(p2));
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+                .thenReturn(PredictionModelService.AdaptiveRegimeTuning.neutral("All Settled"));
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+                .thenReturn(new PredictionModelService.PredictionSnapshot(
+                        "ENSEMBLE",
+                        "margin-regression-model",
+                        "PLATT",
+                        0.628,
+                        0.372,
+                        0.60,
+                        0.66,
+                        List.of(),
+                        reliabilityFeatureVector(p1.getId(), p2.getId()),
+                        0.60,
+                        0.63,
+                        0.62,
+                        0.64,
+                        0.65,
+                        0.66
+                ));
+
+        MatchOdds quote = new MatchOdds("Margin Favorite", "Margin Underdog", 1.5555556, 2.25);
+        OddsRefreshResultDto result = oddsValueEngineService.refreshFromQuotes(
+                "AGGRESSIVE",
+                "ENSEMBLE",
+                List.of(quote),
+                "HARD_ROCK"
+        );
+
+        // De-vigging this market produces a misleading +3.7 percentage-point
+        // disagreement. At the actual -180 offer, the 62.8% model probability
+        // is below the 64.29% break-even point and is not a value opportunity.
+        assertEquals(0, result.opportunitiesCreated());
+        assertTrue(valueOpportunityRepository.findAll().isEmpty());
+    }
+
+    @Test
+    void liveBoardMeasuresExecutableEdgeAgainstTheOfferedHardRockPrice() {
+        Player p1 = playerRepository.save(new Player("Offered", "Favorite"));
+        Player p2 = playerRepository.save(new Player("Offered", "Underdog"));
+
+        when(playerIdentityService.findCanonicalPlayer("Offered Favorite")).thenReturn(Optional.of(p1));
+        when(playerIdentityService.findCanonicalPlayer("Offered Underdog")).thenReturn(Optional.of(p2));
+        when(hardRockOddsScraper.fetch()).thenReturn(List.of(
+                new MatchOdds("Offered Favorite", "Offered Underdog", 1.5555556, 2.25)));
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+                .thenReturn(PredictionModelService.AdaptiveRegimeTuning.neutral("All Settled"));
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+                .thenReturn(new PredictionModelService.PredictionSnapshot(
+                        "ENSEMBLE",
+                        "offered-price-model",
+                        "PLATT",
+                        0.628,
+                        0.372,
+                        0.60,
+                        0.66,
+                        List.of(),
+                        reliabilityFeatureVector(p1.getId(), p2.getId()),
+                        0.60,
+                        0.63,
+                        0.62,
+                        0.64,
+                        0.65,
+                        0.66
+                ));
+
+        LiveOddsRecommendationDto row = oddsValueEngineService
+                .liveOddsRecommendations("CONSERVATIVE", "ENSEMBLE", 10, false)
+                .get(0);
+
+        assertEquals(1.0 / 1.5555556, row.impliedProbabilityPlayer1(), 1e-6);
+        assertEquals(1.0 / 2.25, row.impliedProbabilityPlayer2(), 1e-6);
+        assertEquals(0.628 - (1.0 / 1.5555556), row.edgePlayer1(), 1e-6);
+        assertTrue(row.edgePlayer1() < 0.0);
+        assertTrue(row.suggestedEdge() < 0.0);
+        assertFalse(row.recommended());
+        assertTrue(row.rationale().contains("offered Hard Rock break-even price"));
     }
 
     @Test
@@ -436,6 +524,46 @@ class OddsValueEngineServiceTests {
                         "Upcoming Later A vs Upcoming Later B"
                 ),
                 rows.stream().map(LiveOddsRecommendationDto::eventName).toList());
+    }
+
+    @Test
+    void liveBoardSharesFullRecommendationCacheAcrossLimitsAndResolutionViews() {
+        Player p1 = playerRepository.save(new Player("Shared", "Alpha"));
+        Player p2 = playerRepository.save(new Player("Shared", "Beta"));
+        when(hardRockOddsScraper.fetch()).thenReturn(List.of(
+                new MatchOdds("Shared Alpha", "Shared Beta", 2.05, 1.82)));
+        when(playerIdentityService.findCanonicalPlayer("Shared Alpha")).thenReturn(Optional.of(p1));
+        when(playerIdentityService.findCanonicalPlayer("Shared Beta")).thenReturn(Optional.of(p2));
+        when(predictionFacade.currentAdaptiveRegimeTuning(anyBoolean(), any(), anyDouble()))
+                .thenReturn(PredictionModelService.AdaptiveRegimeTuning.neutral("All Settled"));
+        when(predictionFacade.predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE")))
+                .thenReturn(new PredictionModelService.PredictionSnapshot(
+                        "ENSEMBLE",
+                        "shared-cache-model",
+                        "PLATT",
+                        0.62,
+                        0.38,
+                        0.55,
+                        0.69,
+                        List.of(),
+                        reliabilityFeatureVector(p1.getId(), p2.getId()),
+                        0.58,
+                        0.61,
+                        0.60,
+                        0.62,
+                        0.64,
+                        0.66
+                ));
+
+        assertEquals(1, oddsValueEngineService
+                .liveOddsRecommendations("CONSERVATIVE", "ENSEMBLE", 1, false)
+                .size());
+        assertEquals(1, oddsValueEngineService
+                .liveOddsRecommendations("CONSERVATIVE", "ENSEMBLE", 80, true)
+                .size());
+
+        verify(predictionFacade, times(1))
+                .predict(eq(p1.getId()), eq(p2.getId()), any(LocalDate.class), eq("ENSEMBLE"));
     }
 
     private MatchOdds boardRow(String player1,

@@ -109,6 +109,7 @@ class OpsIngestServiceTests {
         assertEquals(7L, odds.pendingCount());
         assertEquals(1100L, odds.lag());
         assertEquals("1715980000000-0", odds.lastGeneratedId());
+        assertEquals("Consumer group lag is at or above the configured warning threshold.", odds.detail());
     }
 
     @Test

@@ -1,6 +1,5 @@
 package com.ttl.tabletennis.service.papertrade;
 
-import com.ttl.tabletennis.domain.PaperTradeDecisionSample;
 import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import org.springframework.stereotype.Service;
@@ -9,7 +8,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.round4;
 import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.safeText;
@@ -25,9 +23,10 @@ import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.safeTex
  * ({@link PaperTradeDecisionSampleRepository}) so it lands as a Spring
  * {@code @Service} rather than a static utility.
  *
- * <p>Behaviour is verbatim from {@code PaperTradingService.buildDecisionTelemetry}.
- * The {@code averageNonNull} helper was used only by this builder, so it
- * moves with its owner and stays package-private.
+ * <p>The repository returns compact grouped projections rather than all
+ * decision entities. This matters on the live path: a long-running session
+ * can contain thousands of samples and the user UI polls this snapshot every
+ * few seconds.
  */
 @Service
 public class DecisionTelemetryBuilder {
@@ -49,41 +48,68 @@ public class DecisionTelemetryBuilder {
         if (sessionId == null) {
             return EMPTY;
         }
-        List<PaperTradeDecisionSample> rows = decisionSampleRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
-        if (rows == null || rows.isEmpty()) {
+        List<PaperTradeDecisionSampleRepository.DecisionSummary> summaries =
+                decisionSampleRepository.summarizeBySessionId(sessionId);
+        if (summaries == null || summaries.isEmpty()) {
             return EMPTY;
         }
 
-        long consideredCount = rows.size();
-        long placedCount = rows.stream()
-                .filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        long skippedCount = rows.stream()
-                .filter(sample -> "SKIPPED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        long fallbackPlacedCount = rows.stream()
-                .filter(PaperTradeDecisionSample::isFallbackPick)
-                .filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus()))
-                .count();
-        double placementRatePct = consideredCount == 0 ? 0.0 : round4((placedCount * 100.0) / consideredCount);
-        double avgSelectionScore = averageNonNull(rows, PaperTradeDecisionSample::getSelectionScore);
-        double avgSignalQualityPct = averageNonNull(rows, PaperTradeDecisionSample::getSignalQuality) * 100.0;
-        double avgPlacedEdgePct = averageNonNull(
-                rows.stream().filter(sample -> "PLACED".equalsIgnoreCase(sample.getDecisionStatus())).toList(),
-                PaperTradeDecisionSample::getSuggestedEdge
-        ) * 100.0;
-        double avgSkippedEdgePct = averageNonNull(
-                rows.stream().filter(sample -> "SKIPPED".equalsIgnoreCase(sample.getDecisionStatus())).toList(),
-                PaperTradeDecisionSample::getSuggestedEdge
-        ) * 100.0;
+        long consideredCount = 0L;
+        long placedCount = 0L;
+        long skippedCount = 0L;
+        long fallbackPlacedCount = 0L;
+        long selectionScoreCount = 0L;
+        double selectionScoreSum = 0.0;
+        long signalQualityCount = 0L;
+        double signalQualitySum = 0.0;
+        long placedEdgeCount = 0L;
+        double placedEdgeSum = 0.0;
+        long skippedEdgeCount = 0L;
+        double skippedEdgeSum = 0.0;
 
-        Map<String, Integer> skipReasons = new HashMap<>();
-        for (PaperTradeDecisionSample row : rows) {
-            if (row == null || !"SKIPPED".equalsIgnoreCase(row.getDecisionStatus())) {
+        for (PaperTradeDecisionSampleRepository.DecisionSummary summary : summaries) {
+            if (summary == null) {
                 continue;
             }
-            String reason = safeText(row.getDecisionReason(), "UNKNOWN");
-            skipReasons.merge(reason, 1, Integer::sum);
+            long rowCount = Math.max(0L, summary.getRowCount());
+            String status = safeText(summary.getDecisionStatus(), "UNKNOWN");
+            consideredCount += rowCount;
+            selectionScoreCount += Math.max(0L, summary.getSelectionScoreCount());
+            selectionScoreSum += valueOrZero(summary.getSelectionScoreSum());
+            signalQualityCount += Math.max(0L, summary.getSignalQualityCount());
+            signalQualitySum += valueOrZero(summary.getSignalQualitySum());
+
+            if ("PLACED".equalsIgnoreCase(status)) {
+                placedCount += rowCount;
+                if (Boolean.TRUE.equals(summary.getFallbackPick())) {
+                    fallbackPlacedCount += rowCount;
+                }
+                placedEdgeCount += Math.max(0L, summary.getSuggestedEdgeCount());
+                placedEdgeSum += valueOrZero(summary.getSuggestedEdgeSum());
+            } else if ("SKIPPED".equalsIgnoreCase(status)) {
+                skippedCount += rowCount;
+                skippedEdgeCount += Math.max(0L, summary.getSuggestedEdgeCount());
+                skippedEdgeSum += valueOrZero(summary.getSuggestedEdgeSum());
+            }
+        }
+
+        double placementRatePct = consideredCount == 0 ? 0.0 : round4((placedCount * 100.0) / consideredCount);
+        double avgSelectionScore = average(selectionScoreSum, selectionScoreCount);
+        double avgSignalQualityPct = average(signalQualitySum, signalQualityCount) * 100.0;
+        double avgPlacedEdgePct = average(placedEdgeSum, placedEdgeCount) * 100.0;
+        double avgSkippedEdgePct = average(skippedEdgeSum, skippedEdgeCount) * 100.0;
+
+        Map<String, Integer> skipReasons = new HashMap<>();
+        List<PaperTradeDecisionSampleRepository.SkipReasonSummary> reasonSummaries =
+                decisionSampleRepository.summarizeSkipReasonsBySessionId(sessionId);
+        for (PaperTradeDecisionSampleRepository.SkipReasonSummary summary :
+                reasonSummaries == null ? List.<PaperTradeDecisionSampleRepository.SkipReasonSummary>of() : reasonSummaries) {
+            if (summary == null) {
+                continue;
+            }
+            String reason = safeText(summary.getDecisionReason(), "UNKNOWN");
+            int count = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, summary.getRowCount()));
+            skipReasons.merge(reason, count, Integer::sum);
         }
         List<PaperTradingSessionDto.DecisionReasonDto> topSkipReasons = skipReasons.entrySet().stream()
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
@@ -105,28 +131,11 @@ public class DecisionTelemetryBuilder {
         );
     }
 
-    /**
-     * Mean of the extractor over rows, skipping rows where the extractor
-     * returns {@code null}. Returns 0 on an empty stream (legacy semantics).
-     */
-    static double averageNonNull(List<PaperTradeDecisionSample> rows,
-                                 Function<PaperTradeDecisionSample, Double> extractor) {
-        if (rows == null || rows.isEmpty() || extractor == null) {
-            return 0.0;
-        }
-        double sum = 0.0;
-        int count = 0;
-        for (PaperTradeDecisionSample row : rows) {
-            if (row == null) {
-                continue;
-            }
-            Double value = extractor.apply(row);
-            if (value == null) {
-                continue;
-            }
-            sum += value;
-            count++;
-        }
-        return count == 0 ? 0.0 : sum / count;
+    private static double average(double sum, long count) {
+        return count <= 0L ? 0.0 : sum / count;
+    }
+
+    private static double valueOrZero(Double value) {
+        return value == null || !Double.isFinite(value) ? 0.0 : value;
     }
 }

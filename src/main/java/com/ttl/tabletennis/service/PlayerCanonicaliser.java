@@ -27,6 +27,7 @@ import java.util.Optional;
 public class PlayerCanonicaliser {
 
     static final double AUTO_ACCEPT_THRESHOLD = 0.92;
+    private static final double LAST_NAME_ACCEPT_THRESHOLD = 0.88;
     private static final double SCORE_EPSILON = 1.0e-9;
 
     private static final Comparator<CanonicalPlayerMatch> MATCH_RANKING = Comparator
@@ -153,8 +154,13 @@ public class PlayerCanonicaliser {
             return null;
         }
 
+        boolean exactMatch = normalizedInput.equals(candidateNormalized);
+        if (!exactMatch && !hasCompatibleLastName(normalizedInput, candidateNormalized)) {
+            return null;
+        }
+
         Double scoreValue = similarity.apply(normalizedInput, candidateNormalized);
-        double score = normalizedInput.equals(candidateNormalized) ? 1.0 : (scoreValue == null ? 0.0 : scoreValue);
+        double score = exactMatch ? 1.0 : (scoreValue == null ? 0.0 : scoreValue);
         if (score < AUTO_ACCEPT_THRESHOLD) {
             return null;
         }
@@ -169,6 +175,37 @@ public class PlayerCanonicaliser {
                 candidate.firstSeenAt(),
                 candidate.source()
         );
+    }
+
+    /**
+     * Jaro-Winkler heavily rewards a shared first-name prefix. For example,
+     * "Mateusz Sikon" can otherwise score highly enough against
+     * "Mateusz Kalinowski" to be auto-accepted even though the surnames are
+     * unrelated. Full-name fuzzy matches must therefore agree independently
+     * on the surname. Initial-plus-surname inputs continue through the exact
+     * surname fallback in {@link PlayerIdentityService}.
+     */
+    private boolean hasCompatibleLastName(String normalizedInput, String candidateNormalized) {
+        String[] input = NameUtils.splitFirstLast(normalizedInput);
+        String[] candidate = NameUtils.splitFirstLast(candidateNormalized);
+        if (input[0].isBlank() || candidate[0].isBlank()) {
+            return true;
+        }
+
+        String inputLast = NameUtils.normalizeForLookup(input[1]);
+        String candidateLast = NameUtils.normalizeForLookup(candidate[1]);
+        if (inputLast.isBlank() || candidateLast.isBlank()) {
+            return false;
+        }
+        if (inputLast.equals(candidateLast)) {
+            return true;
+        }
+        if (Math.min(inputLast.length(), candidateLast.length()) <= 3) {
+            return false;
+        }
+
+        Double lastNameScore = similarity.apply(inputLast, candidateLast);
+        return lastNameScore != null && lastNameScore >= LAST_NAME_ACCEPT_THRESHOLD;
     }
 
     private CanonicalPlayerMatch pickBetter(CanonicalPlayerMatch left, CanonicalPlayerMatch right) {

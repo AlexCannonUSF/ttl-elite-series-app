@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fetchLiveBoard, fetchLiveSession, fetchMatchupAnalysis, syncLiveSession } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
+import { calculateBookMargin } from '@/features/live-studio/marketMath'
 import { SessionRibbon } from '@/features/live-studio/SessionRibbon'
 import type {
   LiveBoardHistoryPoint,
@@ -430,6 +431,7 @@ function MarketWatchCard({
   const sideP2 = row.suggestedSide === row.player2Name
   const suggestedBook = sideP1 ? row.americanOddsPlayer1 : sideP2 ? row.americanOddsPlayer2 : null
   const suggestedFair = sideP1 ? row.modelFairAmericanOddsPlayer1 : sideP2 ? row.modelFairAmericanOddsPlayer2 : null
+  const bookMargin = calculateBookMargin(row.decimalOddsPlayer1, row.decimalOddsPlayer2)
 
   return (
     <button
@@ -466,7 +468,15 @@ function MarketWatchCard({
             <span className="font-mono text-xs text-[var(--ink-muted)]">{formatStart(row.startTimeIso)}</span>
           )}
         </div>
-        <p className="mt-2 truncate text-xs text-[var(--ink-muted)]">{row.competitionName}</p>
+        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-[var(--ink-muted)]">
+          <p className="truncate">{row.competitionName}</p>
+          <span
+            className="shrink-0 font-mono font-semibold"
+            title="Hard Rock's two-way pricing margin across both sides"
+          >
+            HR margin {formatPct(bookMargin)}
+          </span>
+        </div>
       </div>
 
       <div className="mt-3 grid grid-cols-[1.15fr_0.7fr_0.7fr_0.7fr] items-center gap-2 border-t border-[var(--line)] pt-3">
@@ -476,7 +486,7 @@ function MarketWatchCard({
         </div>
         <CompactPrice label="Hard Rock" value={formatAmerican(suggestedBook)} />
         <CompactPrice label="Our fair" value={formatAmerican(suggestedFair)} />
-        <CompactPrice label="Edge" value={formatSignedPct(row.suggestedEdge)} accent={(row.suggestedEdge ?? 0) > 0} />
+        <CompactPrice label="Bet edge" value={formatSignedPct(row.suggestedEdge)} accent={(row.suggestedEdge ?? 0) > 0} />
       </div>
     </button>
   )

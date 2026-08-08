@@ -260,9 +260,7 @@ public class OpsIngestService {
             PendingStats pendingStats = pendingStats(streamOps, key, pending);
             Long lag = lag(length, groups, pending);
             String status = partitionStatus(length, lag);
-            String detail = groupCount == 0L && length > 0L
-                    ? "No consumer group has claimed this stream yet; lag equals stream length."
-                    : "Consumer group lag is inside the configured guardrail.";
+            String detail = partitionDetail(groupCount, length, status);
 
             return new OpsIngestPartitionDto(
                     key,
@@ -370,6 +368,17 @@ public class OpsIngestService {
             return "LAGGING";
         }
         return "HEALTHY";
+    }
+
+    private String partitionDetail(long groupCount, long length, String status) {
+        if (groupCount == 0L && length > 0L) {
+            return "No consumer group has claimed this stream yet; lag equals stream length.";
+        }
+        return switch (status) {
+            case "HOT" -> "Consumer group lag is at or above the configured critical threshold.";
+            case "LAGGING" -> "Consumer group lag is at or above the configured warning threshold.";
+            default -> "Consumer group lag is inside the configured guardrail.";
+        };
     }
 
     private OpsIngestPartitionDto unavailable(String key, String family, String detail) {

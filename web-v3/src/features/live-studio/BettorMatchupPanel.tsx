@@ -21,6 +21,7 @@ import type {
   MatchupForm,
   PaperTradeBet,
 } from '@/features/live-studio/types'
+import { calculateBookMargin } from '@/features/live-studio/marketMath'
 import { cn } from '@/lib/utils'
 
 export function BettorMatchupPanel({
@@ -44,6 +45,7 @@ export function BettorMatchupPanel({
   const p2Selected = row.suggestedSide === row.player2Name
   const firstPrice = history[0]
   const lastPrice = history.at(-1)
+  const bookMargin = calculateBookMargin(row.decimalOddsPlayer1, row.decimalOddsPlayer2)
 
   return (
     <Card className={cn('overflow-hidden', row.live && 'border-rose-200')}>
@@ -92,7 +94,9 @@ export function BettorMatchupPanel({
               </p>
               <h3 className="mt-1 text-lg font-semibold text-[var(--ink-strong)]">Hard Rock vs. TTLElite fair</h3>
             </div>
-            <span className="text-right text-xs text-[var(--ink-muted)]">Book line is live<br />Fair line is our model</span>
+            <span className="text-right text-xs text-[var(--ink-muted)]">
+              Hard Rock margin {formatPct(bookMargin)}<br />Edge includes the live price
+            </span>
           </div>
 
           <div className="mt-3 grid gap-3">
@@ -267,14 +271,14 @@ function MarketSide({
             {selected ? <Badge variant="accent">Model side</Badge> : null}
           </div>
           <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            Hard Rock implies {formatPct(implied)} · our model {formatPct(model)}
+            Break-even at Hard Rock {formatPct(implied)} · our model {formatPct(model)}
           </p>
         </div>
         <span className={cn(
           'shrink-0 rounded-full px-2.5 py-1 font-mono text-xs font-semibold',
           (edge ?? 0) > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700',
         )}>
-          {formatSignedPct(edge)} edge
+          {formatSignedPct(edge)} bet edge
         </span>
       </div>
 
@@ -303,7 +307,7 @@ function ValueRail({ book, model }: { book: number; model: number | null }) {
   const width = Math.abs(modelPct - bookPct)
   return (
     <div className="mt-4">
-      <div className="relative h-2 rounded-full bg-slate-100" aria-label={`Book probability ${formatPct(book)}, model probability ${formatPct(model)}`}>
+      <div className="relative h-2 rounded-full bg-slate-100" aria-label={`Hard Rock break-even probability ${formatPct(book)}, model probability ${formatPct(model)}`}>
         <span
           className="absolute inset-y-0 rounded-full bg-emerald-200"
           style={{ left: `${left}%`, width: `${Math.max(width, 1)}%` }}
@@ -311,7 +315,7 @@ function ValueRail({ book, model }: { book: number; model: number | null }) {
         <span
           className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-slate-500 shadow"
           style={{ left: `${bookPct}%` }}
-          title="Hard Rock implied probability"
+          title="Hard Rock break-even probability at the offered price"
         />
         <span
           className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-emerald-600 shadow"
@@ -320,7 +324,7 @@ function ValueRail({ book, model }: { book: number; model: number | null }) {
         />
       </div>
       <div className="mt-1 flex justify-between text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">
-        <span>Book</span>
+        <span>Break-even</span>
         <span>Model</span>
       </div>
     </div>
