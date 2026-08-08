@@ -250,10 +250,16 @@ public class StartupBrowserLauncher {
 
     private boolean canExecuteNpm(String candidate) {
         try {
-            Process p = buildShellProcess(candidate + " --version")
+            // Do not probe npm through a login shell. IntelliJ inherits the user's
+            // executable environment, while a fresh zsh login can spend several
+            // seconds loading shell plugins and make the two-second probe report a
+            // false negative. Probe the executable itself so one-click startup is
+            // deterministic, including when PATH does not contain Homebrew yet.
+            Process p = new ProcessBuilder(candidate, "--version")
                     .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .start();
-            boolean done = p.waitFor(2, TimeUnit.SECONDS);
+            boolean done = p.waitFor(5, TimeUnit.SECONDS);
             if (!done) {
                 p.destroyForcibly();
                 return false;

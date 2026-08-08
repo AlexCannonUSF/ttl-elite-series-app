@@ -1,10 +1,28 @@
 import type {
   LiveOddsRecommendation,
   MatchupAnalysis,
+  ModelCallScorecard,
   PaperTradingSession,
   PaperTradingSyncResult,
   TrackedMatchObservation,
 } from '@/features/live-studio/types'
+
+export async function fetchModelCallScorecard(
+  limit = 40,
+  signal?: AbortSignal,
+): Promise<ModelCallScorecard> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  const response = await fetch(`/api/live-studio/model-scorecard?${query}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(`Model scorecard request failed with ${response.status}`)
+  }
+
+  return (await response.json()) as ModelCallScorecard
+}
 
 export async function fetchMatchupAnalysis(
   player1Id: number,

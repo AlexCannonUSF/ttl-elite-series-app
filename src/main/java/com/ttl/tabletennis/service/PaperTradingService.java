@@ -11,6 +11,7 @@ import com.ttl.tabletennis.dto.CompletedMatchLogDto;
 import com.ttl.tabletennis.dto.LiveStudioIntegrityDto;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
 import com.ttl.tabletennis.dto.LiveScoreSnapshotDto;
+import com.ttl.tabletennis.dto.ModelCallScorecardDto;
 import com.ttl.tabletennis.dto.PaperTradeBetDto;
 import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
@@ -89,6 +90,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -97,6 +100,13 @@ public class PaperTradingService {
 
     private static final Logger log = LoggerFactory.getLogger(PaperTradingService.class);
     private final AtomicBoolean syncInProgress = new AtomicBoolean(false);
+    /**
+     * Syncs take the shared side while a reset takes the exclusive side. This
+     * prevents a scheduled sync from observing the clear-history transaction
+     * between its delete and replacement-session insert and creating a second
+     * default ACTIVE session.
+     */
+    private final ReentrantReadWriteLock sessionOperationLock = new ReentrantReadWriteLock(true);
     // EPS / clamp / round2 / round4 / valueOrZero / safeText / normalizeTrigger
     // moved to PaperTradingHelpers (import-static at the top of this file)
     // as part of the §4 decomposition (2026-05-19).
@@ -135,6 +145,7 @@ public class PaperTradingService {
     private final com.ttl.tabletennis.service.papertrade.SessionLedgerReconciler sessionLedgerReconciler;
     private final com.ttl.tabletennis.prediction.staking.StakingPolicy stakingPolicy;
     private final com.ttl.tabletennis.service.papertrade.ProvisionalScoreOutcomeTracker provisionalScoreOutcomeTracker;
+    private final com.ttl.tabletennis.service.papertrade.ModelCallLedgerService modelCallLedgerService;
     private final com.ttl.tabletennis.config.FeatureFlagCatalog featureFlagCatalog;
 
     @Value("${ttl.paper.startingBankroll:1000.0}")
@@ -398,6 +409,7 @@ public class PaperTradingService {
                                com.ttl.tabletennis.service.papertrade.SessionLedgerReconciler sessionLedgerReconciler,
                                com.ttl.tabletennis.prediction.staking.StakingPolicy stakingPolicy,
                                com.ttl.tabletennis.service.papertrade.ProvisionalScoreOutcomeTracker provisionalScoreOutcomeTracker,
+                               com.ttl.tabletennis.service.papertrade.ModelCallLedgerService modelCallLedgerService,
                                com.ttl.tabletennis.config.FeatureFlagCatalog featureFlagCatalog) {
         this.oddsValueEngineService = oddsValueEngineService;
         this.settlementFacade = settlementFacade;
@@ -423,6 +435,7 @@ public class PaperTradingService {
         this.sessionLedgerReconciler = sessionLedgerReconciler;
         this.stakingPolicy = stakingPolicy;
         this.provisionalScoreOutcomeTracker = provisionalScoreOutcomeTracker;
+        this.modelCallLedgerService = modelCallLedgerService;
         this.featureFlagCatalog = featureFlagCatalog;
     }
 
@@ -448,28 +461,31 @@ public class PaperTradingService {
         // live UI and async ingestion listeners. The in-process guard serializes
         // syncs, repositories/extracted services own their short transactions,
         // and ledger reconciliation repairs cached session totals at both ends.
-        String requestedStrategy = normalizeStrategy(strategyRaw);
-        String requestedModelVersion = StringUtils.hasText(modelVersionRaw)
-                ? modelVersionRaw.trim()
-                : "ENSEMBLE";
-        if (!syncInProgress.compareAndSet(false, true)) {
-            log.info("[paper] sync request coalesced because another sync is already in progress");
-            return new PaperTradingSyncResultDto(
-                    requestedStrategy,
-                    requestedModelVersion,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    LocalDateTime.now(),
-                    getSessionSnapshot(),
-                    "ALREADY_RUNNING",
-                    "A scheduled or manual sync is already in progress; this request was safely coalesced."
-            );
-        }
+        Lock operation = sessionOperationLock.readLock();
+        operation.lock();
         try {
-        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            String requestedStrategy = normalizeStrategy(strategyRaw);
+            String requestedModelVersion = StringUtils.hasText(modelVersionRaw)
+                    ? modelVersionRaw.trim()
+                    : "ENSEMBLE";
+            if (!syncInProgress.compareAndSet(false, true)) {
+                log.info("[paper] sync request coalesced because another sync is already in progress");
+                return new PaperTradingSyncResultDto(
+                        requestedStrategy,
+                        requestedModelVersion,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        LocalDateTime.now(),
+                        getSessionSnapshot(),
+                        "ALREADY_RUNNING",
+                        "A scheduled or manual sync is already in progress; this request was safely coalesced."
+                );
+            }
+            try {
+            try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
             PaperTradeSession session = sessionLifecycleService.getOrCreateActiveSession();
             sessionLedgerReconciler.reconcile(session);
             String strategy = requestedStrategy;
@@ -1011,9 +1027,12 @@ public class PaperTradingService {
                     LocalDateTime.now(),
                     buildSessionDto(session, 20, 40)
                 );
-        }
+            }
+            } finally {
+                syncInProgress.set(false);
+            }
         } finally {
-            syncInProgress.set(false);
+            operation.unlock();
         }
     }
 
@@ -1073,23 +1092,32 @@ public class PaperTradingService {
         return completedMatchLogQueryService.recentCompletedMatchesLog(days, limit);
     }
 
-    @Transactional
+    @Transactional(readOnly = true)
+    public ModelCallScorecardDto getModelCallScorecard(int limit) {
+        return modelCallLedgerService.scorecard(limit);
+    }
+
     public PaperTradingSessionDto resetSession(Double startingBankroll, String label) {
         return resetSession(startingBankroll, label, false);
     }
 
-    @Transactional
     public PaperTradingSessionDto resetSession(Double startingBankroll, String label, boolean clearHistory) {
-        return sessionResetService.resetSession(
-                startingBankroll,
-                label,
-                clearHistory,
-                20,
-                40,
-                exposureCaps(),
-                this::buildAdaptiveProfile,
-                bet -> deriveTrackingState(bet, LocalDateTime.now())
-        );
+        Lock operation = sessionOperationLock.writeLock();
+        operation.lock();
+        try {
+            return sessionResetService.resetSession(
+                    startingBankroll,
+                    label,
+                    clearHistory,
+                    20,
+                    40,
+                    exposureCaps(),
+                    this::buildAdaptiveProfile,
+                    bet -> deriveTrackingState(bet, LocalDateTime.now())
+            );
+        } finally {
+            operation.unlock();
+        }
     }
 
     public SettlementStats settleOpenBetsLegacy(PaperTradeSession session, List<LiveOddsRecommendationDto> rows) {
@@ -4089,6 +4117,15 @@ public class PaperTradingService {
         sample.setDecisionStatus(safeText(decisionStatus, "SKIPPED"));
         sample.setDecisionReason(safeText(decisionReason, "UNKNOWN"));
         decisionSampleRepository.save(sample);
+        modelCallLedgerService.recordCall(
+                sessionId,
+                strategy,
+                modelVersion,
+                row,
+                sample.getEventKey(),
+                decisionStatus,
+                decisionReason
+        );
     }
 
     // applyAdaptiveSnapshot promoted to AdaptiveProfile.applyTo(session, now)

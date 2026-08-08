@@ -20,6 +20,8 @@ public interface TrackedMatchObservationRepository extends JpaRepository<Tracked
 
     Optional<TrackedMatchObservation> findTopByEventKeyOrderByObservedAtDesc(String eventKey);
 
+    Optional<TrackedMatchObservation> findTopBySessionIdAndEventKeyOrderByObservedAtDesc(Long sessionId, String eventKey);
+
     List<TrackedMatchObservation> findBySessionIdOrderByObservedAtDesc(Long sessionId, Pageable pageable);
 
     List<TrackedMatchObservation> findByProvisionalResolvedAtAfterAndProvisionalCorrectIsNotNull(

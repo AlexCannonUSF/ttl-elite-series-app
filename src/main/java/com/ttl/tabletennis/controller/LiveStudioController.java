@@ -3,6 +3,7 @@ package com.ttl.tabletennis.controller;
 import com.ttl.tabletennis.dto.CompletedMatchLogDto;
 import com.ttl.tabletennis.dto.LiveStudioIntegrityDto;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
+import com.ttl.tabletennis.dto.ModelCallScorecardDto;
 import com.ttl.tabletennis.dto.PaperTradeBetDto;
 import com.ttl.tabletennis.dto.PaperTradingSessionDto;
 import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
@@ -54,6 +55,11 @@ public class LiveStudioController {
     public List<CompletedMatchLogDto> completedMatches(@RequestParam(defaultValue = "3") int days,
                                                        @RequestParam(defaultValue = "120") int limit) {
         return paperTradingService.recentCompletedMatchesLog(days, limit);
+    }
+
+    @GetMapping("/model-scorecard")
+    public ModelCallScorecardDto modelScorecard(@RequestParam(defaultValue = "40") int limit) {
+        return paperTradingService.getModelCallScorecard(limit);
     }
 
     @GetMapping("/integrity")

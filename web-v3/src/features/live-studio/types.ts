@@ -125,6 +125,55 @@ export type PaperTradingSyncResult = {
   message?: string | null
 }
 
+export type ModelCallResult = {
+  callId: number
+  matchId: number | null
+  eventKey: string
+  eventName: string
+  competitionName: string | null
+  captureType: 'PREMATCH_CLOSE' | 'LIVE_FIRST_SEEN' | string
+  capturedAt: string | null
+  matchDateIso: string | null
+  startTimeIso: string | null
+  player1Name: string
+  player2Name: string
+  predictedWinnerPlayerId: number | null
+  predictedWinnerName: string | null
+  modelProbability: number | null
+  modelFairAmericanOdds: number | null
+  hardRockAmericanOdds: number | null
+  opponentHardRockAmericanOdds: number | null
+  hardRockNoVigProbability: number | null
+  actualWinnerPlayerId: number | null
+  actualWinnerName: string
+  score: string
+  outcome: 'CORRECT' | 'INCORRECT' | 'NO_LEAN' | string
+  paperPickPlaced: boolean
+  recommendedAtCapture: boolean
+}
+
+export type ModelCallScorecard = {
+  sessionId: number | null
+  sessionLabel: string
+  generatedAt: string
+  totalCalls: number
+  awaitingResult: number
+  settledCalls: number
+  correct: number
+  incorrect: number
+  noLean: number
+  accuracyPct: number
+  pregameSettled: number
+  pregameCorrect: number
+  pregameAccuracyPct: number
+  liveFirstSettled: number
+  liveFirstCorrect: number
+  liveFirstAccuracyPct: number
+  averageConfidencePct: number
+  brierScore: number | null
+  recentResults: ModelCallResult[]
+}
+
 export type LiveOddsRecommendation = {
   source: string
   strategy: string

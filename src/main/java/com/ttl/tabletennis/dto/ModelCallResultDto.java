@@ -1,0 +1,27 @@
+package com.ttl.tabletennis.dto;
+
+public record ModelCallResultDto(Long callId,
+                                 Long matchId,
+                                 String eventKey,
+                                 String eventName,
+                                 String competitionName,
+                                 String captureType,
+                                 String capturedAt,
+                                 String matchDateIso,
+                                 String startTimeIso,
+                                 String player1Name,
+                                 String player2Name,
+                                 Long predictedWinnerPlayerId,
+                                 String predictedWinnerName,
+                                 Double modelProbability,
+                                 Integer modelFairAmericanOdds,
+                                 Integer hardRockAmericanOdds,
+                                 Integer opponentHardRockAmericanOdds,
+                                 Double hardRockNoVigProbability,
+                                 Long actualWinnerPlayerId,
+                                 String actualWinnerName,
+                                 String score,
+                                 String outcome,
+                                 boolean paperPickPlaced,
+                                 boolean recommendedAtCapture) {
+}

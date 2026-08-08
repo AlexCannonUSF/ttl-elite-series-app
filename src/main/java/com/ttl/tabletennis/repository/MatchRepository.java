@@ -16,6 +16,9 @@ import java.util.Optional;
 
 public interface MatchRepository extends JpaRepository<Match, Long> {
 
+    @Query("SELECT COALESCE(MAX(m.id), 0) FROM Match m")
+    Long findMaxMatchId();
+
     Optional<Match> findByExternalId(String externalId);
 
     @Query("""

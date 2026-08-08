@@ -27,6 +27,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { fetchLiveBoard, fetchLiveSession, fetchMatchupAnalysis, syncLiveSession } from '@/features/live-studio/api'
 import { BettorMatchupPanel } from '@/features/live-studio/BettorMatchupPanel'
 import { calculateBookMargin, calculateModelPriceAtBookMargin } from '@/features/live-studio/marketMath'
+import { ModelPerformanceScorecard } from '@/features/live-studio/ModelPerformanceScorecard'
 import { SessionRibbon } from '@/features/live-studio/SessionRibbon'
 import type {
   LiveBoardHistoryPoint,
@@ -303,6 +304,8 @@ export function LiveBoardRoute() {
       <div className="mt-5">
         <SessionRibbon />
       </div>
+
+      <ModelPerformanceScorecard />
 
       {error ? (
         <div className="mt-5 inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
