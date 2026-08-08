@@ -9,6 +9,7 @@ import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
+import com.ttl.tabletennis.scrape.HardRockScoreStreamClient;
 import com.ttl.tabletennis.service.PaperTradingShadowService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +48,7 @@ public class SessionResetService {
     private final PaperTradeSessionRepository sessionRepository;
     private final SessionLifecycleService sessionLifecycleService;
     private final SessionSnapshotService sessionSnapshotService;
+    private final HardRockScoreStreamClient hardRockScoreStreamClient;
 
     public SessionResetService(PaperTradingShadowService paperTradingShadowService,
                                TrackedMatchObservationRepository trackedMatchObservationRepository,
@@ -56,7 +58,8 @@ public class SessionResetService {
                                PaperTradeBetRepository betRepository,
                                PaperTradeSessionRepository sessionRepository,
                                SessionLifecycleService sessionLifecycleService,
-                               SessionSnapshotService sessionSnapshotService) {
+                               SessionSnapshotService sessionSnapshotService,
+                               HardRockScoreStreamClient hardRockScoreStreamClient) {
         this.paperTradingShadowService = paperTradingShadowService;
         this.trackedMatchObservationRepository = trackedMatchObservationRepository;
         this.decisionSampleRepository = decisionSampleRepository;
@@ -66,6 +69,7 @@ public class SessionResetService {
         this.sessionRepository = sessionRepository;
         this.sessionLifecycleService = sessionLifecycleService;
         this.sessionSnapshotService = sessionSnapshotService;
+        this.hardRockScoreStreamClient = hardRockScoreStreamClient;
     }
 
     @Transactional
@@ -79,6 +83,7 @@ public class SessionResetService {
                                                 Function<com.ttl.tabletennis.domain.PaperTradeBet, String> trackingStateResolver) {
         try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
             if (clearHistory) {
+                hardRockScoreStreamClient.clearTracking();
                 paperTradingShadowService.clearAll();
                 trackedMatchObservationRepository.deleteAllInBatch();
                 decisionSampleRepository.deleteAllInBatch();

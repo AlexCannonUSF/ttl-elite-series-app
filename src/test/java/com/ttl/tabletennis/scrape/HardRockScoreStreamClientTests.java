@@ -95,6 +95,30 @@ class HardRockScoreStreamClientTests {
         verify(ingestionBus, times(1)).publish(org.mockito.ArgumentMatchers.any(IngestEvent.class));
     }
 
+    @Test
+    void fullResetDropsCachedScoresAndIgnoresOldSocketSubscriptions() {
+        IngestionBus ingestionBus = mock(IngestionBus.class);
+        HardRockScoreStreamClient client = client(ingestionBus);
+        MatchOdds seed = new MatchOdds("Old Alpha", "Old Beta", 1.90, 1.90);
+        seed.setExternalEventId("old-event");
+        client.track(seed);
+        String message = """
+                {"Event":{"id":"old-event","inplay":true,
+                  "simpleMatchState":{"gamesA":1,"gamesB":0,"pointsInCurrentGameA":3,"pointsInCurrentGameB":2,
+                    "preMatch":false,"matchCompleted":false}}}
+                """;
+
+        client.acceptMessage(message);
+        assertEquals(1, client.snapshots().size());
+
+        client.clearTracking();
+        client.acceptMessage(message);
+
+        assertTrue(client.snapshots().isEmpty());
+        assertEquals(0, client.status().trackedEvents());
+        verify(ingestionBus, times(1)).publish(org.mockito.ArgumentMatchers.any(IngestEvent.class));
+    }
+
     private static HardRockScoreStreamClient client(IngestionBus ingestionBus) {
         return new HardRockScoreStreamClient(
                 new ObjectMapper(),

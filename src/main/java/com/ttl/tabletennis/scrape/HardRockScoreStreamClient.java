@@ -213,6 +213,20 @@ public class HardRockScoreStreamClient {
         flushSubscriptions();
     }
 
+    /**
+     * Clear the session-scoped watch state when an operator requests a full
+     * paper-trading history reset. The socket can still receive patches for
+     * prior server-side subscriptions, so {@link #acceptMessage(String)} also
+     * ignores events until the new session explicitly tracks them again.
+     */
+    public void clearTracking() {
+        tracked.clear();
+        eventState.clear();
+        latestRows.clear();
+        lastPublishedFingerprint.clear();
+        pendingSubscriptions.clear();
+    }
+
     /** Latest durable score states, including terminal rows after markets close. */
     public List<MatchOdds> snapshots() {
         pruneExpired();
@@ -376,6 +390,7 @@ public class HardRockScoreStreamClient {
             if (!patch.isObject()) return;
             String eventId = sanitizeEventId(patch.path("id").asText());
             if (!StringUtils.hasText(eventId)) return;
+            if (!tracked.containsKey(eventId)) return;
             JsonNode eventPatch = patch;
 
             ObjectNode merged = eventState.compute(eventId, (ignored, existing) -> {
