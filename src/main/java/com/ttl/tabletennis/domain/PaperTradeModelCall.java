@@ -124,6 +124,37 @@ public class PaperTradeModelCall {
     @Column(name = "decision_reason", length = 160)
     private String decisionReason;
 
+    /** Frozen predictor telemetry captured with the model call. */
+    @Column(name = "top_trigger", length = 180)
+    private String topTrigger;
+
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
+    @Column(name = "overall_reliability")
+    private Double overallReliability;
+
+    @Column(name = "rating_agreement")
+    private Double ratingAgreement;
+
+    @Column(name = "trigger_reliability")
+    private Double triggerReliability;
+
+    @Column(name = "baseline_stability")
+    private Double baselineStability;
+
+    @Column(name = "suggested_edge")
+    private Double suggestedEdge;
+
+    @Column(name = "selection_score")
+    private Double selectionScore;
+
+    @Column(name = "signal_quality")
+    private Double signalQuality;
+
+    @Column(name = "confidence_width")
+    private Double confidenceWidth;
+
     @PrePersist
     void prePersist() {
         if (captureType == null || captureType.isBlank()) {
@@ -191,4 +222,24 @@ public class PaperTradeModelCall {
     public void setDecisionStatus(String decisionStatus) { this.decisionStatus = decisionStatus; }
     public String getDecisionReason() { return decisionReason; }
     public void setDecisionReason(String decisionReason) { this.decisionReason = decisionReason; }
+    public String getTopTrigger() { return topTrigger; }
+    public void setTopTrigger(String topTrigger) { this.topTrigger = topTrigger; }
+    public String getFeatureContributions() { return featureContributions; }
+    public void setFeatureContributions(String featureContributions) { this.featureContributions = featureContributions; }
+    public Double getOverallReliability() { return overallReliability; }
+    public void setOverallReliability(Double overallReliability) { this.overallReliability = overallReliability; }
+    public Double getRatingAgreement() { return ratingAgreement; }
+    public void setRatingAgreement(Double ratingAgreement) { this.ratingAgreement = ratingAgreement; }
+    public Double getTriggerReliability() { return triggerReliability; }
+    public void setTriggerReliability(Double triggerReliability) { this.triggerReliability = triggerReliability; }
+    public Double getBaselineStability() { return baselineStability; }
+    public void setBaselineStability(Double baselineStability) { this.baselineStability = baselineStability; }
+    public Double getSuggestedEdge() { return suggestedEdge; }
+    public void setSuggestedEdge(Double suggestedEdge) { this.suggestedEdge = suggestedEdge; }
+    public Double getSelectionScore() { return selectionScore; }
+    public void setSelectionScore(Double selectionScore) { this.selectionScore = selectionScore; }
+    public Double getSignalQuality() { return signalQuality; }
+    public void setSignalQuality(Double signalQuality) { this.signalQuality = signalQuality; }
+    public Double getConfidenceWidth() { return confidenceWidth; }
+    public void setConfidenceWidth(Double confidenceWidth) { this.confidenceWidth = confidenceWidth; }
 }

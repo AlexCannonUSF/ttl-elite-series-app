@@ -9,6 +9,7 @@ const ModelCallTrackingRoute = lazy(() => import('@/routes/ModelCallTrackingRout
 const ModelPipelineRoute = lazy(() => import('@/routes/ModelPipelineRoute').then((module) => ({ default: module.ModelPipelineRoute })))
 const MlQualityRoute = lazy(() => import('@/routes/MlQualityRoute').then((module) => ({ default: module.MlQualityRoute })))
 const AdminHubRoute = lazy(() => import('@/routes/AdminHubRoute').then((module) => ({ default: module.AdminHubRoute })))
+const AdminLiveRunRoute = lazy(() => import('@/routes/AdminLiveRunRoute').then((module) => ({ default: module.AdminLiveRunRoute })))
 const OpsConsoleRoute = lazy(() => import('@/routes/OpsConsoleRoute').then((module) => ({ default: module.OpsConsoleRoute })))
 const OpsDiffsRoute = lazy(() => import('@/routes/OpsDiffsRoute').then((module) => ({ default: module.OpsDiffsRoute })))
 const OpsFeedsRoute = lazy(() => import('@/routes/OpsFeedsRoute').then((module) => ({ default: module.OpsFeedsRoute })))
@@ -63,6 +64,10 @@ export const router = createBrowserRouter([
   {
     path: '/admin/model-quality',
     element: lazyRoute(MlQualityRoute),
+  },
+  {
+    path: '/admin/live-run',
+    element: lazyRoute(AdminLiveRunRoute),
   },
   {
     path: '/admin/pipeline',

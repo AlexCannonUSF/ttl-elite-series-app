@@ -11,6 +11,7 @@ import {
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
+  TrendingUp,
   Waves,
   Workflow,
 } from 'lucide-react'
@@ -35,6 +36,7 @@ const userSections = [
 
 const adminSections = [
   { label: 'Command', icon: Gauge, to: '/admin' },
+  { label: 'Live Run', icon: TrendingUp, to: '/admin/live-run' },
   { label: 'Model', icon: BrainCircuit, to: '/admin/model-quality' },
   { label: 'Pipeline', icon: Workflow, to: '/admin/pipeline' },
   { label: 'Ops', icon: Waves, to: '/admin/ops' },

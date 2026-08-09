@@ -2,17 +2,20 @@ package com.ttl.tabletennis.service.papertrade;
 
 import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.ModelCallViewerReview;
+import com.ttl.tabletennis.domain.PaperTradeDecisionSample;
 import com.ttl.tabletennis.domain.PaperTradeModelCall;
 import com.ttl.tabletennis.domain.PaperTradeSession;
 import com.ttl.tabletennis.domain.Player;
 import com.ttl.tabletennis.domain.TrackedMatchObservation;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
+import com.ttl.tabletennis.dto.LiveRunAnalyticsDto;
 import com.ttl.tabletennis.dto.ModelCallApprovalRequest;
 import com.ttl.tabletennis.dto.ModelCallMonitorDto;
 import com.ttl.tabletennis.dto.ModelCallScorecardDto;
 import com.ttl.tabletennis.dto.ModelCallTrackingDto;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.ModelCallViewerReviewRepository;
+import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
@@ -42,8 +45,10 @@ class ModelCallLedgerServiceTests {
     private final MatchRepository matchRepository = mock(MatchRepository.class);
     private final TrackedMatchObservationRepository observationRepository = mock(TrackedMatchObservationRepository.class);
     private final ModelCallViewerReviewRepository reviewRepository = mock(ModelCallViewerReviewRepository.class);
+    private final PaperTradeDecisionSampleRepository decisionSampleRepository = mock(PaperTradeDecisionSampleRepository.class);
     private final ModelCallLedgerService service =
-            new ModelCallLedgerService(callRepository, sessionRepository, matchRepository, observationRepository, reviewRepository);
+            new ModelCallLedgerService(callRepository, sessionRepository, matchRepository, observationRepository,
+                    reviewRepository, decisionSampleRepository);
 
     @Test
     void recordsMostLikelyWinnerInsteadOfValueBetSide() {
@@ -150,6 +155,58 @@ class ModelCallLedgerServiceTests {
         assertEquals(0, scorecard.viewerCorrect());
         assertEquals("CORRECT", scorecard.recentResults().get(0).outcome());
         assertFalse(scorecard.recentResults().get(0).paperPickPlaced());
+    }
+
+    @Test
+    void analyticsAttributesResolvedPassesToTheirFrozenTriggerAndFactors() {
+        PaperTradeSession session = mock(PaperTradeSession.class);
+        when(session.getId()).thenReturn(7L);
+        when(session.getLabel()).thenReturn("Evidence run");
+        when(sessionRepository.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE))
+                .thenReturn(Optional.of(session));
+
+        PaperTradeModelCall call = call(0.62, 1L, PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE);
+        ReflectionTestUtils.setField(call, "id", 44L);
+        call.setStartTimeIso("2026-08-08T14:00:00-04:00");
+        call.setMatchIdHighWatermark(100L);
+        when(callRepository.findBySessionIdOrderByCapturedAtDesc(7L)).thenReturn(List.of(call));
+
+        PaperTradeDecisionSample sample = new PaperTradeDecisionSample();
+        sample.setSessionId(7L);
+        sample.setEventKey("event-1");
+        sample.setTopTrigger("RATINGS_ENSEMBLE");
+        sample.setFeatureContributions("elo=0.2000|recent_form=-0.0500");
+        sample.setTriggerReliability(0.73);
+        when(decisionSampleRepository.findBySessionIdOrderByCreatedAtAsc(7L)).thenReturn(List.of(sample));
+
+        Player alpha = new Player("Alpha", "One");
+        alpha.setId(1L);
+        Player beta = new Player("Beta", "Two");
+        beta.setId(2L);
+        Match result = new Match();
+        result.setId(101L);
+        result.setDate(LocalDate.of(2026, 8, 8));
+        result.setPlayer1(alpha);
+        result.setPlayer2(beta);
+        result.setWinnerPlayerId(1L);
+        result.setResult("3:1");
+        result.setComplete(true);
+        when(matchRepository.findCompletedMatchesBetween(LocalDate.of(2026, 8, 8), LocalDate.of(2026, 8, 8)))
+                .thenReturn(List.of(result));
+
+        LiveRunAnalyticsDto analytics = service.analytics(250);
+
+        assertEquals(1, analytics.settledCalls());
+        assertEquals(1, analytics.correct());
+        assertEquals(1, analytics.settledModelOnlyCalls());
+        assertEquals(0, analytics.settledPaperPicks());
+        assertEquals("RATINGS_ENSEMBLE", analytics.triggers().get(0).segment());
+        assertEquals(1, analytics.triggers().get(0).sampleSize());
+        assertEquals(73.0, analytics.triggers().get(0).averageReliabilityPct());
+        assertEquals(2, analytics.factors().size());
+        assertEquals(1, analytics.trend().size());
+        assertEquals(100.0, analytics.accuracyPct());
+        assertTrue(analytics.accuracyCiLowPct() > 0.0);
     }
 
     @Test

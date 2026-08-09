@@ -2,6 +2,7 @@ import type {
   LiveOddsRecommendation,
   HardRockScoreStreamStatus,
   MatchupAnalysis,
+  LiveRunAnalytics,
   ModelCallApproval,
   ModelCallMonitor,
   ModelCallScorecard,
@@ -35,6 +36,16 @@ export async function fetchModelCallScorecard(
   }
 
   return (await response.json()) as ModelCallScorecard
+}
+
+export async function fetchLiveRunAnalytics(limit = 250, signal?: AbortSignal): Promise<LiveRunAnalytics> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  const response = await fetch(`/api/live-studio/live-run-analytics?${query}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Live-run analytics request failed with ${response.status}`)
+  return (await response.json()) as LiveRunAnalytics
 }
 
 export async function fetchModelCallMonitor(limit = 100, signal?: AbortSignal): Promise<ModelCallMonitor> {

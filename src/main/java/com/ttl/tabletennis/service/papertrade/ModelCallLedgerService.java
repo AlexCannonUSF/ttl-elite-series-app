@@ -2,10 +2,12 @@ package com.ttl.tabletennis.service.papertrade;
 
 import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.ModelCallViewerReview;
+import com.ttl.tabletennis.domain.PaperTradeDecisionSample;
 import com.ttl.tabletennis.domain.PaperTradeModelCall;
 import com.ttl.tabletennis.domain.PaperTradeSession;
 import com.ttl.tabletennis.domain.TrackedMatchObservation;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
+import com.ttl.tabletennis.dto.LiveRunAnalyticsDto;
 import com.ttl.tabletennis.dto.ModelCallApprovalRequest;
 import com.ttl.tabletennis.dto.ModelCallMonitorDto;
 import com.ttl.tabletennis.dto.ModelCallResultDto;
@@ -14,6 +16,7 @@ import com.ttl.tabletennis.dto.ModelCallTrackingDto;
 import com.ttl.tabletennis.exception.ResourceNotFoundException;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.ModelCallViewerReviewRepository;
+import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
@@ -58,6 +61,7 @@ public class ModelCallLedgerService {
     private final MatchRepository matchRepository;
     private final TrackedMatchObservationRepository observationRepository;
     private final ModelCallViewerReviewRepository reviewRepository;
+    private final PaperTradeDecisionSampleRepository decisionSampleRepository;
 
     private volatile long watermarkCacheExpiresAtNanos;
     private volatile long cachedMatchIdHighWatermark;
@@ -67,12 +71,14 @@ public class ModelCallLedgerService {
                                   PaperTradeSessionRepository sessionRepository,
                                   MatchRepository matchRepository,
                                   TrackedMatchObservationRepository observationRepository,
-                                  ModelCallViewerReviewRepository reviewRepository) {
+                                  ModelCallViewerReviewRepository reviewRepository,
+                                  PaperTradeDecisionSampleRepository decisionSampleRepository) {
         this.callRepository = callRepository;
         this.sessionRepository = sessionRepository;
         this.matchRepository = matchRepository;
         this.observationRepository = observationRepository;
         this.reviewRepository = reviewRepository;
+        this.decisionSampleRepository = decisionSampleRepository;
     }
 
     /**
@@ -88,6 +94,18 @@ public class ModelCallLedgerService {
                            String eventKey,
                            String decisionStatus,
                            String decisionReason) {
+        recordCall(sessionId, strategy, modelVersion, row, eventKey, decisionStatus, decisionReason, null);
+    }
+
+    @Transactional
+    public void recordCall(Long sessionId,
+                           String strategy,
+                           String modelVersion,
+                           LiveOddsRecommendationDto row,
+                           String eventKey,
+                           String decisionStatus,
+                           String decisionReason,
+                           PaperTradeDecisionSample decisionSample) {
         if (sessionId == null || row == null || !StringUtils.hasText(eventKey)) {
             return;
         }
@@ -133,6 +151,7 @@ public class ModelCallLedgerService {
             call.setRecommendedAtCapture(row.recommended());
             call.setDecisionStatus(safeText(decisionStatus, "SKIPPED"));
             call.setDecisionReason(safeText(decisionReason, "UNKNOWN"));
+            applyPredictorSnapshot(call, row, decisionSample);
         } else if (!storedPrematch && row.live()) {
             // First-live reads are deliberately frozen; only bet-placement
             // metadata below may change after the initial observation.
@@ -140,6 +159,9 @@ public class ModelCallLedgerService {
 
         if ("PLACED".equalsIgnoreCase(decisionStatus)) {
             call.setHasPaperPick(true);
+        }
+        if (call.getTopTrigger() == null && decisionSample != null) {
+            applyPredictorSnapshot(call, row, decisionSample);
         }
         callRepository.save(call);
     }
@@ -303,6 +325,169 @@ public class ModelCallLedgerService {
     }
 
     /**
+     * Session-scoped evidence over every frozen winner call. Unlike the
+     * paper-bet learning audit, this intentionally includes resolved passes so
+     * an operator can evaluate the model and each gate before enough official
+     * picks exist for adaptive learning.
+     */
+    @Transactional(readOnly = true)
+    public LiveRunAnalyticsDto analytics(int limit) {
+        int take = clamp(limit, 20, 500);
+        Optional<PaperTradeSession> activeSession =
+                sessionRepository.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE);
+        if (activeSession.isEmpty()) return emptyAnalytics();
+
+        PaperTradeSession session = activeSession.get();
+        List<PaperTradeModelCall> calls = callRepository.findBySessionIdOrderByCapturedAtDesc(session.getId());
+        Map<String, TrackedMatchObservation> observations = latestObservations(session.getId());
+        Map<String, PaperTradeDecisionSample> decisions = latestDecisionSamples(session.getId());
+        ArchiveIndex archiveIndex = archiveIndex(calls);
+        List<ResolvedCall> resolved = calls.stream()
+                .map(call -> new ResolvedCall(call,
+                        resolveOutcome(call, observations.get(call.getEventKey()), archiveIndex).orElse(null)))
+                .toList();
+
+        Map<String, ResolvedCall> byOutcome = new LinkedHashMap<>();
+        for (ResolvedCall item : resolved) {
+            if (item.outcome() == null) continue;
+            String key = item.outcome().matchId() == null
+                    ? "event:" + item.call().getEventKey()
+                    : "match:" + item.outcome().matchId();
+            byOutcome.merge(key, item, ModelCallLedgerService::preferredCall);
+        }
+
+        List<ResolvedCall> settled = byOutcome.values().stream()
+                .filter(item -> item.call().getPredictedWinnerPlayerId() != null)
+                .filter(item -> item.call().getModelProbability() != null)
+                .sorted(Comparator
+                        .comparing((ResolvedCall item) -> item.outcome().completedAt(), Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(item -> item.call().getCapturedAt(), Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+
+        int correct = 0;
+        int paperPicks = 0;
+        double probabilitySum = 0.0;
+        double brier = 0.0;
+        double returned = 0.0;
+        double cumulativeProfit = 0.0;
+        int pricedWins = 0;
+        int pricedLosses = 0;
+        List<Double> profits = new ArrayList<>();
+        List<LiveRunAnalyticsDto.TrendPointDto> trend = new ArrayList<>();
+        Map<String, SegmentAccumulator> triggerSegments = new LinkedHashMap<>();
+        Map<String, SegmentAccumulator> decisionSegments = new LinkedHashMap<>();
+        Map<String, FactorAccumulator> factorSegments = new LinkedHashMap<>();
+
+        for (ResolvedCall item : settled) {
+            PaperTradeModelCall call = item.call();
+            boolean won = call.getPredictedWinnerPlayerId().equals(item.outcome().winnerPlayerId());
+            if (won) correct++;
+            if (call.isHasPaperPick()) paperPicks++;
+            double probability = clamp(call.getModelProbability(), 0.0, 1.0);
+            probabilitySum += probability;
+            brier += Math.pow(probability - (won ? 1.0 : 0.0), 2);
+
+            Double decimal = americanDecimal(call.getHardRockAmericanOdds());
+            double profit = decimal == null ? 0.0 : (won ? decimal - 1.0 : -1.0);
+            if (decimal != null) {
+                profits.add(profit);
+                if (won) {
+                    pricedWins++;
+                    returned += decimal;
+                } else {
+                    pricedLosses++;
+                }
+                cumulativeProfit += profit;
+            }
+
+            int sample = trend.size() + 1;
+            trend.add(new LiveRunAnalyticsDto.TrendPointDto(
+                    sample,
+                    iso(item.outcome().completedAt()),
+                    call.getId() == null ? -1L : call.getId(),
+                    safeText(call.getEventName(), playerPairLabel(call)),
+                    won,
+                    percentage(correct, sample),
+                    round2(cumulativeProfit),
+                    percentage(cumulativeProfit, profits.size())
+            ));
+
+            PredictorSnapshot predictor = predictorSnapshot(call, decisions.get(call.getEventKey()));
+            String trigger = safeText(predictor.topTrigger(), "UNKNOWN");
+            String decision = safeText(call.getDecisionReason(), "UNKNOWN");
+            triggerSegments.computeIfAbsent(trigger, ignored -> new SegmentAccumulator())
+                    .add(won, probability, profit, decimal != null, predictor.triggerReliability());
+            decisionSegments.computeIfAbsent(decision, ignored -> new SegmentAccumulator())
+                    .add(won, probability, profit, decimal != null, predictor.overallReliability());
+
+            boolean flip = call.getPredictedWinnerPlayerId().equals(call.getPlayer2Id());
+            for (FactorValue factor : parseFactors(predictor.featureContributions())) {
+                double aligned = flip ? -factor.value() : factor.value();
+                factorSegments.computeIfAbsent(factor.name(), ignored -> new FactorAccumulator())
+                        .add(aligned, won);
+            }
+        }
+
+        int n = settled.size();
+        int losses = Math.max(0, n - correct);
+        ConfidenceInterval accuracyInterval = wilson(correct, n);
+        ConfidenceInterval roiInterval = meanInterval(profits);
+        int readinessTarget = 100;
+        double net = returned - profits.size();
+        List<LiveRunAnalyticsDto.SegmentPerformanceDto> triggers = triggerSegments.entrySet().stream()
+                .map(entry -> entry.getValue().toDto(entry.getKey()))
+                .sorted(Comparator.comparingInt(LiveRunAnalyticsDto.SegmentPerformanceDto::sampleSize).reversed()
+                        .thenComparing(LiveRunAnalyticsDto.SegmentPerformanceDto::segment))
+                .toList();
+        List<LiveRunAnalyticsDto.SegmentPerformanceDto> reasons = decisionSegments.entrySet().stream()
+                .map(entry -> entry.getValue().toDto(entry.getKey()))
+                .sorted(Comparator.comparingInt(LiveRunAnalyticsDto.SegmentPerformanceDto::sampleSize).reversed()
+                        .thenComparing(LiveRunAnalyticsDto.SegmentPerformanceDto::segment))
+                .toList();
+        List<LiveRunAnalyticsDto.FactorPerformanceDto> factors = factorSegments.entrySet().stream()
+                .map(entry -> entry.getValue().toDto(entry.getKey()))
+                .sorted(Comparator.comparingInt(LiveRunAnalyticsDto.FactorPerformanceDto::sampleSize).reversed()
+                        .thenComparing(LiveRunAnalyticsDto.FactorPerformanceDto::meanAbsoluteContribution,
+                                Comparator.reverseOrder()))
+                .toList();
+
+        return new LiveRunAnalyticsDto(
+                session.getId(),
+                session.getLabel(),
+                LocalDateTime.now().toString(),
+                evidenceLabel(n),
+                readinessTarget,
+                round2(Math.min(100.0, n * 100.0 / readinessTarget)),
+                calls.size(),
+                n,
+                (int) resolved.stream().filter(item -> item.outcome() == null).count(),
+                correct,
+                losses,
+                percentage(correct, n),
+                accuracyInterval.low(),
+                accuracyInterval.high(),
+                percentage(probabilitySum, n),
+                n == 0 ? null : round4(brier / n),
+                profits.size(),
+                pricedWins,
+                pricedLosses,
+                round2(profits.size()),
+                round2(returned),
+                round2(net),
+                percentage(net, profits.size()),
+                roiInterval.low(),
+                roiInterval.high(),
+                positiveMeanConfidence(profits),
+                paperPicks,
+                Math.max(0, n - paperPicks),
+                List.copyOf(trend.stream().skip(Math.max(0, trend.size() - take)).toList()),
+                List.copyOf(triggers),
+                List.copyOf(reasons),
+                List.copyOf(factors)
+        );
+    }
+
+    /**
      * Returns every model call in the active session, including unresolved
      * matches, with a human-readable explanation of its current pipeline stage.
      */
@@ -319,11 +504,13 @@ public class ModelCallLedgerService {
         PaperTradeSession session = activeSession.get();
         Map<Long, ModelCallViewerReview> reviews = latestReviews(session.getId());
         Map<String, TrackedMatchObservation> observations = latestObservations(session.getId());
+        Map<String, PaperTradeDecisionSample> decisions = latestDecisionSamples(session.getId());
         List<PaperTradeModelCall> allCalls = callRepository.findBySessionIdOrderByCapturedAtDesc(session.getId());
         ArchiveIndex archiveIndex = archiveIndex(allCalls);
         List<ModelCallTrackingDto> trackedCalls = allCalls
                 .stream()
-                .map(call -> tracking(call, reviews.get(call.getId()), observations.get(call.getEventKey()), archiveIndex))
+                .map(call -> tracking(call, reviews.get(call.getId()), observations.get(call.getEventKey()),
+                        archiveIndex, decisions.get(call.getEventKey())))
                 .toList();
         List<ModelCallTrackingDto> calls = trackedCalls.stream().limit(take).toList();
         return new ModelCallMonitorDto(
@@ -346,7 +533,10 @@ public class ModelCallLedgerService {
                 .orElseThrow(() -> new ResourceNotFoundException("Model call " + callId + " was not found"));
         ModelCallViewerReview review = reviewRepository.findByCallIdOrderByCreatedAtDesc(callId)
                 .stream().findFirst().orElse(null);
-        return tracking(call, review, latestObservation(call).orElse(null));
+        PaperTradeDecisionSample decision = decisionSampleRepository
+                .findTopBySessionIdAndEventKeyOrderByCreatedAtDescIdDesc(call.getSessionId(), call.getEventKey())
+                .orElse(null);
+        return tracking(call, review, latestObservation(call).orElse(null), null, decision);
     }
 
     /**
@@ -380,19 +570,23 @@ public class ModelCallLedgerService {
         review.setNote(limitText(request.note(), 400));
         review.setCreatedAt(LocalDateTime.now());
         reviewRepository.save(review);
-        return tracking(call, review, latest);
+        PaperTradeDecisionSample decision = decisionSampleRepository
+                .findTopBySessionIdAndEventKeyOrderByCreatedAtDescIdDesc(call.getSessionId(), call.getEventKey())
+                .orElse(null);
+        return tracking(call, review, latest, null, decision);
     }
 
     private ModelCallTrackingDto tracking(PaperTradeModelCall call,
                                           ModelCallViewerReview review,
                                           TrackedMatchObservation latest) {
-        return tracking(call, review, latest, null);
+        return tracking(call, review, latest, null, null);
     }
 
     private ModelCallTrackingDto tracking(PaperTradeModelCall call,
                                           ModelCallViewerReview review,
                                           TrackedMatchObservation latest,
-                                          ArchiveIndex archiveIndex) {
+                                          ArchiveIndex archiveIndex,
+                                          PaperTradeDecisionSample decisionSample) {
         ResolvedOutcome system = resolveOutcome(call, latest, archiveIndex).orElse(null);
         boolean completionSignal = latest != null && (latest.isMatchCompleted()
                 || latest.isResulted()
@@ -408,6 +602,7 @@ public class ModelCallLedgerService {
                 : call.getPredictedWinnerPlayerId() == null
                 ? "NO_LEAN"
                 : call.getPredictedWinnerPlayerId().equals(effectiveWinner) ? "CORRECT" : "INCORRECT";
+        PredictorSnapshot predictor = predictorSnapshot(call, decisionSample);
 
         return new ModelCallTrackingDto(
                 call.getId(),
@@ -438,6 +633,16 @@ public class ModelCallLedgerService {
                 call.isHasPaperPick(),
                 call.getDecisionStatus(),
                 call.getDecisionReason(),
+                predictor.topTrigger(),
+                predictor.featureContributions(),
+                predictor.overallReliability(),
+                predictor.ratingAgreement(),
+                predictor.triggerReliability(),
+                predictor.baselineStability(),
+                predictor.suggestedEdge(),
+                predictor.selectionScore(),
+                predictor.signalQuality(),
+                predictor.confidenceWidth(),
                 latest == null ? null : latest.getLiveScore(),
                 latest == null ? null : latest.getMatchPhase(),
                 latest == null ? null : latest.getSource(),
@@ -542,6 +747,16 @@ public class ModelCallLedgerService {
         return latest;
     }
 
+    private Map<String, PaperTradeDecisionSample> latestDecisionSamples(Long sessionId) {
+        Map<String, PaperTradeDecisionSample> latest = new LinkedHashMap<>();
+        for (PaperTradeDecisionSample sample : decisionSampleRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)) {
+            if (sample != null && StringUtils.hasText(sample.getEventKey())) {
+                latest.put(sample.getEventKey(), sample);
+            }
+        }
+        return latest;
+    }
+
     private Optional<TrackedMatchObservation> latestObservation(PaperTradeModelCall call) {
         return observationRepository.findTopBySessionIdAndEventKeyOrderByObservedAtDescIdDesc(
                 call.getSessionId(), call.getEventKey());
@@ -608,6 +823,54 @@ public class ModelCallLedgerService {
         call.setHardRockNoVigProbability(totalImplied > 0.0
                 ? clamp(chosenImplied / totalImplied, 0.0, 1.0)
                 : null);
+    }
+
+    private static void applyPredictorSnapshot(PaperTradeModelCall call,
+                                               LiveOddsRecommendationDto row,
+                                               PaperTradeDecisionSample sample) {
+        call.setTopTrigger(firstText(sample == null ? null : sample.getTopTrigger(), row.topTrigger()));
+        call.setFeatureContributions(sample == null ? null : sample.getFeatureContributions());
+        call.setOverallReliability(firstFinite(
+                sample == null ? null : sample.getOverallReliability(), row.overallReliability()));
+        call.setRatingAgreement(firstFinite(
+                sample == null ? null : sample.getRatingAgreement(), row.ratingAgreement()));
+        call.setTriggerReliability(firstFinite(
+                sample == null ? null : sample.getTriggerReliability(), row.topTriggerReliability()));
+        call.setBaselineStability(firstFinite(
+                sample == null ? null : sample.getBaselineStability(), row.suggestedSideBaselineStability()));
+        call.setSuggestedEdge(firstFinite(
+                sample == null ? null : sample.getSuggestedEdge(), row.suggestedEdge()));
+        call.setSelectionScore(sample == null ? null : finite(sample.getSelectionScore()));
+        call.setSignalQuality(sample == null ? null : finite(sample.getSignalQuality()));
+        call.setConfidenceWidth(sample == null ? null : finite(sample.getConfidenceWidth()));
+    }
+
+    private static PredictorSnapshot predictorSnapshot(PaperTradeModelCall call,
+                                                        PaperTradeDecisionSample fallback) {
+        return new PredictorSnapshot(
+                firstText(call.getTopTrigger(), fallback == null ? null : fallback.getTopTrigger()),
+                firstText(call.getFeatureContributions(), fallback == null ? null : fallback.getFeatureContributions()),
+                firstFinite(call.getOverallReliability(), fallback == null ? null : fallback.getOverallReliability()),
+                firstFinite(call.getRatingAgreement(), fallback == null ? null : fallback.getRatingAgreement()),
+                firstFinite(call.getTriggerReliability(), fallback == null ? null : fallback.getTriggerReliability()),
+                firstFinite(call.getBaselineStability(), fallback == null ? null : fallback.getBaselineStability()),
+                firstFinite(call.getSuggestedEdge(), fallback == null ? null : fallback.getSuggestedEdge()),
+                firstFinite(call.getSelectionScore(), fallback == null ? null : fallback.getSelectionScore()),
+                firstFinite(call.getSignalQuality(), fallback == null ? null : fallback.getSignalQuality()),
+                firstFinite(call.getConfidenceWidth(), fallback == null ? null : fallback.getConfidenceWidth())
+        );
+    }
+
+    private static Double firstFinite(Double... values) {
+        for (Double value : values) {
+            Double finite = finite(value);
+            if (finite != null) return finite;
+        }
+        return null;
+    }
+
+    private static Double finite(Double value) {
+        return value == null || !Double.isFinite(value) ? null : value;
     }
 
     private Optional<Match> resolveCompletedMatch(PaperTradeModelCall call) {
@@ -944,6 +1207,74 @@ public class ModelCallLedgerService {
         return Math.round(value * 10_000.0) / 10_000.0;
     }
 
+    private static String evidenceLabel(int sampleSize) {
+        if (sampleSize >= 100) return "DECISION_GRADE";
+        if (sampleSize >= 50) return "DIRECTIONAL";
+        if (sampleSize >= 20) return "EARLY_SIGNAL";
+        return "COLLECTING";
+    }
+
+    private static ConfidenceInterval wilson(int successes, int samples) {
+        if (samples <= 0) return ConfidenceInterval.empty();
+        double z = 1.959963984540054;
+        double p = successes / (double) samples;
+        double z2 = z * z;
+        double denominator = 1.0 + z2 / samples;
+        double center = (p + z2 / (2.0 * samples)) / denominator;
+        double radius = z * Math.sqrt((p * (1.0 - p) + z2 / (4.0 * samples)) / samples) / denominator;
+        return new ConfidenceInterval(
+                round2(Math.max(0.0, center - radius) * 100.0),
+                round2(Math.min(1.0, center + radius) * 100.0));
+    }
+
+    private static ConfidenceInterval meanInterval(List<Double> samples) {
+        if (samples == null || samples.size() < 2) return ConfidenceInterval.empty();
+        double mean = samples.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+        double variance = samples.stream()
+                .mapToDouble(value -> Math.pow(value - mean, 2))
+                .sum() / (samples.size() - 1.0);
+        double radius = 1.959963984540054 * Math.sqrt(variance / samples.size());
+        return new ConfidenceInterval(round2((mean - radius) * 100.0), round2((mean + radius) * 100.0));
+    }
+
+    private static Double positiveMeanConfidence(List<Double> samples) {
+        if (samples == null || samples.size() < 5) return null;
+        double mean = samples.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+        double variance = samples.stream()
+                .mapToDouble(value -> Math.pow(value - mean, 2))
+                .sum() / (samples.size() - 1.0);
+        double standardError = Math.sqrt(variance / samples.size());
+        if (standardError <= 1.0e-12) return mean > 0.0 ? 100.0 : 0.0;
+        return round2(normalCdf(mean / standardError) * 100.0);
+    }
+
+    /** Abramowitz-Stegun approximation, sufficient for operator confidence telemetry. */
+    private static double normalCdf(double z) {
+        double sign = z < 0.0 ? -1.0 : 1.0;
+        double x = Math.abs(z) / Math.sqrt(2.0);
+        double t = 1.0 / (1.0 + 0.3275911 * x);
+        double polynomial = (((((1.061405429 * t - 1.453152027) * t)
+                + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+        double erf = sign * (1.0 - polynomial * Math.exp(-x * x));
+        return clamp(0.5 * (1.0 + erf), 0.0, 1.0);
+    }
+
+    private static List<FactorValue> parseFactors(String encoded) {
+        if (!StringUtils.hasText(encoded)) return List.of();
+        List<FactorValue> factors = new ArrayList<>();
+        for (String token : encoded.split("\\|")) {
+            int split = token.lastIndexOf('=');
+            if (split <= 0 || split >= token.length() - 1) continue;
+            try {
+                double value = Double.parseDouble(token.substring(split + 1));
+                if (Double.isFinite(value)) factors.add(new FactorValue(token.substring(0, split), value));
+            } catch (NumberFormatException ignored) {
+                // Predictor telemetry is best effort; malformed factors remain absent, never fabricated.
+            }
+        }
+        return factors;
+    }
+
     private static ModelCallScorecardDto emptyScorecard(int ignoredLimit) {
         return new ModelCallScorecardDto(
                 null, "No active simulation", LocalDateTime.now().toString(),
@@ -953,6 +1284,14 @@ public class ModelCallLedgerService {
                 0, 0, 0, 0.0, 0.0, 0.0, 0.0,
                 0, 0, 0, 0.0, 0, 0,
                 List.of());
+    }
+
+    private static LiveRunAnalyticsDto emptyAnalytics() {
+        return new LiveRunAnalyticsDto(
+                null, "No active simulation", LocalDateTime.now().toString(), "COLLECTING",
+                100, 0.0, 0, 0, 0, 0, 0, 0.0, null, null, 0.0, null,
+                0, 0, 0, 0.0, 0.0, 0.0, 0.0, null, null, null,
+                0, 0, List.of(), List.of(), List.of(), List.of());
     }
 
     private record ResolvedCall(PaperTradeModelCall call, ResolvedOutcome outcome) { }
@@ -966,6 +1305,101 @@ public class ModelCallLedgerService {
                                    String source) { }
 
     private record PipelineState(String stage, String label, String detail) { }
+
+    private record PredictorSnapshot(String topTrigger,
+                                     String featureContributions,
+                                     Double overallReliability,
+                                     Double ratingAgreement,
+                                     Double triggerReliability,
+                                     Double baselineStability,
+                                     Double suggestedEdge,
+                                     Double selectionScore,
+                                     Double signalQuality,
+                                     Double confidenceWidth) { }
+
+    private record ConfidenceInterval(Double low, Double high) {
+        private static ConfidenceInterval empty() { return new ConfidenceInterval(null, null); }
+    }
+
+    private record FactorValue(String name, double value) { }
+
+    private static final class SegmentAccumulator {
+        private static final int READINESS_TARGET = 30;
+        private int samples;
+        private int wins;
+        private int pricedSamples;
+        private double probability;
+        private double profit;
+        private double reliability;
+        private int reliabilitySamples;
+
+        void add(boolean won, double modelProbability, double perDollarProfit,
+                 boolean priced, Double reliabilityValue) {
+            samples++;
+            if (won) wins++;
+            probability += modelProbability;
+            if (priced) {
+                pricedSamples++;
+                profit += perDollarProfit;
+            }
+            if (reliabilityValue != null && Double.isFinite(reliabilityValue)) {
+                reliability += reliabilityValue;
+                reliabilitySamples++;
+            }
+        }
+
+        LiveRunAnalyticsDto.SegmentPerformanceDto toDto(String segment) {
+            int losses = Math.max(0, samples - wins);
+            double observed = samples == 0 ? 0.0 : wins / (double) samples;
+            double predicted = samples == 0 ? 0.0 : probability / samples;
+            ConfidenceInterval interval = wilson(wins, samples);
+            return new LiveRunAnalyticsDto.SegmentPerformanceDto(
+                    segment, samples, wins, losses, percentage(wins, samples),
+                    interval.low(), interval.high(), round2(predicted * 100.0),
+                    round2((predicted - observed) * 100.0), round2(profit),
+                    percentage(profit, pricedSamples),
+                    reliabilitySamples == 0 ? 0.0 : round2(reliability * 100.0 / reliabilitySamples),
+                    READINESS_TARGET, round2(Math.min(100.0, samples * 100.0 / READINESS_TARGET)));
+        }
+    }
+
+    private static final class FactorAccumulator {
+        private static final int READINESS_TARGET = 50;
+        private int samples;
+        private int wins;
+        private int losses;
+        private int directionCorrect;
+        private double absolute;
+        private double aligned;
+        private double winContribution;
+        private double lossContribution;
+
+        void add(double contribution, boolean won) {
+            samples++;
+            absolute += Math.abs(contribution);
+            aligned += contribution;
+            if ((won && contribution >= 0.0) || (!won && contribution < 0.0)) directionCorrect++;
+            if (won) {
+                wins++;
+                winContribution += contribution;
+            } else {
+                losses++;
+                lossContribution += contribution;
+            }
+        }
+
+        LiveRunAnalyticsDto.FactorPerformanceDto toDto(String factor) {
+            return new LiveRunAnalyticsDto.FactorPerformanceDto(
+                    factor, samples,
+                    samples == 0 ? 0.0 : round4(absolute / samples),
+                    samples == 0 ? 0.0 : round4(aligned / samples),
+                    percentage(directionCorrect, samples),
+                    wins == 0 ? 0.0 : round4(winContribution / wins),
+                    losses == 0 ? 0.0 : round4(lossContribution / losses),
+                    READINESS_TARGET,
+                    round2(Math.min(100.0, samples * 100.0 / READINESS_TARGET)));
+        }
+    }
 
     private record CachedOutcome(ResolvedOutcome outcome, long expiresAtNanos) { }
 

@@ -1,0 +1,10 @@
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS confidence_width;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS signal_quality;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS selection_score;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS suggested_edge;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS baseline_stability;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS trigger_reliability;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS rating_agreement;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS overall_reliability;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS feature_contributions;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS top_trigger;

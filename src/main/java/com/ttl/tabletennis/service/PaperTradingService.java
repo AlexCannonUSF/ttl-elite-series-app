@@ -339,6 +339,21 @@ public class PaperTradingService {
     @Value("${ttl.paper.minExpectedRoi:0.024}")
     private double minExpectedRoi;
 
+    @Value("${ttl.paper.exploration.enabled:true}")
+    private boolean explorationEnabled;
+
+    @Value("${ttl.paper.exploration.minEdge:0.015}")
+    private double explorationMinEdge;
+
+    @Value("${ttl.paper.exploration.minModelImpliedGap:0.020}")
+    private double explorationMinModelImpliedGap;
+
+    @Value("${ttl.paper.exploration.minExpectedRoi:0.015}")
+    private double explorationMinExpectedRoi;
+
+    @Value("${ttl.paper.exploration.maxNewBetsPerSync:1}")
+    private int explorationMaxNewBetsPerSync;
+
     @Value("${ttl.paper.adaptive.enabled:true}")
     private boolean adaptiveEnabled;
 
@@ -664,7 +679,9 @@ public class PaperTradingService {
             }
 
             double selectionScore = scoreCandidate(row, candidate, adaptiveProfile);
-            RankedCandidate ranked = new RankedCandidate(row, candidate, eventKey, dedupeKey, selectionScore, false);
+            boolean explorationCandidate = isExplorationCandidate(row, candidate, adaptiveProfile);
+            RankedCandidate ranked = new RankedCandidate(
+                    row, candidate, eventKey, dedupeKey, selectionScore, explorationCandidate);
             if (selectionScore >= minScore) {
                 rankedCandidates.add(ranked);
             } else {
@@ -723,6 +740,7 @@ public class PaperTradingService {
 
         Set<String> placedEventKeys = new HashSet<>();
         Set<String> placedDedupeKeys = new HashSet<>();
+        int explorationPlaced = 0;
 
         for (int i = 0; i < rankedCandidates.size(); i++) {
             RankedCandidate ranked = rankedCandidates.get(i);
@@ -742,6 +760,16 @@ public class PaperTradingService {
                         "SKIPPED",
                         "OVER_MAX_NEW_BETS"
                 );
+                skipped++;
+                continue;
+            }
+            if (ranked.fallbackPick()
+                    && explorationPlaced >= clamp(explorationMaxNewBetsPerSync, 0, 5)) {
+                persistDecisionSample(
+                        session.getId(), strategy, modelVersion,
+                        ranked.row(), ranked.candidate(), ranked.eventKey(), ranked.dedupeKey(),
+                        ranked.selectionScore(), null, null, true,
+                        "SKIPPED", "EXPLORATION_SAMPLE_LIMIT");
                 skipped++;
                 continue;
             }
@@ -829,7 +857,14 @@ public class PaperTradingService {
             boolean stakePolicyPrimary = "on".equalsIgnoreCase(featureFlagCatalog.stateOf(
                     com.ttl.tabletennis.config.FeatureFlagCatalog.STAKE_POLICY_V3_FLAG
             ));
-            if (stakePolicyPrimary && !policyDecision.isBet()) {
+            boolean explorationEdgeOverride = stakePolicyPrimary
+                    && ranked.fallbackPick()
+                    && explorationEnabled
+                    && !policyDecision.isBet()
+                    && policyDecision.reasonCodes().stream().allMatch(reason ->
+                    com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD.equals(reason)
+                            || com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_KELLY_CAP.equals(reason));
+            if (stakePolicyPrimary && !policyDecision.isBet() && !explorationEdgeOverride) {
                 persistDecisionSample(
                         session.getId(),
                         strategy,
@@ -848,7 +883,9 @@ public class PaperTradingService {
                 skipped++;
                 continue;
             }
-            double policyStake = stakePolicyPrimary
+            double policyStake = ranked.fallbackPick() && explorationEnabled
+                    ? Math.min(proposedStake, minStake)
+                    : stakePolicyPrimary
                     ? policyDecision.stakeUnits() * stakingUnitSize(session)
                     : proposedStake;
             double stake = applyExposureCaps(
@@ -945,7 +982,7 @@ public class PaperTradingService {
             String exposureTag = stake + 0.009 < proposedStake
                     ? String.format(Locale.ROOT, " | exposureCapApplied=%.2f->%.2f", proposedStake, stake)
                     : "";
-            bet.setRationale(rationale + String.format(
+            String rationaleMetadata = String.format(
                     Locale.ROOT,
                     " | selectionScore=%.2f | modelShift=%+.3f%s%s%s",
                     ranked.selectionScore(),
@@ -955,7 +992,8 @@ public class PaperTradingService {
                     candidate.triggerSignal().sampleSize() > 0
                             ? " | triggerSamples=" + candidate.triggerSignal().sampleSize()
                             : ""
-            ));
+            );
+            bet.setRationale(fitRationale(rationale, rationaleMetadata));
             bet.setPlacedAt(placedNow);
             saveBet(bet);
             persistDecisionSample(
@@ -985,6 +1023,7 @@ public class PaperTradingService {
             exposureProfile = exposureProfile.addPlacement(candidate.sidePlayerId(), candidate.triggerKey(), stake);
             policyOpenPositions.add(toPolicyOpenPosition(bet, session, stake));
             placed++;
+            if (ranked.fallbackPick()) explorationPlaced++;
         }
 
         List<LiveOddsRecommendationDto> settlementRows = mergeSettlementRows(rows, scoreSnapshots);
@@ -1096,6 +1135,11 @@ public class PaperTradingService {
     @Transactional(readOnly = true)
     public ModelCallScorecardDto getModelCallScorecard(int limit) {
         return modelCallLedgerService.scorecard(limit);
+    }
+
+    @Transactional(readOnly = true)
+    public com.ttl.tabletennis.dto.LiveRunAnalyticsDto getLiveRunAnalytics(int limit) {
+        return modelCallLedgerService.analytics(limit);
     }
 
     @Transactional(readOnly = true)
@@ -3619,6 +3663,9 @@ public class PaperTradingService {
                 0.005,
                 0.30
         );
+        if (explorationEnabled) {
+            edgeThreshold = Math.min(edgeThreshold, clamp(explorationMinEdge, 0.005, 0.10));
+        }
         if (row.suggestedEdge() < edgeThreshold) {
             return "EDGE_BELOW_THRESHOLD";
         }
@@ -3638,7 +3685,7 @@ public class PaperTradingService {
             }
         }
 
-        if (requireRecommendation && !row.recommended()) {
+        if (requireRecommendation && !row.recommended() && !explorationEnabled) {
             return "RECOMMENDATION_REQUIRED";
         }
         if (row.suggestedSide() == null) {
@@ -3762,6 +3809,9 @@ public class PaperTradingService {
                 0.005,
                 0.30
         );
+        if (explorationEnabled) {
+            edgeThreshold = Math.min(edgeThreshold, clamp(explorationMinEdge, 0.005, 0.10));
+        }
         if (candidate.edge() < edgeThreshold) {
             return "MODEL_EDGE_BELOW_THRESHOLD";
         }
@@ -3775,11 +3825,17 @@ public class PaperTradingService {
                 0.005,
                 0.25
         );
+        if (explorationEnabled) {
+            requiredGap = Math.min(requiredGap, clamp(explorationMinModelImpliedGap, 0.005, 0.10));
+        }
         if (probabilityEdge < requiredGap) {
             return "MODEL_GAP_BELOW_THRESHOLD";
         }
         double expectedRoi = (candidate.modelProbability() * candidate.decimalOdds()) - 1.0;
         double minExpectedReturn = clamp(minExpectedRoi, 0.0, 0.20);
+        if (explorationEnabled) {
+            minExpectedReturn = Math.min(minExpectedReturn, clamp(explorationMinExpectedRoi, 0.0, 0.10));
+        }
         minExpectedReturn += clamp(Math.max(0.0, 0.68 - signalQuality) * 0.07, 0.0, 0.03);
         if (candidate.americanOdds() > 0) {
             minExpectedReturn += clamp(Math.max(0.0, candidate.americanOdds() - 100) / 2200.0, 0.0, 0.05);
@@ -3807,6 +3863,37 @@ public class PaperTradingService {
             return "LIVE_LATE_LOW_QUALITY";
         }
         return null;
+    }
+
+    /**
+     * Distinguishes a production-quality recommendation from a bounded paper
+     * exploration sample. The relaxed lane never changes the bettor-facing
+     * recommendation flag and is capped independently in the placement loop.
+     */
+    private boolean isExplorationCandidate(LiveOddsRecommendationDto row,
+                                           BetCandidate candidate,
+                                           AdaptiveProfile adaptiveProfile) {
+        if (!explorationEnabled) return false;
+        double productionEdge = row.live()
+                ? clamp(minEdgeLive, 0.005, 0.20)
+                : clamp(minEdgePrematch, 0.005, 0.20);
+        productionEdge = Math.max(productionEdge, clamp(minEdgeForBet, 0.005, 0.25));
+        productionEdge = clamp(
+                productionEdge + adaptiveProfile.edgeShift() + candidate.triggerSignal().edgeThresholdShift(),
+                0.005, 0.30);
+
+        double productionGap = row.live()
+                ? clamp(minModelImpliedGapLive, 0.005, 0.20)
+                : clamp(minModelImpliedGapPrematch, 0.005, 0.20);
+        productionGap = Math.max(productionGap, clamp(minModelImpliedGap, 0.005, 0.20));
+        productionGap = clamp(
+                productionGap + adaptiveProfile.modelGapShift() + candidate.triggerSignal().modelGapShift(),
+                0.005, 0.25);
+        double expectedRoi = candidate.modelProbability() * candidate.decimalOdds() - 1.0;
+        return !row.recommended()
+                || candidate.edge() < productionEdge
+                || candidate.modelProbability() - candidate.impliedProbability() < productionGap
+                || expectedRoi < clamp(minExpectedRoi, 0.0, 0.20);
     }
 
     private double scoreCandidate(LiveOddsRecommendationDto row, BetCandidate candidate, AdaptiveProfile adaptiveProfile) {
@@ -4142,7 +4229,8 @@ public class PaperTradingService {
                 row,
                 sample.getEventKey(),
                 decisionStatus,
-                decisionReason
+                decisionReason,
+                sample
         );
     }
 
@@ -4398,6 +4486,20 @@ public class PaperTradingService {
             }
         }
         return out.isEmpty() ? null : out.toString();
+    }
+
+    private String fitRationale(String base, String metadata) {
+        final int maxLength = 512;
+        String suffix = metadata == null ? "" : metadata;
+        if (suffix.length() >= maxLength) {
+            return suffix.substring(0, maxLength);
+        }
+        String prefix = safeText(base, "Model value pick");
+        int allowedPrefixLength = maxLength - suffix.length();
+        if (prefix.length() > allowedPrefixLength) {
+            prefix = prefix.substring(0, allowedPrefixLength);
+        }
+        return prefix + suffix;
     }
 
     // safeText moved to PaperTradingHelpers (2026-05-19).

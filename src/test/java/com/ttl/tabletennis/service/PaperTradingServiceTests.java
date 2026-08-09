@@ -201,6 +201,66 @@ class PaperTradingServiceTests {
     }
 
     @Test
+    void explorationPickUsesMinimumStakeAndKeepsAuditMetadataWithinColumnLimit() {
+        Player alpha = playerRepository.save(new Player("Explore", "Alpha"));
+        Player beta = playerRepository.save(new Player("Explore", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        String longRationale = "Detailed model evidence. ".repeat(40);
+
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Explore Alpha vs Explore Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.10,
+                1.78,
+                110,
+                -128,
+                0.46,
+                0.54,
+                0.58,
+                0.42,
+                0.12,
+                -0.12,
+                -138,
+                138,
+                alpha.getName(),
+                0.12,
+                -138,
+                0.52,
+                0.64,
+                false,
+                "WATCH",
+                longRationale,
+                "Recent Form Delta",
+                0.31,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(1, result.betsPlaced());
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals(5.0, bet.getStake(), 0.0001);
+        assertTrue(bet.getRationale().length() <= 512);
+        assertTrue(bet.getRationale().contains("fallbackPick=true"));
+        assertTrue(bet.getRationale().contains("selectionScore="));
+    }
+
+    @Test
     void resetSessionClearHistoryRemovesTrackedObservations() {
         PaperTradingSessionDto first = paperTradingService.resetSession(1000.0, "Reset A", true);
         assertNotNull(first.sessionId());

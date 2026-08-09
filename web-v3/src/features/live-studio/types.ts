@@ -109,6 +109,22 @@ export type PaperTradingSession = {
   openBetsList: PaperTradeBet[]
   recentBets: PaperTradeBet[]
   equityCurve: EquityPoint[]
+  simulationRowsScanned?: number
+  simulationBetsPlaced?: number
+  simulationBetsSettled?: number
+  simulationBetsVoided?: number
+  decisionTelemetry?: {
+    consideredCount: number
+    placedCount: number
+    skippedCount: number
+    fallbackPlacedCount: number
+    placementRatePct: number
+    avgSelectionScore: number
+    avgSignalQualityPct: number
+    avgPlacedEdgePct: number
+    avgSkippedEdgePct: number
+    topSkipReasons: Array<{ reason: string; count: number }>
+  }
 }
 
 export type PaperTradingSyncResult = {
@@ -225,6 +241,16 @@ export type ModelCallTracking = {
   paperPickPlaced: boolean
   decisionStatus: string | null
   decisionReason: string | null
+  topTrigger: string | null
+  featureContributions: string | null
+  overallReliability: number | null
+  ratingAgreement: number | null
+  triggerReliability: number | null
+  baselineStability: number | null
+  suggestedEdge: number | null
+  selectionScore: number | null
+  signalQuality: number | null
+  confidenceWidth: number | null
   latestScore: string | null
   latestPhase: string | null
   latestSource: string | null
@@ -263,6 +289,81 @@ export type ModelCallMonitor = {
   systemConfirmed: number
   conflicts: number
   calls: ModelCallTracking[]
+}
+
+export type LiveRunTrendPoint = {
+  sample: number
+  resolvedAt: string | null
+  callId: number
+  eventName: string
+  correct: boolean
+  runningAccuracyPct: number
+  cumulativeNetProfit: number
+  runningRoiPct: number
+}
+
+export type LiveRunSegmentPerformance = {
+  segment: string
+  sampleSize: number
+  wins: number
+  losses: number
+  accuracyPct: number
+  accuracyCiLowPct: number | null
+  accuracyCiHighPct: number | null
+  averageModelProbabilityPct: number
+  calibrationGapPct: number
+  flatStakeNetProfit: number
+  flatStakeRoiPct: number
+  averageReliabilityPct: number
+  readinessTarget: number
+  readinessPct: number
+}
+
+export type LiveRunFactorPerformance = {
+  factor: string
+  sampleSize: number
+  meanAbsoluteContribution: number
+  meanAlignedContribution: number
+  directionalAccuracyPct: number
+  meanContributionWhenCorrect: number
+  meanContributionWhenWrong: number
+  readinessTarget: number
+  readinessPct: number
+}
+
+export type LiveRunAnalytics = {
+  sessionId: number | null
+  sessionLabel: string
+  generatedAt: string
+  evidenceLabel: 'COLLECTING' | 'EARLY_SIGNAL' | 'DIRECTIONAL' | 'DECISION_GRADE' | string
+  readinessTarget: number
+  readinessPct: number
+  totalCalls: number
+  settledCalls: number
+  awaitingCalls: number
+  correct: number
+  incorrect: number
+  accuracyPct: number
+  accuracyCiLowPct: number | null
+  accuracyCiHighPct: number | null
+  averageConfidencePct: number
+  brierScore: number | null
+  flatStakeBets: number
+  flatStakeWins: number
+  flatStakeLosses: number
+  flatStakeWagered: number
+  flatStakeReturned: number
+  flatStakeNetProfit: number
+  flatStakeRoiPct: number
+  flatStakeRoiCiLowPct: number | null
+  flatStakeRoiCiHighPct: number | null
+  positiveRoiConfidencePct: number | null
+  settledPaperPicks: number
+  settledModelOnlyCalls: number
+  trend: LiveRunTrendPoint[]
+  triggers: LiveRunSegmentPerformance[]
+  decisionReasons: LiveRunSegmentPerformance[]
+  factors: LiveRunFactorPerformance[]
 }
 
 export type HardRockScoreStreamStatus = {

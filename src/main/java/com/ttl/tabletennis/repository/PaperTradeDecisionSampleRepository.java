@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 public interface PaperTradeDecisionSampleRepository extends JpaRepository<PaperTradeDecisionSample, Long> {
 
@@ -43,6 +44,9 @@ public interface PaperTradeDecisionSampleRepository extends JpaRepository<PaperT
     long countBySessionIdAndFallbackPickTrueAndDecisionStatus(Long sessionId, String decisionStatus);
 
     List<PaperTradeDecisionSample> findBySessionIdOrderByCreatedAtAsc(Long sessionId);
+
+    Optional<PaperTradeDecisionSample> findTopBySessionIdAndEventKeyOrderByCreatedAtDescIdDesc(
+            Long sessionId, String eventKey);
 
     /**
      * Compact session telemetry projection. Keeping the aggregation in SQL

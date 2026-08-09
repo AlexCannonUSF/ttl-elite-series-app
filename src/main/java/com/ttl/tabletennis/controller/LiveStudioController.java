@@ -3,6 +3,7 @@ package com.ttl.tabletennis.controller;
 import com.ttl.tabletennis.dto.CompletedMatchLogDto;
 import com.ttl.tabletennis.dto.LiveStudioIntegrityDto;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
+import com.ttl.tabletennis.dto.LiveRunAnalyticsDto;
 import com.ttl.tabletennis.dto.ModelCallApprovalRequest;
 import com.ttl.tabletennis.dto.ModelCallMonitorDto;
 import com.ttl.tabletennis.dto.ModelCallScorecardDto;
@@ -65,6 +66,11 @@ public class LiveStudioController {
     @GetMapping("/model-scorecard")
     public ModelCallScorecardDto modelScorecard(@RequestParam(defaultValue = "40") int limit) {
         return paperTradingService.getModelCallScorecard(limit);
+    }
+
+    @GetMapping("/live-run-analytics")
+    public LiveRunAnalyticsDto liveRunAnalytics(@RequestParam(defaultValue = "250") int limit) {
+        return paperTradingService.getLiveRunAnalytics(limit);
     }
 
     @GetMapping("/model-calls")

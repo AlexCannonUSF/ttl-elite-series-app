@@ -17,6 +17,7 @@ import {
   Save,
   ShieldCheck,
   Target,
+  TrendingUp,
   Workflow,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -25,8 +26,8 @@ import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchLiveSession, fetchModelCallMonitor } from '@/features/live-studio/api'
-import type { ModelCallMonitor, PaperTradingSession } from '@/features/live-studio/types'
+import { fetchLiveRunAnalytics, fetchLiveSession, fetchModelCallMonitor } from '@/features/live-studio/api'
+import type { LiveRunAnalytics, ModelCallMonitor, PaperTradingSession } from '@/features/live-studio/types'
 import {
   fetchModelLearningAudit,
   fetchStakingPolicy,
@@ -56,6 +57,7 @@ type AdminSnapshot = {
   scrape: ScrapeStatus | null
   session: PaperTradingSession | null
   pipeline: ModelCallMonitor | null
+  liveRun: LiveRunAnalytics | null
   streams: OpsStreamsResponse | null
   errors: string[]
 }
@@ -99,10 +101,11 @@ export function AdminHubRoute() {
       fetchOpsIngest(),
       fetchOpsStreams(),
       fetchScrapeStatus(),
+      fetchLiveRunAnalytics(250),
     ])
     if (!mounted.current) return
 
-    const labels = ['Learning audit', 'Staking policy', 'Live session', 'Decision pipeline', 'Feeds', 'Ingest', 'Streams', 'Scraper']
+    const labels = ['Learning audit', 'Staking policy', 'Live session', 'Decision pipeline', 'Feeds', 'Ingest', 'Streams', 'Scraper', 'Live-run evidence']
     const errors = results.flatMap((result, index) =>
       result.status === 'rejected' ? [`${labels[index]}: ${errorMessage(result.reason)}`] : [],
     )
@@ -115,6 +118,7 @@ export function AdminHubRoute() {
       ingest: valueAt<OpsIngestResponse>(results, 5),
       streams: valueAt<OpsStreamsResponse>(results, 6),
       scrape: valueAt<ScrapeStatus>(results, 7),
+      liveRun: valueAt<LiveRunAnalytics>(results, 8),
       errors,
     })
     setLoading(false)
@@ -130,7 +134,7 @@ export function AdminHubRoute() {
   const audit = snapshot?.audit
   const calibration = audit?.calibrationEvidence
   const outcomeQuality = audit?.outcomeQuality
-  const sampleProgress = Math.min(100, (outcomeQuality?.trustedSettledSamples ?? 0))
+  const allCallProgress = snapshot?.liveRun?.readinessPct ?? 0
   const effectiveProgress = Math.min(100, ((calibration?.effectiveSampleSize ?? 0) / 50) * 100)
   const posture = useMemo(() => systemPosture(snapshot), [snapshot])
   const scorePosture = useMemo(() => scoreEvidencePosture(snapshot?.session), [snapshot?.session])
@@ -188,8 +192,8 @@ export function AdminHubRoute() {
               <PostureDot tone={posture.tone} label={posture.detail} />
             </div>
             <h2 className="mt-5 max-w-3xl text-3xl font-semibold tracking-[-0.045em] sm:text-4xl">
-              {calibration?.rawSampleSize
-                ? `${calibration.rawSampleSize} trusted decisions are shaping the evidence.`
+              {(snapshot?.liveRun?.settledCalls ?? 0) > 0
+                ? `${snapshot?.liveRun?.settledCalls} trusted match results are already grading this live run.`
                 : 'The learning system is instrumented and waiting for trusted outcomes.'}
             </h2>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-300">
@@ -200,6 +204,8 @@ export function AdminHubRoute() {
           <div className="grid grid-cols-2 gap-3">
             <DarkMetric label="Trusted settled" value={String(outcomeQuality?.trustedSettledSamples ?? 0)} />
             <DarkMetric label="Excluded settled" value={String(outcomeQuality?.excludedSettledSamples ?? 0)} />
+            <DarkMetric label="All-call record" value={`${snapshot?.liveRun?.correct ?? 0}–${snapshot?.liveRun?.incorrect ?? 0}`} />
+            <DarkMetric label="Flat-$1 ROI" value={formatSignedPercentagePoints(snapshot?.liveRun?.flatStakeRoiPct)} />
             <DarkMetric label="Effective sample" value={formatNumber(calibration?.effectiveSampleSize)} />
             <DarkMetric label="Calibration error" value={formatPct(calibration?.calibrationError)} />
             <DarkMetric label="Stake-weighted CLV" value={formatSignedPercentagePoints(audit?.clv.stakeWeightedClvPct)} />
@@ -214,32 +220,32 @@ export function AdminHubRoute() {
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Badge variant="accent">Learning readiness</Badge>
-              <Link className="text-xs font-semibold text-[var(--accent-ink)]" to="/admin/model-quality">
-                Full model quality <ArrowRight className="ml-1 inline size-3.5" />
+              <Link className="text-xs font-semibold text-[var(--accent-ink)]" to="/admin/live-run">
+                Deep live-run audit <ArrowRight className="ml-1 inline size-3.5" />
               </Link>
             </div>
             <CardTitle>When the evidence becomes decision-grade</CardTitle>
             <CardDescription>
-              The first 100 trusted resolutions reveal direction; 50 effective samples are the minimum before adaptive
-              conclusions deserve weight. Until then, changes remain evidence and scenarios—not automatic calibration.
+              Every resolved model lean now advances live-run readiness, including matches where the staking policy passed.
+              Official paper-bet labels remain a separate, stricter cohort for automatic adaptation.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
             <ProgressMetric
-              detail={`${outcomeQuality?.trustedSettledSamples ?? 0} of 100 trusted outcomes`}
-              label="Directional sample"
-              progress={sampleProgress}
-              value={`${Math.round(sampleProgress)}%`}
+              detail={`${snapshot?.liveRun?.settledCalls ?? 0} of ${snapshot?.liveRun?.readinessTarget ?? 100} resolved model calls`}
+              label="All-call directional sample"
+              progress={allCallProgress}
+              value={`${Math.round(allCallProgress)}%`}
             />
             <ProgressMetric
-              detail={`${formatNumber(calibration?.effectiveSampleSize)} of 50 effective observations`}
-              label="Adaptive confidence"
+              detail={`${formatNumber(calibration?.effectiveSampleSize)} of 50 official paper-bet observations`}
+              label="Paper-bet adaptive confidence"
               progress={effectiveProgress}
               value={`${Math.round(effectiveProgress)}%`}
             />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Metric icon={Target} label="Eligible coverage" value={formatPercentagePoints(outcomeQuality?.eligibleCoveragePct)} />
-              <Metric icon={BarChart3} label="Brier score" value={formatNumber(calibration?.brierScore, 3)} />
+              <Metric icon={Target} label="All-call accuracy" value={formatPercentagePoints(snapshot?.liveRun?.accuracyPct)} />
+              <Metric icon={BarChart3} label="All-call Brier" value={formatNumber(snapshot?.liveRun?.brierScore, 3)} />
               <Metric icon={GitCompareArrows} label="CLV coverage" value={formatPercentagePoints(audit?.clv.coveragePct)} />
               <Metric icon={ShieldCheck} label="Excluded labels" value={String(outcomeQuality?.excludedSettledSamples ?? 0)} />
             </div>
@@ -268,6 +274,13 @@ export function AdminHubRoute() {
             <CardDescription>Fast health signals with direct paths into the operator surface that owns each one.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
+            <SystemRow
+              href="/admin/live-run"
+              icon={TrendingUp}
+              label="Live-run evidence"
+              status={`${snapshot?.liveRun?.settledCalls ?? 0} resolved · ${snapshot?.liveRun?.correct ?? 0}–${snapshot?.liveRun?.incorrect ?? 0} · ${formatSignedPercentagePoints(snapshot?.liveRun?.flatStakeRoiPct)} $1 ROI`}
+              warning={false}
+            />
             <SystemRow
               href="/admin/pipeline"
               icon={Workflow}
@@ -414,7 +427,8 @@ export function AdminHubRoute() {
         </div>
       </section>
 
-      <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <AdminJump icon={TrendingUp} label="Live-run audit" detail="Every call, trigger, factor, and $1 trend" href="/admin/live-run" />
         <AdminJump icon={BrainCircuit} label="Model quality" detail="Reliability, calibration, drift" href="/admin/model-quality" />
         <AdminJump icon={Gauge} label="Operations" detail="Feed, stream, settlement posture" href="/admin/ops" />
         <AdminJump icon={ShieldCheck} label="Truth review" detail="Resolve disputed outcomes" href="/admin/review" />
