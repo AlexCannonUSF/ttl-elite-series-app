@@ -279,7 +279,21 @@ public class SettlementEvidenceBuilder {
         if (direct.isPresent()) {
             return direct.get();
         }
-        String combined = (safeText(sourceKind) + " " + safeText(source)).toUpperCase(Locale.ROOT);
+        String normalizedKind = safeText(sourceKind).toUpperCase(Locale.ROOT);
+        String normalizedSource = safeText(source).toUpperCase(Locale.ROOT);
+        String combined = normalizedKind + " " + normalizedSource;
+
+        // HARD_ROCK_SCORE_STREAM is Hard Rock's structured Betradar score
+        // endpoint, not the video/OCR Stream-CV pipeline. Resolve the
+        // explicit source kind before the generic "STREAM" name check so a
+        // terminal resulted row receives the single-source HR_TGT settlement
+        // policy instead of waiting forever for Stream-CV consensus frames.
+        if (normalizedKind.contains("SCORE_FEED")
+                || normalizedSource.contains("HARD_ROCK_SCORE_STREAM")
+                || combined.contains("BETRADAR_UF")
+                || combined.contains("TARGET")) {
+            return SourceId.HR_TGT;
+        }
         if (combined.contains("SOFA")) {
             return SourceId.SOFASCORE;
         }
@@ -293,9 +307,6 @@ public class SettlementEvidenceBuilder {
             return SourceId.STREAM_CV;
         }
         if (combined.contains("SCORE")) {
-            return SourceId.HR_TGT;
-        }
-        if (combined.contains("TARGET")) {
             return SourceId.HR_TGT;
         }
         return SourceId.HR_MKT;

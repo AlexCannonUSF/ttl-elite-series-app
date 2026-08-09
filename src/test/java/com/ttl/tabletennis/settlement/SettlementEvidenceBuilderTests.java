@@ -100,8 +100,11 @@ class SettlementEvidenceBuilderTests {
         observation.setBetId(56L);
         observation.setSessionId(7L);
         observation.setEventKey("match:56");
-        observation.setSource("HARD_ROCK_GQL_SCORE");
+        // Regression: the production structured-score route contains the
+        // word STREAM but is a targeted Hard Rock/Betradar feed, not CV.
+        observation.setSource("HARD_ROCK_SCORE_STREAM:FLORIDA_ONLINE|event=booker-56");
         observation.setSourceKind("SCORE_FEED");
+        observation.setSourceFeedCode("BETRADAR_UF");
         observation.setSourceConfidence(0.90);
         observation.setExternalEventId("booker-56");
         observation.setSourceFeedEventId("booker-56");
