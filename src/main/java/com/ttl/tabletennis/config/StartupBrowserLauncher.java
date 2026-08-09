@@ -68,18 +68,6 @@ public class StartupBrowserLauncher {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
-        if (!openBrowserOnStartup) {
-            return;
-        }
-        if (GraphicsEnvironment.isHeadless()) {
-            log.info("Browser auto-open skipped: JVM is headless");
-            return;
-        }
-        if (!Desktop.isDesktopSupported()) {
-            log.info("Browser auto-open skipped: Desktop API not supported");
-            return;
-        }
-
         int port = resolveServerPort();
         String backendPath = openBrowserPath.startsWith("/") ? openBrowserPath : "/" + openBrowserPath;
         String backendUrl = "http://localhost:" + port + backendPath;
@@ -88,7 +76,15 @@ public class StartupBrowserLauncher {
         Thread opener = new Thread(() -> {
             String url = resolvePreferredUrl(backendUrl);
             announceRuntime(url, port);
-            openInBrowser(url, delay);
+            if (!openBrowserOnStartup) {
+                log.info("Browser auto-open disabled; app remains available at {}", url);
+            } else if (GraphicsEnvironment.isHeadless()) {
+                log.info("Browser auto-open skipped: JVM is headless");
+            } else if (!Desktop.isDesktopSupported()) {
+                log.info("Browser auto-open skipped: Desktop API not supported");
+            } else {
+                openInBrowser(url, delay);
+            }
         }, "startup-browser-opener");
         opener.setDaemon(true);
         opener.start();

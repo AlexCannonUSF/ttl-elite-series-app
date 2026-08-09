@@ -130,3 +130,53 @@ export type StakingPolicy = {
   loadedAt: string
   config: StakingPolicyConfig
 }
+
+export type ModelRun = {
+  sessionId: number
+  label: string
+  status: string
+  requestedModelVersion: string | null
+  effectiveModelVersion: string | null
+  effectiveModelFamily: string | null
+  policyVersion: string | null
+  codeRevision: string | null
+  createdAt: string | null
+  closedAt: string | null
+  lastSyncAt: string | null
+  modelCalls: number
+  totalBets: number
+  openBets: number
+  settledBets: number
+  wins: number
+  losses: number
+  pushes: number
+  voids: number
+  totalStaked: number
+  realizedPnl: number
+  roiPct: number
+  sampleReadinessPct: number
+}
+
+export type ModelRunHistory = {
+  generatedAt: string
+  runs: ModelRun[]
+}
+
+export type ModelRegistryEntry = {
+  id: number
+  modelVersion: string
+  modelFamily: string
+  trainingFrom: string | null
+  trainingTo: string | null
+  validationFrom: string | null
+  validationTo: string | null
+  accuracy: number | null
+  logLoss: number | null
+  brierScore: number | null
+  calibrationMethod: string | null
+  regularizationLambda: number | null
+  folds: number | null
+  active: boolean
+  notes: string | null
+  createdAt: string | null
+}

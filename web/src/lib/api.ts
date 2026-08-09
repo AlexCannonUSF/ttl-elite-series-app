@@ -172,7 +172,7 @@ export const apiClient = {
         params: { strategy, modelVersion, limit },
       })
     ).data,
-  resetLiveStudio: async (startingBankroll?: number, label?: string, clearHistory = true) =>
+  resetLiveStudio: async (startingBankroll?: number, label?: string, clearHistory = false) =>
     (
       await api.post<PaperTradingSessionDto>('/api/live-studio/reset', null, {
         params: { startingBankroll, label, clearHistory },

@@ -1,39 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Activity, AlertTriangle, BarChart3, RefreshCcw, ShieldCheck } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, BrainCircuit, GitBranch, History, RefreshCcw, ShieldCheck } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { V3Shell } from '@/components/layout/V3Shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { fetchMlQuality, fetchModelLearningAudit } from '@/features/ml-quality/api'
+import { fetchMlQuality, fetchModelLearningAudit, fetchModelRegistry, fetchModelRunHistory } from '@/features/ml-quality/api'
+import { fetchModelCallScorecard } from '@/features/live-studio/api'
+import type { ModelCallScorecard } from '@/features/live-studio/types'
 import type {
   DailyCount,
   HistogramBin,
   MlQualityResponse,
   ModelLearningAudit,
+  ModelRegistryEntry,
+  ModelRunHistory,
   ReliabilityBin,
   ReliabilitySnapshot,
 } from '@/features/ml-quality/types'
 import { cn } from '@/lib/utils'
 
-const REFRESH_INTERVAL_MS = 30000
+const REFRESH_INTERVAL_MS = 60000
 
 export function MlQualityRoute() {
   const [data, setData] = useState<MlQualityResponse | null>(null)
   const [audit, setAudit] = useState<ModelLearningAudit | null>(null)
+  const [history, setHistory] = useState<ModelRunHistory | null>(null)
+  const [registry, setRegistry] = useState<ModelRegistryEntry[]>([])
+  const [scorecard, setScorecard] = useState<ModelCallScorecard | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const mountedRef = useRef(true)
+  const inFlightRef = useRef(false)
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
     }
   }, [])
 
   const load = useCallback(async (background: boolean) => {
+    // The quality hub combines several evidence-heavy endpoints. Never let a
+    // timer enqueue another refresh while the previous snapshot is running.
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     if (mountedRef.current) {
       if (background) {
         setRefreshing(true)
@@ -42,18 +55,29 @@ export function MlQualityRoute() {
       }
     }
     try {
-      const [next, nextAudit] = await Promise.all([
+      const [next, nextAudit, nextHistory, nextRegistry, nextScorecard] = await Promise.allSettled([
         fetchMlQuality({ windowDays: 14, binCount: 10 }),
         fetchModelLearningAudit(180),
+        fetchModelRunHistory(25),
+        fetchModelRegistry(30),
+        fetchModelCallScorecard(40),
       ])
       if (!mountedRef.current) return
-      setData(next)
-      setAudit(nextAudit)
-      setError(null)
+      if (next.status === 'fulfilled') setData(next.value)
+      if (nextAudit.status === 'fulfilled') setAudit(nextAudit.value)
+      if (nextHistory.status === 'fulfilled') setHistory(nextHistory.value)
+      if (nextRegistry.status === 'fulfilled') setRegistry(nextRegistry.value)
+      if (nextScorecard.status === 'fulfilled') setScorecard(nextScorecard.value)
+      const rejected = [next, nextAudit, nextHistory, nextRegistry, nextScorecard]
+        .filter((result) => result.status === 'rejected')
+      setError(rejected.length
+        ? `${rejected.length} model-quality panel${rejected.length === 1 ? '' : 's'} could not refresh; the remaining evidence is current.`
+        : null)
     } catch (nextError) {
       if (!mountedRef.current) return
       setError(nextError instanceof Error ? nextError.message : 'Unable to load ML quality right now.')
     } finally {
+      inFlightRef.current = false
       if (!mountedRef.current) return
       if (background) {
         setRefreshing(false)
@@ -77,7 +101,7 @@ export function MlQualityRoute() {
       badges={
         <>
           <Badge variant="accent">Model Quality</Badge>
-          <Badge>Auto Refresh 30s</Badge>
+          <Badge>Guarded Refresh 60s</Badge>
         </>
       }
       actions={
@@ -98,6 +122,13 @@ export function MlQualityRoute() {
           <span>{error}</span>
         </InlineAlert>
       ) : null}
+
+      <ModelCommandCenter history={history} scorecard={scorecard} />
+
+      <section className="mb-5 grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+        <RunHistoryPanel history={history} />
+        <RegistryPanel registry={registry} />
+      </section>
 
       <Card className="mb-5">
         <CardHeader>
@@ -198,11 +229,108 @@ export function MlQualityRoute() {
           </CardContent>
         </Card>
       </section>
+
+      <SignalEvidence audit={audit} />
     </V3Shell>
   )
 }
 
 // ---- Subcomponents ---------------------------------------------------------
+
+function ModelCommandCenter({ history, scorecard }: { history: ModelRunHistory | null; scorecard: ModelCallScorecard | null }) {
+  const active = history?.runs.find((run) => run.status === 'ACTIVE') ?? history?.runs[0]
+  const directionalProgress = Math.min(100, ((scorecard?.settledCalls ?? 0) / 100) * 100)
+  return (
+    <Card className="mb-5 overflow-hidden border-blue-200 bg-[linear-gradient(135deg,rgba(239,246,255,0.96),rgba(255,255,255,0.92))]">
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Badge variant="accent" className="w-fit"><BrainCircuit className="size-3.5" /> Active model run</Badge>
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--ink-muted)]">
+            {active?.status ?? 'Loading'} · run {active?.sessionId ?? '—'}
+          </span>
+        </div>
+        <CardTitle>{active?.label ?? 'Preparing model history…'}</CardTitle>
+        <CardDescription>
+          Artifact <span className="font-semibold text-[var(--ink-strong)]">{active?.effectiveModelVersion ?? 'awaiting first scored matchup'}</span>
+          {' · '}policy {active?.policyVersion ?? 'legacy/unversioned'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <Stat label="All model calls" value={String(scorecard?.totalCalls ?? active?.modelCalls ?? 0)} />
+          <Stat label="Resolved calls" value={String(scorecard?.settledCalls ?? 0)} />
+          <Stat label="Winner accuracy" value={`${(scorecard?.accuracyPct ?? 0).toFixed(1)}%`} />
+          <Stat label="$1 decision ROI" value={`${(scorecard?.flatStakeRoiPct ?? 0).toFixed(1)}%`} />
+          <Stat label="Brier score" value={scorecard?.brierScore == null ? 'N/A' : scorecard.brierScore.toFixed(3)} />
+          <Stat label="Paper W–L–open" value={`${active?.wins ?? 0}–${active?.losses ?? 0}–${active?.openBets ?? 0}`} />
+        </div>
+        <div>
+          <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+            <span>Directional evidence readiness</span><span>{scorecard?.settledCalls ?? 0} / 100</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-blue-600" style={{ width: `${directionalProgress}%` }} /></div>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-semibold">
+          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-emerald-800">$1 fixed research stake</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Model win p ≥ 60%</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Model-market gap ≤ 10 pp</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Plus-money bets quarantined</span>
+          <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-700">Adaptive changes evidence-only</span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RunHistoryPanel({ history }: { history: ModelRunHistory | null }) {
+  return (
+    <Card>
+      <CardHeader><Badge variant="accent" className="w-fit"><History className="size-3.5" /> Versioned run history</Badge><CardTitle>Every reset is an archive</CardTitle><CardDescription>Exact model, policy, samples, and return remain comparable across runs.</CardDescription></CardHeader>
+      <CardContent className="grid gap-3">
+        {history?.runs.slice(0, 8).map((run) => (
+          <div key={run.sessionId} className="grid gap-2 rounded-[20px] border border-[var(--line)] bg-white/70 p-4 md:grid-cols-[1fr_auto]">
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-[var(--ink-strong)]">#{run.sessionId} {run.label}</p><Badge variant={run.status === 'ACTIVE' ? 'accent' : 'neutral'}>{run.status}</Badge></div><p className="mt-1 truncate text-xs text-[var(--ink-muted)]">{run.effectiveModelVersion ?? run.requestedModelVersion ?? 'legacy model identity'} · {run.policyVersion ?? 'legacy policy'}</p></div>
+            <div className="grid grid-cols-3 gap-4 text-right text-sm"><MiniMetric label="Calls" value={run.modelCalls} /><MiniMetric label="W–L" value={`${run.wins}–${run.losses}`} /><MiniMetric label="ROI" value={`${run.roiPct.toFixed(1)}%`} /></div>
+          </div>
+        )) ?? <Placeholder label="Loading run history…" />}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RegistryPanel({ registry }: { registry: ModelRegistryEntry[] }) {
+  return (
+    <Card>
+      <CardHeader><Badge className="w-fit"><GitBranch className="size-3.5" /> Artifact registry</Badge><CardTitle>Candidate models</CardTitle><CardDescription>Shadow means scoreable, not approved for user-facing picks.</CardDescription></CardHeader>
+      <CardContent className="grid gap-3">
+        {registry.slice(0, 8).map((model) => (
+          <div key={model.id} className="rounded-[20px] border border-[var(--line)] bg-white/70 p-4">
+            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{model.modelVersion}</p><p className="text-xs text-[var(--ink-muted)]">{model.modelFamily} · {model.calibrationMethod ?? 'uncalibrated'}</p></div><Badge variant={model.active ? 'accent' : 'neutral'}>{model.active ? 'Promoted' : 'Shadow'}</Badge></div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs"><MiniMetric label="Accuracy" value={formatRatio(model.accuracy)} /><MiniMetric label="Brier" value={model.brierScore?.toFixed(3) ?? 'N/A'} /><MiniMetric label="Log loss" value={model.logLoss?.toFixed(3) ?? 'N/A'} /></div>
+          </div>
+        ))}
+        {!registry.length ? <Placeholder label="No compatible artifacts registered yet." /> : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SignalEvidence({ audit }: { audit: ModelLearningAudit | null }) {
+  return (
+    <section className="mt-5 grid gap-5 xl:grid-cols-2">
+      <Card><CardHeader><Badge variant="accent" className="w-fit">Trigger evidence</Badge><CardTitle>What is helping or hurting</CardTitle><CardDescription>Evidence only; low effective sample counts do not change production weights.</CardDescription></CardHeader><CardContent className="grid gap-2">{audit?.triggers.slice(0, 10).map((row) => <EvidenceRow key={row.segment} name={row.segment} sample={row.effectiveSampleSize} accuracy={row.winRate} detail={`${row.roiPct.toFixed(1)}% ROI`} />) ?? <Placeholder label="Waiting for trusted trigger outcomes…" />}</CardContent></Card>
+      <Card><CardHeader><Badge className="w-fit">Factor direction</Badge><CardTitle>Predictor attribution</CardTitle><CardDescription>Directional accuracy beside contribution strength prevents a loud weak feature from looking proven.</CardDescription></CardHeader><CardContent className="grid gap-2">{audit?.factors.slice(0, 10).map((row) => <EvidenceRow key={row.factor} name={row.factor} sample={row.effectiveSampleSize} accuracy={row.directionalAccuracy} detail={`|impact| ${row.meanAbsoluteContribution.toFixed(3)}`} />) ?? <Placeholder label="Waiting for trusted factor outcomes…" />}</CardContent></Card>
+    </section>
+  )
+}
+
+function EvidenceRow({ name, sample, accuracy, detail }: { name: string; sample: number; accuracy: number; detail: string }) {
+  return <div className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-[16px] border border-[var(--line)] bg-white/70 px-3 py-2 text-sm"><span className="font-medium">{name}</span><span className="text-[var(--ink-muted)]">nₑ {sample.toFixed(1)}</span><span className="font-semibold">{(accuracy * 100).toFixed(1)}% · {detail}</span></div>
+}
+
+function MiniMetric({ label, value }: { label: string; value: string | number }) { return <div><p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-muted)]">{label}</p><p className="font-semibold text-[var(--ink-strong)]">{value}</p></div> }
+
+function formatRatio(value: number | null) { return value == null ? 'N/A' : `${(value * 100).toFixed(1)}%` }
 
 function ReliabilityOverlay({ training, recent }: { training: ReliabilitySnapshot; recent: ReliabilitySnapshot }) {
   const width = 360

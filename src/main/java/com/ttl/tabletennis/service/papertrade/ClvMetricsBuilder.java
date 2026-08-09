@@ -76,18 +76,19 @@ public class ClvMetricsBuilder {
                 continue;
             }
             betsInWindow++;
-            LocalDateTime until = bet.getSettledAt() == null ? bet.getPlacedAt().plusHours(6) : bet.getSettledAt();
-            if (until.isAfter(now)) {
-                until = now;
-            }
-            if (until.isBefore(bet.getPlacedAt())) {
-                until = bet.getPlacedAt();
-            }
+            LocalDateTime placedAtUtc = com.ttl.tabletennis.prediction.staking.ClosingLineLookupService
+                    .localDatabaseTimeToUtc(bet.getPlacedAt());
+            LocalDateTime until = com.ttl.tabletennis.prediction.staking.ClosingLineLookupService
+                    .closingCutoffUtc(bet);
+            LocalDateTime nowUtc = com.ttl.tabletennis.prediction.staking.ClosingLineLookupService
+                    .localDatabaseTimeToUtc(now);
+            if (until.isAfter(nowUtc)) until = nowUtc;
+            if (until.isBefore(placedAtUtc)) until = placedAtUtc;
             try {
                 List<OddsSnapshot> closingCandidates = oddsSnapshotRepository.findClosingCandidates(
                         bookerEventId,
                         side,
-                        bet.getPlacedAt(),
+                        placedAtUtc,
                         until,
                         PageRequest.of(0, 1)
                 );

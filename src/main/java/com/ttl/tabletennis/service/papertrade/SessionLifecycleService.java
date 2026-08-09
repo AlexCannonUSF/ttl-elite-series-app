@@ -48,6 +48,15 @@ public class SessionLifecycleService {
     @Value("${ttl.paper.startingBankroll:1000.0}")
     private double defaultStartingBankroll;
 
+    @Value("${ttl.odds.defaultModelFamily:ENSEMBLE}")
+    private String requestedModelVersion;
+
+    @Value("${ttl.paper.policyVersion:accuracy-guardrails-r1}")
+    private String policyVersion;
+
+    @Value("${app.build.revision:${GIT_COMMIT:workspace}}")
+    private String codeRevision;
+
     public SessionLifecycleService(PaperTradeSessionRepository sessionRepository,
                                    PaperTradingShadowService paperTradingShadowService) {
         this.sessionRepository = sessionRepository;
@@ -86,6 +95,10 @@ public class SessionLifecycleService {
         PaperTradeSession session = new PaperTradeSession();
         session.setStatus(PaperTradeSession.STATUS_ACTIVE);
         session.setLabel(StringUtils.hasText(label) ? label.trim() : "Paper Session " + LocalDate.now());
+        session.setRequestedModelVersion(StringUtils.hasText(requestedModelVersion)
+                ? requestedModelVersion.trim() : "ENSEMBLE");
+        session.setPolicyVersion(StringUtils.hasText(policyVersion) ? policyVersion.trim() : "accuracy-guardrails-r1");
+        session.setCodeRevision(StringUtils.hasText(codeRevision) ? codeRevision.trim() : "workspace");
         session.setStartingBankroll(round2(start));
         session.setCurrentBankroll(round2(start));
         session.setPeakBankroll(round2(start));
@@ -108,6 +121,7 @@ public class SessionLifecycleService {
         session.setAdaptiveRoiSignal(0.0);
         session.setAdaptiveUpdatedAt(null);
         session.setLastSyncAt(null);
+        session.setClosedAt(null);
         return saveSession(session);
     }
 

@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +18,8 @@ public interface PaperTradeSessionRepository extends JpaRepository<PaperTradeSes
     Optional<PaperTradeSession> findFirstByStatusOrderByIdDesc(String status);
 
     List<PaperTradeSession> findByStatusOrderByIdDesc(String status);
+
+    List<PaperTradeSession> findAllByOrderByIdDesc(Pageable pageable);
 
     /**
      * Serializes placement/settlement syncs on the active ledger row. The

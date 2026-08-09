@@ -16,7 +16,8 @@ import java.time.LocalDateTime;
 @Table(name = "tracked_match_observation", indexes = {
         @Index(name = "idx_tracked_obs_event_time", columnList = "event_key, observed_at"),
         @Index(name = "idx_tracked_obs_bet_time", columnList = "bet_id, observed_at"),
-        @Index(name = "idx_tracked_obs_session_time", columnList = "session_id, observed_at")
+        @Index(name = "idx_tracked_obs_session_time", columnList = "session_id, observed_at"),
+        @Index(name = "idx_tracked_obs_session_event_time", columnList = "session_id, event_key, observed_at, id")
 })
 public class TrackedMatchObservation {
 

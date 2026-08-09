@@ -23,7 +23,10 @@ import java.time.LocalDate;
         @Index(name = "idx_matches_date", columnList = "match_date"),
         @Index(name = "idx_matches_external_id", columnList = "external_id"),
         @Index(name = "idx_matches_source_feed_event_id", columnList = "source_feed_event_id"),
-        @Index(name = "idx_matches_h2h_date", columnList = "player1_id, player2_id, match_date")
+        @Index(name = "idx_matches_h2h_date", columnList = "player1_id, player2_id, match_date"),
+        @Index(name = "idx_matches_complete_p1_date", columnList = "is_complete, player1_id, match_date, id"),
+        @Index(name = "idx_matches_complete_p2_date", columnList = "is_complete, player2_id, match_date, id"),
+        @Index(name = "idx_matches_complete_h2h_date", columnList = "is_complete, player1_id, player2_id, match_date, id")
 })
 public class Match {
 

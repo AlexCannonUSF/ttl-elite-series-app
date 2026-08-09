@@ -231,7 +231,7 @@ public class AdminController {
     @PostMapping("/paper-trading/reset")
     public PaperTradingSessionDto resetPaperTrading(@RequestParam(required = false) Double startingBankroll,
                                                     @RequestParam(required = false) String label,
-                                                    @RequestParam(defaultValue = "true") boolean clearHistory) {
+                                                    @RequestParam(defaultValue = "false") boolean clearHistory) {
         return paperTradingService.resetSession(startingBankroll, label, clearHistory);
     }
 

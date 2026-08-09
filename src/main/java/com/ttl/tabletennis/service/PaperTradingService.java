@@ -354,6 +354,21 @@ public class PaperTradingService {
     @Value("${ttl.paper.exploration.maxNewBetsPerSync:1}")
     private int explorationMaxNewBetsPerSync;
 
+    @Value("${ttl.paper.accuracyGuard.minModelProbability:0.60}")
+    private double accuracyGuardMinModelProbability;
+
+    @Value("${ttl.paper.accuracyGuard.enabled:true}")
+    private boolean accuracyGuardEnabled;
+
+    @Value("${ttl.paper.accuracyGuard.maxModelMarketGap:0.10}")
+    private double accuracyGuardMaxModelMarketGap;
+
+    @Value("${ttl.paper.accuracyGuard.minSignalQuality:0.62}")
+    private double accuracyGuardMinSignalQuality;
+
+    @Value("${ttl.paper.accuracyGuard.allowPositiveOdds:false}")
+    private boolean accuracyGuardAllowPositiveOdds;
+
     @Value("${ttl.paper.adaptive.enabled:true}")
     private boolean adaptiveEnabled;
 
@@ -3800,6 +3815,21 @@ public class PaperTradingService {
         if (candidate.impliedProbability() < clamp(minImpliedProbability, 0.05, 0.45)) {
             return "IMPLIED_PROBABILITY_TOO_LOW";
         }
+        if (accuracyGuardEnabled
+                && candidate.modelProbability() < clamp(accuracyGuardMinModelProbability, 0.50, 0.85)) {
+            return "MODEL_WIN_PROBABILITY_TOO_LOW";
+        }
+        if (accuracyGuardEnabled && !accuracyGuardAllowPositiveOdds && candidate.americanOdds() > 0) {
+            return "PLUS_MONEY_ACCURACY_GUARD";
+        }
+        double absoluteModelMarketGap = Math.abs(candidate.modelProbability() - candidate.impliedProbability());
+        if (accuracyGuardEnabled
+                && absoluteModelMarketGap > clamp(accuracyGuardMaxModelMarketGap, 0.04, 0.25)) {
+            return "MODEL_MARKET_DISAGREEMENT_QUARANTINE";
+        }
+        if (accuracyGuardEnabled && signalQuality < clamp(accuracyGuardMinSignalQuality, 0.50, 0.90)) {
+            return "SIGNAL_QUALITY_ACCURACY_GUARD";
+        }
         double edgeThreshold = row.live()
                 ? clamp(minEdgeLive, 0.005, 0.20)
                 : clamp(minEdgePrematch, 0.005, 0.20);
@@ -4187,10 +4217,11 @@ public class PaperTradingService {
             return;
         }
         PaperTradeDecisionSample sample = new PaperTradeDecisionSample();
+        String effectiveModelVersion = safeText(row.modelVersion(), modelVersion);
         sample.setSessionId(sessionId);
         sample.setSource(safeText(row.source(), "UNKNOWN"));
         sample.setStrategy(safeText(strategy, "CONSERVATIVE"));
-        sample.setModelVersion(safeText(modelVersion, "ENSEMBLE"));
+        sample.setModelVersion(effectiveModelVersion);
         sample.setEventKey(StringUtils.hasText(eventKey) ? eventKey.trim() : resolveDecisionEventKey(row));
         sample.setDedupeKey(StringUtils.hasText(dedupeKey) ? dedupeKey.trim() : resolveDecisionDedupeKey(row, eventKey, candidate));
         sample.setEventName(safeText(row.eventName(), "Unknown Event"));
@@ -4225,7 +4256,7 @@ public class PaperTradingService {
         modelCallLedgerService.recordCall(
                 sessionId,
                 strategy,
-                modelVersion,
+                effectiveModelVersion,
                 row,
                 sample.getEventKey(),
                 decisionStatus,

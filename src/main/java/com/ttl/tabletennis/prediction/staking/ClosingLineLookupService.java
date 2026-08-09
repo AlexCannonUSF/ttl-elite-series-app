@@ -10,9 +10,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+
+import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.parseStartDateTime;
 
 /**
  * Resolves the closing-line snapshot for a settled paper-trade bet.
@@ -57,14 +61,18 @@ public class ClosingLineLookupService {
             return Optional.empty();
         }
         LocalDateTime placedAt = bet.getPlacedAt();
-        LocalDateTime settledAt = bet.getSettledAt();
-        if (placedAt == null || settledAt == null) {
+        if (placedAt == null) {
             return Optional.empty();
         }
-        LocalDateTime until = settledAt.plusHours(LOOKUP_BUFFER.toHours());
+        LocalDateTime placedAtUtc = localDatabaseTimeToUtc(placedAt);
+        LocalDateTime closingCutoffUtc = closingCutoffUtc(bet);
+        if (closingCutoffUtc.isBefore(placedAtUtc)) {
+            closingCutoffUtc = localDatabaseTimeToUtc(
+                    bet.getSettledAt() == null ? LocalDateTime.now() : bet.getSettledAt());
+        }
         try {
-            List<OddsSnapshot> candidates = repository.findClosingCandidatesForSettlement(
-                    bookerEventId, side, placedAt, settledAt, until, PageRequest.of(0, 1));
+            List<OddsSnapshot> candidates = repository.findClosingCandidates(
+                    bookerEventId, side, placedAtUtc, closingCutoffUtc, PageRequest.of(0, 1));
             if (candidates == null || candidates.isEmpty()) {
                 return Optional.empty();
             }
@@ -82,6 +90,30 @@ public class ClosingLineLookupService {
                     bet.getId(), side, ex.getMessage());
             return Optional.empty();
         }
+    }
+
+    /**
+     * Odds snapshots are timestamped in UTC while paper ledgers use the host's
+     * local wall clock. Normalizing both bounds fixes the silent zero-coverage
+     * CLV bug seen in the completed run.
+     */
+    public static LocalDateTime localDatabaseTimeToUtc(LocalDateTime localTime) {
+        if (localTime == null) return null;
+        return localTime.atZone(ZoneId.systemDefault())
+                .withZoneSameInstant(ZoneOffset.UTC)
+                .toLocalDateTime();
+    }
+
+    public static LocalDateTime closingCutoffUtc(PaperTradeBet bet) {
+        if (bet == null) return localDatabaseTimeToUtc(LocalDateTime.now());
+        Optional<LocalDateTime> scheduledStart = parseStartDateTime(bet.getStartTimeIso());
+        if (scheduledStart.isPresent()) {
+            return localDatabaseTimeToUtc(scheduledStart.get());
+        }
+        LocalDateTime localCutoff = bet.getSettledAt() == null
+                ? LocalDateTime.now()
+                : bet.getSettledAt().plus(LOOKUP_BUFFER);
+        return localDatabaseTimeToUtc(localCutoff);
     }
 
     private static String pickBookerEventId(PaperTradeBet bet) {

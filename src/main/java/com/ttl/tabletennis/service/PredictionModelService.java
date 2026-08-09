@@ -15,6 +15,9 @@ import com.ttl.tabletennis.dto.ModelTrainingReportDto;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.PaperTradeLearningSampleRepository;
 import com.ttl.tabletennis.repository.PredictionModelRegistryRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.FlushModeType;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -99,6 +102,9 @@ public class PredictionModelService {
     private final AtomicReference<AdaptiveRegimeProfileCache> adaptiveRegimeCache = new AtomicReference<>();
     private final Object trainLock = new Object();
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     @Value("${ttl.prediction.minTrainingMatches:120}")
     private int minTrainingMatches;
 
@@ -125,6 +131,12 @@ public class PredictionModelService {
 
     @Value("${ttl.prediction.temporalGapDays:1}")
     private int temporalGapDays;
+
+    @Value("${ttl.prediction.maxTrainingDates:24}")
+    private int maxTrainingDates;
+
+    @Value("${ttl.prediction.maxSamplesPerDate:120}")
+    private int maxSamplesPerDate;
 
     @Value("${ttl.prediction.requireMarketBenchmark:true}")
     private boolean requireMarketBenchmark;
@@ -204,6 +216,9 @@ public class PredictionModelService {
     @Value("${ttl.prediction.regimeLearningApplyEnabled:false}")
     private boolean regimeLearningApplyEnabled;
 
+    @Value("${ttl.prediction.releaseName:accuracy-guardrails-r1}")
+    private String releaseName;
+
     public PredictionModelService(MatchRepository matchRepository,
                                   FeatureService featureService,
                                   PaperTradeLearningSampleRepository learningSampleRepository,
@@ -252,7 +267,10 @@ public class PredictionModelService {
                     glickoProbability,
                     gbtProbability,
                     rfProbability,
-                    ensembleProbability
+                    ensembleProbability,
+                    logistic != null,
+                    gbtLike != null,
+                    rfLike != null
             );
         }
 
@@ -273,7 +291,10 @@ public class PredictionModelService {
                     glickoProbability,
                     baselineProbability,
                     baselineProbability,
-                    baselineProbability
+                    baselineProbability,
+                    false,
+                    false,
+                    false
             );
         }
 
@@ -289,7 +310,10 @@ public class PredictionModelService {
                 glickoProbability,
                 gbtProbability,
                 rfProbability,
-                ensembleProbability
+                ensembleProbability,
+                logistic != null,
+                gbtLike != null,
+                rfLike != null
         );
     }
 
@@ -334,9 +358,9 @@ public class PredictionModelService {
         if (!StringUtils.hasText(version) || FAMILY_BASELINE.equalsIgnoreCase(family)) {
             return false;
         }
-        ensureModelsReady();
-        TrainedModel champion = activeModels.get(FAMILY_ENSEMBLE);
-        return champion != null && champion.version.equalsIgnoreCase(version.trim());
+        return registryRepository.findByModelVersion(version.trim())
+                .map(PredictionModelRegistryEntry::isActive)
+                .orElse(false);
     }
 
     public List<AdaptiveRegimeProfileDto> currentAdaptiveRegimeProfiles() {
@@ -429,6 +453,13 @@ public class PredictionModelService {
     @Transactional
     public ModelTrainingReportDto trainModels(LocalDate fromDate, LocalDate toDate) {
         synchronized (trainLock) {
+            // Feature construction executes many read queries while the full
+            // historical match set is attached to this persistence context.
+            // AUTO mode makes Hibernate dirty-check every attached match before
+            // every query, turning training into quadratic work. Registry rows
+            // are the only writes in this transaction, so flushing once at
+            // commit is both correct and dramatically faster.
+            entityManager.setFlushMode(FlushModeType.COMMIT);
             List<TrainingSample> samples = buildSamples(fromDate, toDate);
             int requiredSamples = Math.max(clamp(absoluteMinSamples, 10, 80), Math.max(10, minTrainingMatches / 8));
             if (samples.size() < requiredSamples) {
@@ -516,6 +547,8 @@ public class PredictionModelService {
             releaseEvidence.put("testFrom", valFrom.toString());
             releaseEvidence.put("testTo", valTo.toString());
             releaseEvidence.put("temporalGapDays", Math.max(0, temporalGapDays));
+            releaseEvidence.put("trainingDateCount", samples.stream().map(TrainingSample::matchDate).distinct().count());
+            releaseEvidence.put("maxSamplesPerDate", Math.max(20, maxSamplesPerDate));
             releaseEvidence.put("constantBrier", benchmarks.constantBrier());
             releaseEvidence.put("eloBrier", benchmarks.eloBrier());
             releaseEvidence.put("recentFormBrier", benchmarks.recentFormBrier());
@@ -612,9 +645,12 @@ public class PredictionModelService {
             activeModels.put(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC));
             activeModels.put(FAMILY_GBT_LIKE, trained.get(FAMILY_GBT_LIKE));
             activeModels.put(FAMILY_RF_LIKE, trained.get(FAMILY_RF_LIKE));
-            if (promotionApproved) {
-                activeModels.put(FAMILY_ENSEMBLE, trained.get(championFamily));
-            }
+            // Keep the newest reviewed artifact available for shadow scoring
+            // even when release gates withhold production promotion. Product
+            // recommendations still require registry.active=true via
+            // isPromotedModel(), so availability cannot bypass governance.
+            activeModels.put(FAMILY_ENSEMBLE,
+                    promotionApproved ? trained.get(championFamily) : trained.get(FAMILY_ENSEMBLE));
 
             List<ModelTrainingReportDto.CandidateMetricDto> candidates = List.of(
                     toCandidateDto(FAMILY_LOGISTIC, trained.get(FAMILY_LOGISTIC), logisticMetrics, promotionApproved && FAMILY_LOGISTIC.equals(championFamily)),
@@ -657,14 +693,19 @@ public class PredictionModelService {
                                         double glickoProbability,
                                         double gbtProbability,
                                         double rfProbability,
-                                        double ensembleProbability) {
+                                        double ensembleProbability,
+                                        boolean logisticAvailable,
+                                        boolean gbtAvailable,
+                                        boolean rfAvailable) {
         ConsensusProfile consensus = consensusProfile(
                 baselineProbability,
                 logisticProbability,
                 glickoProbability,
                 gbtProbability,
                 rfProbability,
-                ensembleProbability
+                logisticAvailable,
+                gbtAvailable,
+                rfAvailable
         );
         LiveLearningCalibration liveCalibration = loadLiveLearningCalibration();
         double stabilizedProbability = stabilizeProbability(
@@ -826,15 +867,19 @@ public class PredictionModelService {
                                               double glickoProbability,
                                               double gbtProbability,
                                               double rfProbability,
-                                              double ensembleProbability) {
-        double[] values = new double[]{
-                clamp01(baselineProbability),
-                clamp01(logisticProbability),
-                clamp01(glickoProbability),
-                clamp01(gbtProbability),
-                clamp01(rfProbability),
-                clamp01(ensembleProbability)
-        };
+                                              boolean logisticAvailable,
+                                              boolean gbtAvailable,
+                                              boolean rfAvailable) {
+        // Count only independently available predictors. Previously every
+        // missing artifact was substituted with the same baseline value and
+        // counted as another vote, manufacturing agreement and narrow CIs.
+        List<Double> available = new ArrayList<>();
+        available.add(clamp01(baselineProbability));
+        available.add(clamp01(glickoProbability));
+        if (logisticAvailable) available.add(clamp01(logisticProbability));
+        if (gbtAvailable) available.add(clamp01(gbtProbability));
+        if (rfAvailable) available.add(clamp01(rfProbability));
+        double[] values = available.stream().mapToDouble(Double::doubleValue).toArray();
         double mean = 0.0;
         for (double value : values) {
             mean += value;
@@ -877,7 +922,7 @@ public class PredictionModelService {
         }
 
         List<Match> matches = matchRepository.findCompletedMatchesBetween(from, to);
-        List<TrainingSample> samples = new ArrayList<>(matches.size());
+        Map<LocalDate, List<TrainingCandidate>> candidatesByDate = new LinkedHashMap<>();
         Map<String, Boolean> seenIdentities = new HashMap<>();
         for (Match match : matches) {
             if (match.getPlayer1() == null || match.getPlayer2() == null || match.getDate() == null || match.getWinnerPlayerId() == null) {
@@ -898,10 +943,39 @@ public class PredictionModelService {
             } else {
                 continue;
             }
-            LocalDate asOf = match.getDate().minusDays(1);
-            MatchupFeatureVectorDto fv = featureService.buildMatchupFeatureVector(p1Id, p2Id, asOf);
-            samples.add(new TrainingSample(
-                    match.getDate(), toBaseFeatures(fv), label, trainingSampleWeight(fv), identity));
+            candidatesByDate.computeIfAbsent(match.getDate(), ignored -> new ArrayList<>())
+                    .add(new TrainingCandidate(match, identity, label));
+        }
+
+        // Historical imports can contain hundreds of matches on a single day.
+        // Reconstructing every row overweights dense scrape days and makes an
+        // operator-triggered training request monopolize the live database.
+        // Keep a deterministic, identity-hashed sample from each of the most
+        // recent distinct dates so the temporal split remains representative,
+        // reproducible, and bounded.
+        int dateLimit = clamp(maxTrainingDates, 8, 120);
+        int perDateLimit = clamp(maxSamplesPerDate, 20, 500);
+        List<LocalDate> selectedDates = candidatesByDate.keySet().stream()
+                .sorted(Comparator.reverseOrder())
+                .limit(dateLimit)
+                .sorted()
+                .toList();
+        List<TrainingSample> samples = new ArrayList<>(selectedDates.size() * perDateLimit);
+        for (LocalDate date : selectedDates) {
+            List<TrainingCandidate> candidates = new ArrayList<>(candidatesByDate.getOrDefault(date, List.of()));
+            candidates.sort(Comparator.comparing(candidate -> sha256(candidate.identity())));
+            for (TrainingCandidate candidate : candidates.stream().limit(perDateLimit).toList()) {
+                Match match = candidate.match();
+                LocalDate asOf = date.minusDays(1);
+                MatchupFeatureVectorDto fv = featureService.buildMatchupFeatureVector(
+                        match.getPlayer1().getId(), match.getPlayer2().getId(), asOf);
+                samples.add(new TrainingSample(
+                        date,
+                        toBaseFeatures(fv),
+                        candidate.label(),
+                        trainingSampleWeight(fv),
+                        candidate.identity()));
+            }
         }
         samples.sort(Comparator.comparing(TrainingSample::matchDate));
         return samples;
@@ -928,13 +1002,69 @@ public class PredictionModelService {
             throw new IllegalStateException("Training requires at least 8 distinct match dates for temporal isolation");
         }
         double fraction = clamp(holdoutRatio, 0.10, 0.25);
-        int calibrationDateIndex = Math.max(2, (int) Math.floor(dates.size() * (1.0 - (2.0 * fraction))));
-        int testDateIndex = Math.max(calibrationDateIndex + 2,
+        int targetCalibrationIndex = Math.max(2,
+                (int) Math.floor(dates.size() * (1.0 - (2.0 * fraction))));
+        int targetTestIndex = Math.max(targetCalibrationIndex + 2,
                 (int) Math.floor(dates.size() * (1.0 - fraction)));
-        testDateIndex = Math.min(testDateIndex, dates.size() - 2);
+        targetTestIndex = Math.min(targetTestIndex, dates.size() - 2);
+        int gap = Math.max(0, temporalGapDays);
+
+        // Pick chronological boundaries by retained sample mass, not only by
+        // date count. Imported history is intentionally capped per day and can
+        // be either very dense or one-match-per-day. Fixed percentile indexes
+        // can leave a valid sparse history one observation short after purge
+        // gaps. Searching the small, bounded date set preserves strict temporal
+        // isolation while keeping every split decision-grade.
+        int calibrationDateIndex = -1;
+        int testDateIndex = -1;
+        int bestRetained = -1;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (int candidateCalibration = 2; candidateCalibration <= dates.size() - 4; candidateCalibration++) {
+            LocalDate calibrationStart = dates.get(candidateCalibration);
+            LocalDate trainEnd = calibrationStart.minusDays(gap + 1L);
+            for (int candidateTest = candidateCalibration + 2;
+                 candidateTest <= dates.size() - 2;
+                 candidateTest++) {
+                LocalDate testStart = dates.get(candidateTest);
+                LocalDate calibrationEnd = testStart.minusDays(gap + 1L);
+                int trainCount = 0;
+                int calibrationCount = 0;
+                int testCount = 0;
+                for (TrainingSample sample : samples) {
+                    if (!sample.matchDate().isAfter(trainEnd)) {
+                        trainCount++;
+                    } else if (!sample.matchDate().isBefore(calibrationStart)
+                            && !sample.matchDate().isAfter(calibrationEnd)) {
+                        calibrationCount++;
+                    } else if (!sample.matchDate().isBefore(testStart)) {
+                        testCount++;
+                    }
+                }
+                if (trainCount < 8 || calibrationCount < 6 || testCount < 6) {
+                    continue;
+                }
+                int retained = trainCount + calibrationCount + testCount;
+                double retainedScale = Math.max(1.0, retained);
+                double distance = Math.abs((trainCount / retainedScale) - (1.0 - (2.0 * fraction)))
+                        + Math.abs((calibrationCount / retainedScale) - fraction)
+                        + Math.abs((testCount / retainedScale) - fraction)
+                        + (Math.abs(candidateCalibration - targetCalibrationIndex)
+                        + Math.abs(candidateTest - targetTestIndex)) * 1.0e-6;
+                if (distance < bestDistance
+                        || (Math.abs(distance - bestDistance) <= EPS && retained > bestRetained)) {
+                    calibrationDateIndex = candidateCalibration;
+                    testDateIndex = candidateTest;
+                    bestDistance = distance;
+                    bestRetained = retained;
+                }
+            }
+        }
+        if (calibrationDateIndex < 0 || testDateIndex < 0) {
+            throw new IllegalStateException(
+                    "Temporal train/calibration/test split cannot retain at least 8/6/6 samples after purge gaps");
+        }
         LocalDate calibrationStart = dates.get(calibrationDateIndex);
         LocalDate testStart = dates.get(testDateIndex);
-        int gap = Math.max(0, temporalGapDays);
         LocalDate trainEnd = calibrationStart.minusDays(gap + 1L);
         LocalDate calibrationEnd = testStart.minusDays(gap + 1L);
 
@@ -1148,17 +1278,17 @@ public class PredictionModelService {
 
     private double baselineProbability(double[] x) {
         double z = 0.0;
-        z += 0.90 * x[0];
-        z += 0.95 * x[1];
-        z += 0.55 * x[2];
+        z += 0.55 * x[0];
+        z += 0.45 * x[1];
+        z += 0.50 * x[2];
         z += 0.35 * x[3];
-        z += 0.85 * x[4];
-        z += 1.05 * x[5];
+        z += 1.15 * x[4];
+        z += 1.15 * x[5];
         z += 0.45 * x[6];
         z += 0.25 * x[7];
         z += 0.15 * x[8];
-        z += 0.20 * x[11];
-        z += 1.10 * x[12];
+        z += 0.10 * x[11];
+        z += 0.75 * x[12];
         z += 0.80 * x[13];
         z += 0.70 * x[14];
         z += 0.45 * x[15];
@@ -1167,8 +1297,8 @@ public class PredictionModelService {
 
     private List<MatchupAnalysisDto.FeatureContributionDto> baselineContributions(double[] x) {
         double[] weights = new double[]{
-                0.90, 0.95, 0.55, 0.35, 0.85, 1.05, 0.45, 0.25,
-                0.15, 0.0, 0.0, 0.20, 1.10, 0.80, 0.70, 0.45
+                0.55, 0.45, 0.50, 0.35, 1.15, 1.15, 0.45, 0.25,
+                0.15, 0.0, 0.0, 0.10, 0.75, 0.80, 0.70, 0.45
         };
         List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
         for (int i = 0; i < BASE_FEATURE_NAMES.length; i++) {
@@ -1869,7 +1999,11 @@ public class PredictionModelService {
                                           String notes,
                                           Map<String, Object> extraPayload) {
         registryRepository.deactivateFamily(family);
-        String version = VERSION_TS.format(LocalDateTime.now()) + "-" + family + "-" + (System.nanoTime() % 100_000);
+        String release = StringUtils.hasText(releaseName)
+                ? releaseName.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-|-$)", "")
+                : "accuracy-guardrails-r1";
+        String version = release + "-" + VERSION_TS.format(LocalDateTime.now())
+                + "-" + family + "-" + (System.nanoTime() % 100_000);
 
         PredictionModelRegistryEntry entry = new PredictionModelRegistryEntry();
         entry.setModelVersion(version);
@@ -2053,32 +2187,15 @@ public class PredictionModelService {
     private void tryLoadModelsFromRegistry() {
         Map<String, TrainedModel> loadedByFamily = new HashMap<>();
         Map<String, TrainedModel> loadedByVersion = new HashMap<>();
-        TrainedModel activeChampion = null;
 
         for (String family : List.of(FAMILY_LOGISTIC, FAMILY_GBT_LIKE, FAMILY_RF_LIKE)) {
-            List<PredictionModelRegistryEntry> activeRows =
-                    registryRepository.findActiveByFamily(family, PageRequest.of(0, 1));
-            if (!activeRows.isEmpty()) {
-                TrainedModel active = restoreModelFromRegistryEntry(activeRows.get(0), loadedByVersion);
-                if (active != null) {
-                    activeChampion = active;
-                    loadedByFamily.put(family, active);
-                    loadedByVersion.put(active.version, active);
-                }
-            }
+            loadLatestModelForFamily(family, loadedByVersion).ifPresent(model -> {
+                loadedByFamily.put(family, model);
+                loadedByVersion.put(model.version, model);
+            });
         }
-        final TrainedModel nonEnsembleChampion = activeChampion;
-        List<PredictionModelRegistryEntry> activeEnsembleRows =
-                registryRepository.findActiveByFamily(FAMILY_ENSEMBLE, PageRequest.of(0, 1));
-        if (!activeEnsembleRows.isEmpty()) {
-            TrainedModel activeEnsemble =
-                    restoreModelFromRegistryEntry(activeEnsembleRows.get(0), loadedByVersion);
-            if (activeEnsemble != null) {
-                loadedByFamily.put(FAMILY_ENSEMBLE, activeEnsemble);
-            }
-        } else if (nonEnsembleChampion != null) {
-            loadedByFamily.put(FAMILY_ENSEMBLE, nonEnsembleChampion);
-        }
+        loadLatestModelForFamily(FAMILY_ENSEMBLE, loadedByVersion)
+                .ifPresent(model -> loadedByFamily.put(FAMILY_ENSEMBLE, model));
 
         if (!loadedByFamily.isEmpty()) {
             activeModels.clear();
@@ -2087,20 +2204,16 @@ public class PredictionModelService {
     }
 
     private Optional<TrainedModel> loadLatestModelForFamily(String family, Map<String, TrainedModel> knownByVersion) {
-        List<PredictionModelRegistryEntry> activeRows = registryRepository.findActiveByFamily(family, PageRequest.of(0, 1));
-        PredictionModelRegistryEntry selected = null;
-        if (!activeRows.isEmpty()) {
-            selected = activeRows.get(0);
-        } else {
-            List<PredictionModelRegistryEntry> recentRows = registryRepository.findRecentByFamily(family, PageRequest.of(0, 1));
-            if (!recentRows.isEmpty()) {
-                selected = recentRows.get(0);
+        List<PredictionModelRegistryEntry> candidates = new ArrayList<>();
+        candidates.addAll(registryRepository.findActiveByFamily(family, PageRequest.of(0, 20)));
+        candidates.addAll(registryRepository.findRecentByFamily(family, PageRequest.of(0, 20)));
+        for (PredictionModelRegistryEntry candidate : candidates) {
+            TrainedModel restored = restoreModelFromRegistryEntry(candidate, knownByVersion);
+            if (restored != null) {
+                return Optional.of(restored);
             }
         }
-        if (selected == null) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(restoreModelFromRegistryEntry(selected, knownByVersion));
+        return Optional.empty();
     }
 
     private TrainedModel restoreModelFromRegistryEntry(PredictionModelRegistryEntry entry,
@@ -2419,6 +2532,9 @@ public class PredictionModelService {
                                   int label,
                                   double sampleWeight,
                                   String identity) {
+    }
+
+    private record TrainingCandidate(Match match, String identity, int label) {
     }
 
     private record TemporalSplit(List<TrainingSample> train,

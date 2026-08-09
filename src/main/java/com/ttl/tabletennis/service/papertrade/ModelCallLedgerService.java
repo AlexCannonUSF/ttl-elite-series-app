@@ -134,6 +134,7 @@ public class ModelCallLedgerService {
             call.setSource(safeText(row.source(), "UNKNOWN"));
             call.setStrategy(safeText(strategy, "CONSERVATIVE"));
             call.setModelVersion(safeText(modelVersion, "ENSEMBLE"));
+            updateSessionModelIdentity(sessionId, call.getModelVersion());
             call.setCaptureType(incomingPrematch
                     ? PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE
                     : PaperTradeModelCall.CAPTURE_LIVE_FIRST);
@@ -164,6 +165,30 @@ public class ModelCallLedgerService {
             applyPredictorSnapshot(call, row, decisionSample);
         }
         callRepository.save(call);
+    }
+
+    private void updateSessionModelIdentity(Long sessionId, String effectiveVersion) {
+        if (sessionId == null || !StringUtils.hasText(effectiveVersion)) {
+            return;
+        }
+        sessionRepository.findById(sessionId).ifPresent(session -> {
+            String normalized = effectiveVersion.trim();
+            if (!normalized.equals(session.getEffectiveModelVersion())) {
+                session.setEffectiveModelVersion(normalized);
+                session.setEffectiveModelFamily(inferModelFamily(normalized));
+                sessionRepository.save(session);
+            }
+        });
+    }
+
+    private static String inferModelFamily(String version) {
+        String normalized = version == null ? "" : version.trim().toUpperCase(java.util.Locale.ROOT);
+        if (normalized.contains("ENSEMBLE")) return "ENSEMBLE";
+        if (normalized.contains("LOGISTIC")) return "LOGISTIC";
+        if (normalized.contains("GBT")) return "GBT_LIKE";
+        if (normalized.contains("RF")) return "RF_LIKE";
+        if (normalized.contains("BASELINE")) return "BASELINE";
+        return "UNKNOWN";
     }
 
     @Transactional(readOnly = true)

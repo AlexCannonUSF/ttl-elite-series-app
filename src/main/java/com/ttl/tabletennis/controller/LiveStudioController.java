@@ -109,7 +109,7 @@ public class LiveStudioController {
     @PostMapping("/reset")
     public PaperTradingSessionDto reset(@RequestParam(required = false) Double startingBankroll,
                                         @RequestParam(required = false) String label,
-                                        @RequestParam(defaultValue = "true") boolean clearHistory) {
+                                        @RequestParam(defaultValue = "false") boolean clearHistory) {
         return paperTradingService.resetSession(startingBankroll, label, clearHistory);
     }
 }

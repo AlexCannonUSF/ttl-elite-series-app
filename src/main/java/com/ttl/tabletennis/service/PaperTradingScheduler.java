@@ -14,7 +14,7 @@ public class PaperTradingScheduler {
 
     private final PaperTradingService paperTradingService;
 
-    @Value("${ttl.paper.autoSyncEnabled:false}")
+    @Value("${ttl.paper.autoSyncEnabled:true}")
     private boolean autoSyncEnabled;
 
     @Value("${ttl.odds.defaultStrategy:CONSERVATIVE}")

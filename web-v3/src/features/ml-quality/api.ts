@@ -1,4 +1,4 @@
-import type { MlQualityResponse, ModelLearningAudit, StakingPolicy } from '@/features/ml-quality/types'
+import type { MlQualityResponse, ModelLearningAudit, ModelRegistryEntry, ModelRunHistory, StakingPolicy } from '@/features/ml-quality/types'
 
 export type MlQualityQuery = {
   windowDays?: number
@@ -33,6 +33,24 @@ export async function fetchModelLearningAudit(windowDays = 180, signal?: AbortSi
     throw new Error(`Model learning audit request failed with ${response.status}`)
   }
   return (await response.json()) as ModelLearningAudit
+}
+
+export async function fetchModelRunHistory(limit = 25, signal?: AbortSignal): Promise<ModelRunHistory> {
+  const response = await fetch(`/api/v3/ml/runs?limit=${limit}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Model run history request failed with ${response.status}`)
+  return (await response.json()) as ModelRunHistory
+}
+
+export async function fetchModelRegistry(limit = 30, signal?: AbortSignal): Promise<ModelRegistryEntry[]> {
+  const response = await fetch(`/api/analytics/models/registry?limit=${limit}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw new Error(`Model registry request failed with ${response.status}`)
+  return (await response.json()) as ModelRegistryEntry[]
 }
 
 export async function fetchStakingPolicy(signal?: AbortSignal): Promise<StakingPolicy> {

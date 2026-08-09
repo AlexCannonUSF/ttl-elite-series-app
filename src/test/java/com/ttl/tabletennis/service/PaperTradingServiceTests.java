@@ -261,7 +261,7 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void resetSessionClearHistoryRemovesTrackedObservations() {
+    void resetSessionArchivesTrackedObservationsOutsideTheNewActiveRun() {
         PaperTradingSessionDto first = paperTradingService.resetSession(1000.0, "Reset A", true);
         assertNotNull(first.sessionId());
 
@@ -287,7 +287,7 @@ class PaperTradingServiceTests {
         assertEquals(0, after.trackedObservations());
         assertEquals(0, after.scoreFeedObservations());
         assertEquals(0, after.trackedAfterCloseObservations());
-        assertEquals(1, paperTradeSessionShadowRepository.count());
+        assertEquals(2, paperTradeSessionShadowRepository.count());
         assertEquals(0, paperTradeBetShadowRepository.count());
     }
 
@@ -1232,7 +1232,7 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void resetWithClearHistoryRemovesOldPicks() {
+    void resetArchivesOldPicksButStartsTheNewRunAtZero() {
         Player alpha = playerRepository.save(new Player("Reset", "Alpha"));
         Player beta = playerRepository.save(new Player("Reset", "Beta"));
         String startIso = LocalDate.now().plusDays(1).toString();
@@ -1288,8 +1288,8 @@ class PaperTradingServiceTests {
         assertEquals(0, reset.openBets());
         assertTrue(reset.recentBets().isEmpty());
         assertTrue(reset.openBetsList().isEmpty());
-        assertEquals(1, paperTradeSessionRepository.count());
-        assertEquals(0, paperTradeBetRepository.count());
+        assertEquals(2, paperTradeSessionRepository.count());
+        assertEquals(1, paperTradeBetRepository.count());
     }
 
     @Test
@@ -3680,7 +3680,7 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void resetWithClearHistoryPreservesLearningSamplesForFutureAdaptiveUse() {
+    void resetArchivesBetsAndPreservesLearningSamplesForFutureAdaptiveUse() {
         Player alpha = playerRepository.save(new Player("Learn", "Alpha"));
         Player beta = playerRepository.save(new Player("Learn", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(90);
@@ -3748,7 +3748,7 @@ class PaperTradingServiceTests {
         var reset = paperTradingService.resetSession(1000.0, "Fresh Session", true);
         assertEquals(0, reset.totalBets());
         assertEquals(0, reset.openBets());
-        assertEquals(0, paperTradeBetRepository.count());
+        assertEquals(1, paperTradeBetRepository.count());
         assertEquals(1, paperTradeLearningSampleRepository.count());
         assertTrue(reset.adaptiveMetrics().sampleSize() >= 1);
     }

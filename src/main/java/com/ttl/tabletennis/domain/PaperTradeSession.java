@@ -37,6 +37,21 @@ public class PaperTradeSession {
     @Column(name = "label", nullable = false, length = 80)
     private String label;
 
+    @Column(name = "requested_model_version", length = 100)
+    private String requestedModelVersion;
+
+    @Column(name = "effective_model_version", length = 100)
+    private String effectiveModelVersion;
+
+    @Column(name = "effective_model_family", length = 40)
+    private String effectiveModelFamily;
+
+    @Column(name = "policy_version", length = 100)
+    private String policyVersion;
+
+    @Column(name = "code_revision", length = 80)
+    private String codeRevision;
+
     @Column(name = "starting_bankroll", nullable = false)
     private double startingBankroll;
 
@@ -109,6 +124,9 @@ public class PaperTradeSession {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    @Column(name = "closed_at")
+    private LocalDateTime closedAt;
+
     @PrePersist
     void prePersist() {
         if (status == null || status.isBlank()) {
@@ -158,6 +176,46 @@ public class PaperTradeSession {
 
     public void setLabel(String label) {
         this.label = label;
+    }
+
+    public String getRequestedModelVersion() {
+        return requestedModelVersion;
+    }
+
+    public void setRequestedModelVersion(String requestedModelVersion) {
+        this.requestedModelVersion = requestedModelVersion;
+    }
+
+    public String getEffectiveModelVersion() {
+        return effectiveModelVersion;
+    }
+
+    public void setEffectiveModelVersion(String effectiveModelVersion) {
+        this.effectiveModelVersion = effectiveModelVersion;
+    }
+
+    public String getEffectiveModelFamily() {
+        return effectiveModelFamily;
+    }
+
+    public void setEffectiveModelFamily(String effectiveModelFamily) {
+        this.effectiveModelFamily = effectiveModelFamily;
+    }
+
+    public String getPolicyVersion() {
+        return policyVersion;
+    }
+
+    public void setPolicyVersion(String policyVersion) {
+        this.policyVersion = policyVersion;
+    }
+
+    public String getCodeRevision() {
+        return codeRevision;
+    }
+
+    public void setCodeRevision(String codeRevision) {
+        this.codeRevision = codeRevision;
     }
 
     public double getStartingBankroll() {
@@ -350,5 +408,13 @@ public class PaperTradeSession {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public LocalDateTime getClosedAt() {
+        return closedAt;
+    }
+
+    public void setClosedAt(LocalDateTime closedAt) {
+        this.closedAt = closedAt;
     }
 }
