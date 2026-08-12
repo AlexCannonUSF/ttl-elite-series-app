@@ -363,6 +363,12 @@ public class PaperTradingService {
     @Value("${ttl.paper.accuracyGuard.maxModelMarketGap:0.10}")
     private double accuracyGuardMaxModelMarketGap;
 
+    @Value("${ttl.paper.accuracyGuard.maxNoVigModelMarketGap:0.10}")
+    private double accuracyGuardMaxNoVigModelMarketGap;
+
+    @Value("${ttl.paper.accuracyGuard.minRatingAgreement:0.65}")
+    private double accuracyGuardMinRatingAgreement;
+
     @Value("${ttl.paper.accuracyGuard.minSignalQuality:0.62}")
     private double accuracyGuardMinSignalQuality;
 
@@ -3827,6 +3833,19 @@ public class PaperTradingService {
                 && absoluteModelMarketGap > clamp(accuracyGuardMaxModelMarketGap, 0.04, 0.25)) {
             return "MODEL_MARKET_DISAGREEMENT_QUARANTINE";
         }
+        Double noVigMarketProbability = noVigMarketProbability(row, candidate.sidePlayerId());
+        if (accuracyGuardEnabled
+                && noVigMarketProbability != null
+                && Math.abs(candidate.modelProbability() - noVigMarketProbability)
+                > clamp(accuracyGuardMaxNoVigModelMarketGap, 0.03, 0.25)) {
+            return "NO_VIG_MARKET_DISAGREEMENT_QUARANTINE";
+        }
+        if (accuracyGuardEnabled
+                && row.ratingAgreement() != null
+                && Double.isFinite(row.ratingAgreement())
+                && row.ratingAgreement() < clamp(accuracyGuardMinRatingAgreement, 0.50, 0.95)) {
+            return "RATING_AGREEMENT_ACCURACY_GUARD";
+        }
         if (accuracyGuardEnabled && signalQuality < clamp(accuracyGuardMinSignalQuality, 0.50, 0.90)) {
             return "SIGNAL_QUALITY_ACCURACY_GUARD";
         }
@@ -3891,6 +3910,36 @@ public class PaperTradingService {
         }
         if ("LIVE_LATE".equals(phase) && signalQuality < 0.64) {
             return "LIVE_LATE_LOW_QUALITY";
+        }
+        return null;
+    }
+
+    /**
+     * Returns the selected side's market probability after removing the
+     * sportsbook overround from the complete two-way line. A one-sided or
+     * malformed price is intentionally treated as unavailable so a missing
+     * opponent line cannot create artificial confidence.
+     */
+    static Double noVigMarketProbability(LiveOddsRecommendationDto row, Long sidePlayerId) {
+        if (row == null || sidePlayerId == null) {
+            return null;
+        }
+        double player1Implied = row.impliedProbabilityPlayer1();
+        double player2Implied = row.impliedProbabilityPlayer2();
+        double totalImplied = player1Implied + player2Implied;
+        if (!Double.isFinite(player1Implied)
+                || !Double.isFinite(player2Implied)
+                || player1Implied <= 0.0
+                || player2Implied <= 0.0
+                || !Double.isFinite(totalImplied)
+                || totalImplied <= 0.0) {
+            return null;
+        }
+        if (sidePlayerId.equals(row.player1Id())) {
+            return clamp(player1Implied / totalImplied, 0.0, 1.0);
+        }
+        if (sidePlayerId.equals(row.player2Id())) {
+            return clamp(player2Implied / totalImplied, 0.0, 1.0);
         }
         return null;
     }

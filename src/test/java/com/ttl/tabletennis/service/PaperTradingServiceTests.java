@@ -57,6 +57,94 @@ import static org.mockito.Mockito.when;
 @Transactional
 class PaperTradingServiceTests {
 
+    @Test
+    void noVigMarketProbabilityRemovesTwoSidedOverround() {
+        LiveOddsRecommendationDto row = marketRow(11L, 22L, 0.60, 0.50);
+
+        assertEquals(0.60 / 1.10, PaperTradingService.noVigMarketProbability(row, 11L), 0.000001);
+        assertEquals(0.50 / 1.10, PaperTradingService.noVigMarketProbability(row, 22L), 0.000001);
+        assertNull(PaperTradingService.noVigMarketProbability(row, 33L));
+    }
+
+    @Test
+    void noVigMarketProbabilityRejectsIncompleteMarket() {
+        LiveOddsRecommendationDto row = marketRow(11L, 22L, 0.60, 0.0);
+
+        assertNull(PaperTradingService.noVigMarketProbability(row, 11L));
+    }
+
+    @Test
+    void accuracyGuardQuarantinesLargeNoVigMarketDisagreement() {
+        Player alpha = playerRepository.save(new Player("NoVig", "Alpha"));
+        Player beta = playerRepository.save(new Player("NoVig", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "NoVig Alpha vs NoVig Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.72,
+                2.08,
+                -139,
+                108,
+                0.60,
+                0.52,
+                0.68,
+                0.32,
+                0.10,
+                -0.16,
+                -213,
+                213,
+                alpha.getName(),
+                0.10,
+                -213,
+                0.58,
+                0.76,
+                true,
+                "A",
+                "Strong model call that contradicts the vig-free market",
+                "Glicko Rating Delta",
+                0.31,
+                0.90,
+                0.80,
+                0.90,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousEnabled = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardEnabled");
+        Object previousGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        Object previousAgreement = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", true);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.10);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.65);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(0, result.betsPlaced());
+            assertEquals(1, result.betsSkipped());
+            assertTrue(result.session().decisionTelemetry().topSkipReasons().stream()
+                    .anyMatch(reason -> "NO_VIG_MARKET_DISAGREEMENT_QUARANTINE".equals(reason.reason())));
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", previousEnabled);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousAgreement);
+        }
+    }
+
     @Autowired
     private PaperTradingService paperTradingService;
 
@@ -6384,6 +6472,51 @@ class PaperTradingServiceTests {
                 .withSecond(0)
                 .withNano(0)
                 .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+    }
+
+    private static LiveOddsRecommendationDto marketRow(Long player1Id,
+                                                       Long player2Id,
+                                                       double player1Implied,
+                                                       double player2Implied) {
+        return new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Market Alpha vs Market Beta",
+                "TTL Elite Series",
+                false,
+                LocalDate.now().plusDays(1).toString(),
+                null,
+                "UPCOMING",
+                player1Id,
+                "Market Alpha",
+                player2Id,
+                "Market Beta",
+                1.67,
+                2.00,
+                -149,
+                100,
+                player1Implied,
+                player2Implied,
+                0.64,
+                0.36,
+                0.04,
+                -0.14,
+                -178,
+                178,
+                "Market Alpha",
+                0.04,
+                -178,
+                0.55,
+                0.73,
+                true,
+                "A",
+                "Two-sided market fixture",
+                "Glicko Rating Delta",
+                0.20,
+                "market-alpha|market-beta|fixture",
+                "market-alpha|market-beta|fixture|market-alpha"
+        );
     }
 
     private static String matchupKey(Player p1, Player p2, String startIso) {
