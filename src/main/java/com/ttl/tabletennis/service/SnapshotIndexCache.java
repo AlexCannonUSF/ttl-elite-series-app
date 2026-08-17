@@ -16,7 +16,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,12 +34,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code playerId → list of snapshots sorted ascending by date}. This avoids
  * both a full-table window sort and hundreds of cold random-index probes.
  *
- * <p>The cache is intentionally read-only once warmed. New snapshots
- * written by the rating-rebuild path will not be visible until the next
- * application restart. Live-board predictions only need same-day or
- * recent-day ratings, so the staleness window is acceptable in practice.
- * Tests that bypass startup events can force a refresh via
- * {@link #refresh()}.
+ * <p>The cache is refreshed after every match-data ingestion that committed
+ * rows, including the committed portion of a batch that later failed.
+ * Refreshes build complete staging maps and publish them atomically, so a
+ * live prediction sees either the previous coherent generation or the new
+ * one and never a partially cleared index.
  */
 @Service
 public class SnapshotIndexCache {
@@ -67,10 +65,8 @@ public class SnapshotIndexCache {
 
     private final JdbcTemplate jdbcTemplate;
 
-    /** {@code playerId → snapshots sorted ascending by date}. */
-    private final Map<Long, List<RatingRow>> ratingSnapshotsByPlayer = new ConcurrentHashMap<>();
-    private final Map<Long, List<Ts2Row>> ts2ByPlayer = new ConcurrentHashMap<>();
-    private final Map<Long, List<WlRow>> wlByPlayer = new ConcurrentHashMap<>();
+    /** One volatile reference makes a refresh a genuinely atomic generation swap. */
+    private volatile SnapshotGeneration generation = SnapshotGeneration.empty();
 
     private final AtomicBoolean warmed = new AtomicBoolean(false);
     private final CountDownLatch initialWarmFinished = new CountDownLatch(1);
@@ -130,13 +126,18 @@ public class SnapshotIndexCache {
     public synchronized void refresh() {
         long start = System.currentTimeMillis();
         try {
-            ratingSnapshotsByPlayer.clear();
-            ts2ByPlayer.clear();
-            wlByPlayer.clear();
+            Map<Long, List<RatingRow>> nextRatings = new HashMap<>();
+            Map<Long, List<Ts2Row>> nextTs2 = new HashMap<>();
+            Map<Long, List<WlRow>> nextWl = new HashMap<>();
+            long ratingRows = loadRatingSnapshots(nextRatings);
+            long ts2Rows = loadTs2(nextTs2);
+            long wlRows = loadWl(nextWl);
 
-            long ratingRows = loadRatingSnapshots();
-            long ts2Rows = loadTs2();
-            long wlRows = loadWl();
+            SnapshotGeneration nextGeneration = new SnapshotGeneration(
+                    Map.copyOf(nextRatings),
+                    Map.copyOf(nextTs2),
+                    Map.copyOf(nextWl));
+            generation = nextGeneration;
 
             warmed.set(true);
             long elapsed = System.currentTimeMillis() - start;
@@ -145,9 +146,9 @@ public class SnapshotIndexCache {
                     ratingRows,
                     ts2Rows,
                     wlRows,
-                    ratingSnapshotsByPlayer.size(),
-                    ts2ByPlayer.size(),
-                    wlByPlayer.size());
+                    nextGeneration.ratings().size(),
+                    nextGeneration.ts2().size(),
+                    nextGeneration.wl().size());
         } finally {
             initialWarmFinished.countDown();
         }
@@ -192,7 +193,8 @@ public class SnapshotIndexCache {
         if (!warmed.get() || playerId == null || ratingSystem == null) {
             return Optional.empty();
         }
-        List<RatingRow> rows = ratingSnapshotsByPlayer.get(playerId);
+        SnapshotGeneration current = generation;
+        List<RatingRow> rows = current.ratings().get(playerId);
         if (rows == null || rows.isEmpty()) {
             return Optional.empty();
         }
@@ -209,11 +211,21 @@ public class SnapshotIndexCache {
     }
 
     public Optional<Ts2Row> findTopTs2(Long playerId, LocalDate asOf) {
-        return findTopByDate(ts2ByPlayer, playerId, asOf, Ts2Row::snapshotDate);
+        SnapshotGeneration current = generation;
+        return findTopByDate(current.ts2(), playerId, asOf, Ts2Row::snapshotDate);
     }
 
     public Optional<WlRow> findTopWl(Long playerId, LocalDate asOf) {
-        return findTopByDate(wlByPlayer, playerId, asOf, WlRow::snapshotDate);
+        SnapshotGeneration current = generation;
+        return findTopByDate(current.wl(), playerId, asOf, WlRow::snapshotDate);
+    }
+
+    private record SnapshotGeneration(Map<Long, List<RatingRow>> ratings,
+                                      Map<Long, List<Ts2Row>> ts2,
+                                      Map<Long, List<WlRow>> wl) {
+        private static SnapshotGeneration empty() {
+            return new SnapshotGeneration(Map.of(), Map.of(), Map.of());
+        }
     }
 
     private <T> Optional<T> findTopByDate(Map<Long, List<T>> byPlayer,
@@ -236,7 +248,7 @@ public class SnapshotIndexCache {
         return Optional.empty();
     }
 
-    private long loadRatingSnapshots() {
+    private long loadRatingSnapshots(Map<Long, List<RatingRow>> destination) {
         Map<Long, List<RatingRow>> staging = new HashMap<>();
         // Keep a bounded recent history rather than window-sorting the whole
         // table or issuing hundreds of cold random-index probes. H2 can satisfy
@@ -263,20 +275,19 @@ public class SnapshotIndexCache {
                     }, ratingSystem, ratingSystem);
             }
         } catch (Exception ex) {
-            log.warn("[snapshot-index] failed to load rating_snapshot: {}", ex.toString());
-            return 0;
+            throw new IllegalStateException("failed to load rating_snapshot", ex);
         }
         long total = 0;
         for (Map.Entry<Long, List<RatingRow>> e : staging.entrySet()) {
             List<RatingRow> sorted = new ArrayList<>(e.getValue());
             sorted.sort(Comparator.comparing(RatingRow::snapshotDate));
-            ratingSnapshotsByPlayer.put(e.getKey(), List.copyOf(sorted));
+            destination.put(e.getKey(), List.copyOf(sorted));
             total += sorted.size();
         }
         return total;
     }
 
-    private long loadTs2() {
+    private long loadTs2(Map<Long, List<Ts2Row>> destination) {
         Map<Long, List<Ts2Row>> staging = new HashMap<>();
         String sql = "SELECT player_id, snapshot_date, mu, sigma FROM player_rating_ts2 "
                 + "WHERE snapshot_date IN (SELECT snapshot_date FROM (SELECT DISTINCT snapshot_date "
@@ -294,20 +305,19 @@ public class SnapshotIndexCache {
                                 .add(new Ts2Row(snapshotDate, mu, sigma));
                     });
         } catch (Exception ex) {
-            log.warn("[snapshot-index] failed to load player_rating_ts2: {}", ex.toString());
-            return 0;
+            throw new IllegalStateException("failed to load player_rating_ts2", ex);
         }
         long total = 0;
         for (Map.Entry<Long, List<Ts2Row>> e : staging.entrySet()) {
             List<Ts2Row> sorted = new ArrayList<>(e.getValue());
             sorted.sort(Comparator.comparing(Ts2Row::snapshotDate));
-            ts2ByPlayer.put(e.getKey(), List.copyOf(sorted));
+            destination.put(e.getKey(), List.copyOf(sorted));
             total += sorted.size();
         }
         return total;
     }
 
-    private long loadWl() {
+    private long loadWl(Map<Long, List<WlRow>> destination) {
         Map<Long, List<WlRow>> staging = new HashMap<>();
         String sql = "SELECT player_id, snapshot_date, rating, uncertainty FROM player_rating_wl "
                 + "WHERE snapshot_date IN (SELECT snapshot_date FROM (SELECT DISTINCT snapshot_date "
@@ -325,14 +335,13 @@ public class SnapshotIndexCache {
                                 .add(new WlRow(snapshotDate, rating, uncertainty));
                     });
         } catch (Exception ex) {
-            log.warn("[snapshot-index] failed to load player_rating_wl: {}", ex.toString());
-            return 0;
+            throw new IllegalStateException("failed to load player_rating_wl", ex);
         }
         long total = 0;
         for (Map.Entry<Long, List<WlRow>> e : staging.entrySet()) {
             List<WlRow> sorted = new ArrayList<>(e.getValue());
             sorted.sort(Comparator.comparing(WlRow::snapshotDate));
-            wlByPlayer.put(e.getKey(), List.copyOf(sorted));
+            destination.put(e.getKey(), List.copyOf(sorted));
             total += sorted.size();
         }
         return total;

@@ -19,6 +19,7 @@ import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
+import com.ttl.tabletennis.service.ModelArtifactIdentityService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -72,6 +73,70 @@ class ModelCallLedgerServiceTests {
     }
 
     @Test
+    void strictPinningPersistsExactArtifactAndRequiredTelemetry() {
+        ModelArtifactIdentityService identityService = mock(ModelArtifactIdentityService.class);
+        ModelCallLedgerService strictService = new ModelCallLedgerService(
+                callRepository, sessionRepository, matchRepository, observationRepository,
+                reviewRepository, decisionSampleRepository);
+        strictService.setModelArtifactIdentityService(identityService);
+        ReflectionTestUtils.setField(strictService, "strictModelPinning", true);
+
+        PaperTradeSession session = new PaperTradeSession();
+        session.setPolicyVersion("shadow-r2-policy");
+        session.setCodeRevision("abc1234");
+        when(sessionRepository.findById(7L)).thenReturn(Optional.of(session));
+        when(callRepository.findBySessionIdAndEventKey(7L, "event-1")).thenReturn(Optional.empty());
+        when(matchRepository.findMaxMatchId()).thenReturn(88L);
+        when(identityService.resolve("accuracy-symmetric-market-r2-1-logistic"))
+                .thenReturn(new ModelArtifactIdentityService.ModelArtifactIdentity(
+                        "accuracy-symmetric-market-r2-1-logistic",
+                        "a".repeat(64),
+                        "b".repeat(64),
+                        "PLATT",
+                        true));
+        PaperTradeDecisionSample sample = new PaperTradeDecisionSample();
+        sample.setSelectionScore(0.73);
+        sample.setSignalQuality(0.81);
+        sample.setGateResults("model_probability=PASS|decision=SKIPPED");
+
+        strictService.recordCall(7L, "CONSERVATIVE", "accuracy-symmetric-market-r2-1-logistic",
+                row(false, false, 0.61, 0.39, "Alpha One"),
+                "event-1", "SKIPPED", "POLICY_PASS", sample);
+
+        ArgumentCaptor<PaperTradeModelCall> saved = ArgumentCaptor.forClass(PaperTradeModelCall.class);
+        verify(callRepository).save(saved.capture());
+        assertEquals("a".repeat(64), saved.getValue().getArtifactChecksum());
+        assertEquals("b".repeat(64), saved.getValue().getFeatureSchemaChecksum());
+        assertEquals("PLATT", saved.getValue().getCalibrationId());
+        assertEquals("shadow-r2-policy", saved.getValue().getPolicyId());
+        assertEquals("abc1234", saved.getValue().getCodeRevision());
+        assertEquals(0.73, saved.getValue().getSelectionScore());
+        assertEquals(0.81, saved.getValue().getSignalQuality());
+        assertEquals(sample.getGateResults(), saved.getValue().getGateResults());
+    }
+
+    @Test
+    void strictPinningRejectsGenericModelSelector() {
+        ModelArtifactIdentityService identityService = mock(ModelArtifactIdentityService.class);
+        ModelCallLedgerService strictService = new ModelCallLedgerService(
+                callRepository, sessionRepository, matchRepository, observationRepository,
+                reviewRepository, decisionSampleRepository);
+        strictService.setModelArtifactIdentityService(identityService);
+        ReflectionTestUtils.setField(strictService, "strictModelPinning", true);
+        when(callRepository.findBySessionIdAndEventKey(7L, "event-1")).thenReturn(Optional.empty());
+        when(sessionRepository.findById(7L)).thenReturn(Optional.of(new PaperTradeSession()));
+        when(identityService.resolve("ENSEMBLE"))
+                .thenReturn(new ModelArtifactIdentityService.ModelArtifactIdentity(
+                        "ENSEMBLE", null, null, null, false));
+
+        strictService.recordCall(7L, "CONSERVATIVE", "ENSEMBLE",
+                row(false, false, 0.61, 0.39, "Alpha One"),
+                "event-1", "SKIPPED", "NO_EDGE", new PaperTradeDecisionSample());
+
+        verify(callRepository, never()).save(any());
+    }
+
+    @Test
     void liveScoreCannotOverwriteFrozenPregameCall() {
         PaperTradeModelCall frozen = call(0.62, 1L, PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE);
         frozen.setDecisionReason("PREMATCH_PASS");
@@ -99,6 +164,20 @@ class ModelCallLedgerServiceTests {
 
         verify(callRepository, never()).save(any());
         verify(matchRepository, never()).findMaxMatchId();
+    }
+
+    @Test
+    void closedRunCannotAcceptNewOrRefreshedCalls() {
+        PaperTradeSession closed = new PaperTradeSession();
+        closed.setStatus(PaperTradeSession.STATUS_CLOSED);
+        when(sessionRepository.findById(7L)).thenReturn(Optional.of(closed));
+
+        service.recordCall(7L, "CONSERVATIVE", "ENSEMBLE",
+                row(false, false, 0.61, 0.39, "Alpha One"),
+                "event-1", "SKIPPED", "NO_EDGE");
+
+        verify(callRepository, never()).findBySessionIdAndEventKey(7L, "event-1");
+        verify(callRepository, never()).save(any());
     }
 
     @Test

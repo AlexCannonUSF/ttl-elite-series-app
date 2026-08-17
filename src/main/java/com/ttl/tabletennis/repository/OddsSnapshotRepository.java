@@ -12,6 +12,15 @@ import java.util.List;
 
 public interface OddsSnapshotRepository extends JpaRepository<OddsSnapshot, Long> {
 
+    @Query("""
+            select o from OddsSnapshot o
+            where o.trackedEventId = :identity
+               or o.bookerEventId = :identity
+               or o.matchKey = :identity
+            order by o.observedAt desc, o.id desc
+            """)
+    List<OddsSnapshot> findMarketHistory(@Param("identity") String identity, Pageable pageable);
+
     boolean existsByTrackedEventIdAndSideAndObservedAtAndPriceDecimalAndSourceId(String trackedEventId,
                                                                                 String side,
                                                                                 LocalDateTime observedAt,
@@ -21,6 +30,17 @@ public interface OddsSnapshotRepository extends JpaRepository<OddsSnapshot, Long
     @Modifying
     @Query("delete from OddsSnapshot o where o.observedAt < :cutoff")
     void deleteByObservedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    @Query("""
+            select o from OddsSnapshot o
+            where upper(o.sourceId) = 'HR_MKT'
+              and o.noVigProbability is not null
+              and o.observedAt >= :from
+              and o.observedAt < :to
+            order by o.observedAt asc, o.id asc
+            """)
+    List<OddsSnapshot> findHistoricalNoVigSnapshots(@Param("from") LocalDateTime from,
+                                                    @Param("to") LocalDateTime to);
 
     @Query("""
             select o from OddsSnapshot o

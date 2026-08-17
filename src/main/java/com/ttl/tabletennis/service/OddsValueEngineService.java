@@ -802,7 +802,11 @@ public class OddsValueEngineService {
                         odds.getSourceFeedCode(),
                         odds.getSourceFeedEventId(),
                         odds.getScoreDetail(),
-                        prediction.featureContributions()
+                        prediction.featureContributions(),
+                        prediction.rawPlayer1Probability(),
+                        1.0 - prediction.rawPlayer1Probability(),
+                        prediction.player1ConfidenceLow(),
+                        prediction.player1ConfidenceHigh()
                 ));
             } catch (Exception ex) {
                 log.warn(
@@ -1158,6 +1162,16 @@ public class OddsValueEngineService {
     void clearScrapeCacheForTest() {
         cachedScrape.set(null);
         scrapeInflight.set(false);
+        cachedRecs.clear();
+        cachedLiteRecs.clear();
+        recsInflight.clear();
+    }
+
+    /**
+     * Keep the latest sportsbook scrape, but discard every recommendation
+     * computed from older player statistics/ratings.
+     */
+    public void invalidateRecommendationsForFreshPlayerData() {
         cachedRecs.clear();
         cachedLiteRecs.clear();
         recsInflight.clear();

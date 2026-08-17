@@ -46,6 +46,15 @@ public class PaperTradeSession {
     @Column(name = "effective_model_family", length = 40)
     private String effectiveModelFamily;
 
+    @Column(name = "effective_artifact_checksum", length = 64)
+    private String effectiveArtifactChecksum;
+
+    @Column(name = "feature_schema_checksum", length = 64)
+    private String featureSchemaChecksum;
+
+    @Column(name = "calibration_id", length = 100)
+    private String calibrationId;
+
     @Column(name = "policy_version", length = 100)
     private String policyVersion;
 
@@ -127,6 +136,12 @@ public class PaperTradeSession {
     @Column(name = "closed_at")
     private LocalDateTime closedAt;
 
+    @Column(name = "frozen_run_summary", length = 4000)
+    private String frozenRunSummary;
+
+    @Column(name = "frozen_run_summary_checksum", length = 64)
+    private String frozenRunSummaryChecksum;
+
     @PrePersist
     void prePersist() {
         if (status == null || status.isBlank()) {
@@ -200,6 +215,30 @@ public class PaperTradeSession {
 
     public void setEffectiveModelFamily(String effectiveModelFamily) {
         this.effectiveModelFamily = effectiveModelFamily;
+    }
+
+    public String getEffectiveArtifactChecksum() {
+        return effectiveArtifactChecksum;
+    }
+
+    public void setEffectiveArtifactChecksum(String effectiveArtifactChecksum) {
+        this.effectiveArtifactChecksum = effectiveArtifactChecksum;
+    }
+
+    public String getFeatureSchemaChecksum() {
+        return featureSchemaChecksum;
+    }
+
+    public void setFeatureSchemaChecksum(String featureSchemaChecksum) {
+        this.featureSchemaChecksum = featureSchemaChecksum;
+    }
+
+    public String getCalibrationId() {
+        return calibrationId;
+    }
+
+    public void setCalibrationId(String calibrationId) {
+        this.calibrationId = calibrationId;
     }
 
     public String getPolicyVersion() {
@@ -416,5 +455,21 @@ public class PaperTradeSession {
 
     public void setClosedAt(LocalDateTime closedAt) {
         this.closedAt = closedAt;
+    }
+
+    public String getFrozenRunSummary() {
+        return frozenRunSummary;
+    }
+
+    public void setFrozenRunSummary(String frozenRunSummary) {
+        this.frozenRunSummary = frozenRunSummary;
+    }
+
+    public String getFrozenRunSummaryChecksum() {
+        return frozenRunSummaryChecksum;
+    }
+
+    public void setFrozenRunSummaryChecksum(String frozenRunSummaryChecksum) {
+        this.frozenRunSummaryChecksum = frozenRunSummaryChecksum;
     }
 }

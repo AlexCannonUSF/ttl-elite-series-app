@@ -163,6 +163,12 @@ public class PaperTradingService {
     @Value("${ttl.paper.maxStake:250.0}")
     private double maxStake;
 
+    @Value("${ttl.paper.fixedStake.enabled:true}")
+    private boolean fixedStakeEnabled;
+
+    @Value("${ttl.paper.fixedStake.amount:1.0}")
+    private double fixedStakeAmount;
+
     @Value("${ttl.paper.stakingUnitPct:0.025}")
     private double stakingUnitPct;
 
@@ -365,6 +371,9 @@ public class PaperTradingService {
 
     @Value("${ttl.paper.accuracyGuard.maxNoVigModelMarketGap:0.10}")
     private double accuracyGuardMaxNoVigModelMarketGap;
+
+    @Value("${ttl.paper.accuracyGuard.maxPositiveNoVigModelMarketGap:0.04}")
+    private double accuracyGuardMaxPositiveNoVigModelMarketGap;
 
     @Value("${ttl.paper.accuracyGuard.minRatingAgreement:0.65}")
     private double accuracyGuardMinRatingAgreement;
@@ -3841,6 +3850,12 @@ public class PaperTradingService {
             return "NO_VIG_MARKET_DISAGREEMENT_QUARANTINE";
         }
         if (accuracyGuardEnabled
+                && noVigMarketProbability != null
+                && candidate.modelProbability() - noVigMarketProbability
+                > clamp(accuracyGuardMaxPositiveNoVigModelMarketGap, 0.02, 0.10)) {
+            return "POSITIVE_NO_VIG_GAP_RESEARCH_ONLY";
+        }
+        if (accuracyGuardEnabled
                 && row.ratingAgreement() != null
                 && Double.isFinite(row.ratingAgreement())
                 && row.ratingAgreement() < clamp(accuracyGuardMinRatingAgreement, 0.50, 0.95)) {
@@ -4040,6 +4055,10 @@ public class PaperTradingService {
                                 int marketAmericanOdds,
                                 AdaptiveProfile adaptiveProfile) {
         double available = Math.max(0.0, bankroll);
+        if (fixedStakeEnabled) {
+            double fixed = round2(Math.max(0.01, fixedStakeAmount));
+            return available + EPS < fixed ? 0.0 : fixed;
+        }
         if (available <= minStake) {
             return 0.0;
         }
@@ -4265,6 +4284,18 @@ public class PaperTradingService {
         if (sessionId == null || row == null) {
             return;
         }
+        BetCandidate telemetryCandidate = candidate;
+        if (telemetryCandidate == null) {
+            telemetryCandidate = resolveCandidate(row, AdaptiveProfile.neutral()).candidate();
+        }
+        double telemetrySignalQuality = telemetryCandidate == null
+                ? candidateSignalQuality(row, TriggerAdaptiveSignal.neutral())
+                : telemetryCandidate.signalQuality();
+        double telemetrySelectionScore = selectionScore != null
+                ? selectionScore
+                : telemetryCandidate == null
+                ? 0.0
+                : scoreCandidate(row, telemetryCandidate, AdaptiveProfile.neutral());
         PaperTradeDecisionSample sample = new PaperTradeDecisionSample();
         String effectiveModelVersion = safeText(row.modelVersion(), modelVersion);
         sample.setSessionId(sessionId);
@@ -4280,8 +4311,8 @@ public class PaperTradingService {
         sample.setPlayer1Name(row.player1Name());
         sample.setPlayer2Id(row.player2Id());
         sample.setPlayer2Name(row.player2Name());
-        sample.setSidePlayerId(candidate == null ? null : candidate.sidePlayerId());
-        sample.setSideName(candidate == null ? row.suggestedSide() : candidate.sideName());
+        sample.setSidePlayerId(telemetryCandidate == null ? null : telemetryCandidate.sidePlayerId());
+        sample.setSideName(telemetryCandidate == null ? row.suggestedSide() : telemetryCandidate.sideName());
         sample.setTopTrigger(row.topTrigger());
         sample.setFeatureContributions(serializeFeatureContributions(row));
         sample.setOverallReliability(row.overallReliability());
@@ -4291,16 +4322,18 @@ public class PaperTradingService {
         sample.setRecommended(row.recommended());
         sample.setFallbackPick(fallbackPick);
         sample.setSuggestedEdge(valueOrZero(row.suggestedEdge()));
-        sample.setModelProbability(candidate == null ? null : candidate.modelProbability());
-        sample.setImpliedProbability(candidate == null ? null : candidate.impliedProbability());
-        sample.setSelectionScore(selectionScore == null ? null : round4(selectionScore));
-        sample.setSignalQuality(candidate == null ? null : round4(candidate.signalQuality()));
+        sample.setModelProbability(telemetryCandidate == null ? null : telemetryCandidate.modelProbability());
+        sample.setImpliedProbability(telemetryCandidate == null ? null : telemetryCandidate.impliedProbability());
+        sample.setSelectionScore(round4(telemetrySelectionScore));
+        sample.setSignalQuality(round4(telemetrySignalQuality));
         sample.setConfidenceWidth(round4(confidenceWidth(row)));
-        sample.setAmericanOdds(candidate == null ? null : candidate.americanOdds());
+        sample.setAmericanOdds(telemetryCandidate == null ? null : telemetryCandidate.americanOdds());
         sample.setProposedStake(proposedStake == null ? null : round2(proposedStake));
         sample.setCappedStake(cappedStake == null ? null : round2(cappedStake));
         sample.setDecisionStatus(safeText(decisionStatus, "SKIPPED"));
         sample.setDecisionReason(safeText(decisionReason, "UNKNOWN"));
+        sample.setGateResults(buildGateResults(
+                row, telemetryCandidate, telemetrySignalQuality, decisionStatus, decisionReason));
         decisionSampleRepository.save(sample);
         modelCallLedgerService.recordCall(
                 sessionId,
@@ -4312,6 +4345,58 @@ public class PaperTradingService {
                 decisionReason,
                 sample
         );
+    }
+
+    private String buildGateResults(LiveOddsRecommendationDto row,
+                                    BetCandidate candidate,
+                                    double signalQuality,
+                                    String decisionStatus,
+                                    String decisionReason) {
+        List<String> gates = new ArrayList<>();
+        if (candidate == null) {
+            gates.add("candidate=NA");
+        } else {
+            double probabilityFloor = clamp(accuracyGuardMinModelProbability, 0.50, 0.85);
+            gates.add(gate("model_probability", candidate.modelProbability() >= probabilityFloor,
+                    candidate.modelProbability(), probabilityFloor));
+            gates.add("plus_money=" + (accuracyGuardAllowPositiveOdds || candidate.americanOdds() <= 0 ? "PASS" : "FAIL"));
+
+            double rawGap = Math.abs(candidate.modelProbability() - candidate.impliedProbability());
+            double rawGapCap = clamp(accuracyGuardMaxModelMarketGap, 0.04, 0.25);
+            gates.add(gate("raw_market_gap", rawGap <= rawGapCap, rawGap, rawGapCap));
+
+            Double noVig = noVigMarketProbability(row, candidate.sidePlayerId());
+            if (noVig == null) {
+                gates.add("no_vig_available=FAIL");
+                gates.add("no_vig_abs_gap=NA");
+                gates.add("positive_no_vig_gap=NA");
+            } else {
+                double gap = candidate.modelProbability() - noVig;
+                double absCap = clamp(accuracyGuardMaxNoVigModelMarketGap, 0.03, 0.25);
+                double positiveCap = clamp(accuracyGuardMaxPositiveNoVigModelMarketGap, 0.02, 0.10);
+                gates.add("no_vig_available=PASS");
+                gates.add(gate("no_vig_abs_gap", Math.abs(gap) <= absCap, Math.abs(gap), absCap));
+                gates.add(gate("positive_no_vig_gap", gap <= positiveCap, gap, positiveCap));
+            }
+
+            double agreementFloor = clamp(accuracyGuardMinRatingAgreement, 0.50, 0.95);
+            if (row.ratingAgreement() == null || !Double.isFinite(row.ratingAgreement())) {
+                gates.add("rating_agreement=FAIL(value=NA)");
+            } else {
+                gates.add(gate("rating_agreement", row.ratingAgreement() >= agreementFloor,
+                        row.ratingAgreement(), agreementFloor));
+            }
+            double qualityFloor = clamp(accuracyGuardMinSignalQuality, 0.50, 0.90);
+            gates.add(gate("signal_quality", signalQuality >= qualityFloor, signalQuality, qualityFloor));
+        }
+        gates.add("decision=" + safeText(decisionStatus, "SKIPPED").toUpperCase(Locale.ROOT));
+        gates.add("reason=" + safeText(decisionReason, "UNKNOWN").toUpperCase(Locale.ROOT));
+        return String.join("|", gates);
+    }
+
+    private String gate(String name, boolean passed, double value, double threshold) {
+        return String.format(Locale.ROOT, "%s=%s(value=%.4f,threshold=%.4f)",
+                name, passed ? "PASS" : "FAIL", value, threshold);
     }
 
     // applyAdaptiveSnapshot promoted to AdaptiveProfile.applyTo(session, now)

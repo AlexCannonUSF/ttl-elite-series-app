@@ -53,6 +53,11 @@ class OddsSnapshotFactoryTests {
         assertEquals("match:70578852", snapshots.get(0).getBookerEventId());
         assertEquals(LocalDateTime.ofInstant(event.observedAt(), ZoneOffset.UTC), snapshots.get(0).getObservedAt());
         assertTrue(snapshots.get(0).getTrackedEventId().length() == 64);
+        double twoWayImplied = (1.0 / 1.74) + (1.0 / 2.15);
+        assertEquals((1.0 / 1.74) / twoWayImplied, snapshots.get(0).getNoVigProbability(), 0.0000001);
+        assertEquals((1.0 / 2.15) / twoWayImplied, snapshots.get(1).getNoVigProbability(), 0.0000001);
+        assertEquals(twoWayImplied - 1.0, snapshots.get(0).getMarketOverround(), 0.0000001);
+        assertEquals(snapshots.get(0).getMarketOverround(), snapshots.get(1).getMarketOverround());
     }
 
     @Test
@@ -76,6 +81,9 @@ class OddsSnapshotFactoryTests {
         assertEquals(HardRockFeedClient.SOURCE.id(), snapshots.get(0).getSourceId());
         assertEquals("corr-q-1", snapshots.get(0).getCorrelationId());
         assertEquals(1.0 / 1.74, snapshots.get(0).getImpliedProb(), 0.0000001);
+        assertEquals(1.0,
+                snapshots.get(0).getNoVigProbability() + snapshots.get(1).getNoVigProbability(),
+                0.0000001);
     }
 
     @Test

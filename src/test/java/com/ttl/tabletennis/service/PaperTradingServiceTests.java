@@ -145,6 +145,81 @@ class PaperTradingServiceTests {
         }
     }
 
+    @Test
+    void positiveNoVigGapAboveFourPointsRemainsResearchOnly() {
+        Player alpha = playerRepository.save(new Player("Directional", "Alpha"));
+        Player beta = playerRepository.save(new Player("Directional", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(125);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Directional Alpha vs Directional Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.72,
+                2.08,
+                -139,
+                108,
+                0.58,
+                0.48,
+                0.60,
+                0.40,
+                0.02,
+                -0.08,
+                -150,
+                150,
+                alpha.getName(),
+                0.02,
+                -150,
+                0.54,
+                0.68,
+                true,
+                "A",
+                "Positive model/no-vig gap must remain research-only",
+                "Glicko Rating Delta",
+                0.25,
+                0.90,
+                0.80,
+                0.90,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousEnabled = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardEnabled");
+        Object previousAbsoluteGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        Object previousPositiveGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap");
+        Object previousAgreement = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", true);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.10);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap", 0.04);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.65);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(0, result.betsPlaced());
+            assertEquals(1, result.betsSkipped());
+            assertTrue(result.session().decisionTelemetry().topSkipReasons().stream()
+                    .anyMatch(reason -> "POSITIVE_NO_VIG_GAP_RESEARCH_ONLY".equals(reason.reason())));
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", previousEnabled);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousAbsoluteGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap", previousPositiveGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousAgreement);
+        }
+    }
+
     @Autowired
     private PaperTradingService paperTradingService;
 

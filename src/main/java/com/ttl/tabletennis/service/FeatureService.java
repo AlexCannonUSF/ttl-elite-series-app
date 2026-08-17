@@ -22,6 +22,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -247,6 +248,16 @@ public class FeatureService {
                 intervalFromRd(p1.glickoRating(), p1.glickoRd()),
                 intervalFromRd(p2.glickoRating(), p2.glickoRd())
         );
+    }
+
+    /**
+     * Invalidates every derived player/H2H feature after persisted match data
+     * changes. Rating rebuilds can move opponents as well as the directly
+     * affected players, so a full clear is safer than a narrowly targeted one.
+     */
+    public void invalidateForFreshMatchData(Set<Long> affectedPlayerIds) {
+        playerFeatureCache.clear();
+        h2hCache.clear();
     }
 
     private PlayerFeature getPlayerFeature(Long playerId, LocalDate asOf) {

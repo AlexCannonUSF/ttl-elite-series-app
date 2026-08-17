@@ -13,6 +13,9 @@ public record ModelRunHistoryDto(LocalDateTime generatedAt,
                       String requestedModelVersion,
                       String effectiveModelVersion,
                       String effectiveModelFamily,
+                      String effectiveArtifactChecksum,
+                      String featureSchemaChecksum,
+                      String calibrationId,
                       String policyVersion,
                       String codeRevision,
                       LocalDateTime createdAt,
@@ -29,6 +32,7 @@ public record ModelRunHistoryDto(LocalDateTime generatedAt,
                       double totalStaked,
                       double realizedPnl,
                       double roiPct,
-                      double sampleReadinessPct) {
+                      double sampleReadinessPct,
+                      String frozenRunSummaryChecksum) {
     }
 }

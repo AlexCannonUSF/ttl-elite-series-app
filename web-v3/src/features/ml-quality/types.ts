@@ -138,6 +138,9 @@ export type ModelRun = {
   requestedModelVersion: string | null
   effectiveModelVersion: string | null
   effectiveModelFamily: string | null
+  effectiveArtifactChecksum: string | null
+  featureSchemaChecksum: string | null
+  calibrationId: string | null
   policyVersion: string | null
   codeRevision: string | null
   createdAt: string | null
@@ -155,6 +158,7 @@ export type ModelRun = {
   realizedPnl: number
   roiPct: number
   sampleReadinessPct: number
+  frozenRunSummaryChecksum: string | null
 }
 
 export type ModelRunHistory = {
@@ -179,4 +183,8 @@ export type ModelRegistryEntry = {
   active: boolean
   notes: string | null
   createdAt: string | null
+  artifactChecksum: string | null
+  featureSchemaChecksum: string | null
+  promotionStatus: 'RESEARCH' | 'SHADOW' | 'PROMOTION_FAILED' | 'APPROVED'
+  promotionReason: string | null
 }

@@ -7,6 +7,7 @@ import com.ttl.tabletennis.dto.ModelRunHistoryDto;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
+import com.ttl.tabletennis.exception.ResourceNotFoundException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +40,16 @@ public class ModelRunHistoryService {
                 .map(this::summarize)
                 .toList();
         return new ModelRunHistoryDto(LocalDateTime.now(), runs);
+    }
+
+    @Transactional(readOnly = true)
+    public ModelRunHistoryDto.Run run(long sessionId) {
+        if (sessionId <= 0) {
+            throw new IllegalArgumentException("Run id must be positive");
+        }
+        return sessionRepository.findById(sessionId)
+                .map(this::summarize)
+                .orElseThrow(() -> new ResourceNotFoundException("Run " + sessionId + " was not found"));
     }
 
     private ModelRunHistoryDto.Run summarize(PaperTradeSession session) {
@@ -93,6 +104,9 @@ public class ModelRunHistoryService {
                 session.getRequestedModelVersion(),
                 effective,
                 family,
+                session.getEffectiveArtifactChecksum(),
+                session.getFeatureSchemaChecksum(),
+                session.getCalibrationId(),
                 session.getPolicyVersion(),
                 session.getCodeRevision(),
                 session.getCreatedAt(),
@@ -109,7 +123,8 @@ public class ModelRunHistoryService {
                 round2(staked),
                 round2(pnl),
                 round2(roi),
-                Math.min(100.0, round2((settled / 100.0) * 100.0))
+                Math.min(100.0, round2((settled / 100.0) * 100.0)),
+                session.getFrozenRunSummaryChecksum()
         );
     }
 

@@ -20,6 +20,12 @@ import com.ttl.tabletennis.repository.PaperTradeDecisionSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeModelCallRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
+import com.ttl.tabletennis.service.ModelArtifactIdentityService;
+import com.ttl.tabletennis.service.ResearchOpportunityLedgerService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,6 +58,8 @@ import static com.ttl.tabletennis.service.papertrade.PaperTradingHelpers.safeTex
 @Service
 public class ModelCallLedgerService {
 
+    private static final Logger log = LoggerFactory.getLogger(ModelCallLedgerService.class);
+
     private static final double PROBABILITY_TIE_EPSILON = 0.000_001;
     private static final int MAX_RESULTS = 200;
     private static final Duration LIVE_OBSERVATION_STALE_AFTER = Duration.ofMinutes(3);
@@ -62,6 +70,11 @@ public class ModelCallLedgerService {
     private final TrackedMatchObservationRepository observationRepository;
     private final ModelCallViewerReviewRepository reviewRepository;
     private final PaperTradeDecisionSampleRepository decisionSampleRepository;
+    private ModelArtifactIdentityService modelArtifactIdentityService;
+    private ResearchOpportunityLedgerService researchOpportunityLedgerService;
+
+    @Value("${ttl.paper.modelIdentity.strictPinning:true}")
+    private boolean strictModelPinning;
 
     private volatile long watermarkCacheExpiresAtNanos;
     private volatile long cachedMatchIdHighWatermark;
@@ -79,6 +92,16 @@ public class ModelCallLedgerService {
         this.observationRepository = observationRepository;
         this.reviewRepository = reviewRepository;
         this.decisionSampleRepository = decisionSampleRepository;
+    }
+
+    @Autowired(required = false)
+    void setModelArtifactIdentityService(ModelArtifactIdentityService modelArtifactIdentityService) {
+        this.modelArtifactIdentityService = modelArtifactIdentityService;
+    }
+
+    @Autowired(required = false)
+    void setResearchOpportunityLedgerService(ResearchOpportunityLedgerService researchOpportunityLedgerService) {
+        this.researchOpportunityLedgerService = researchOpportunityLedgerService;
     }
 
     /**
@@ -111,6 +134,15 @@ public class ModelCallLedgerService {
         }
 
         String normalizedEventKey = eventKey.trim();
+        Optional<PaperTradeSession> owningSession = sessionRepository.findById(sessionId);
+        if (owningSession
+                .map(PaperTradeSession::getStatus)
+                .filter(PaperTradeSession.STATUS_CLOSED::equalsIgnoreCase)
+                .isPresent()) {
+            log.error("[model-call] rejected write to closed run session={} event={}",
+                    sessionId, normalizedEventKey);
+            return;
+        }
         Optional<PaperTradeModelCall> existing = callRepository.findBySessionIdAndEventKey(sessionId, normalizedEventKey);
         boolean alreadyFinished = row.matchCompleted() || row.resulted() || isFinishedPhase(row.matchPhase());
         if (existing.isEmpty() && alreadyFinished) {
@@ -121,6 +153,40 @@ public class ModelCallLedgerService {
         boolean incomingPrematch = !row.live();
         boolean storedPrematch = PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE.equals(call.getCaptureType());
         boolean refreshSnapshot = !alreadyFinished && (isNew || incomingPrematch);
+
+        String normalizedModelVersion = safeText(modelVersion, "").trim();
+        ModelArtifactIdentityService.ModelArtifactIdentity artifactIdentity = modelArtifactIdentityService == null
+                ? null
+                : modelArtifactIdentityService.resolve(normalizedModelVersion);
+        if (strictModelPinning) {
+            if (artifactIdentity == null || !artifactIdentity.complete()) {
+                log.warn("[model-call] rejected unresolvable/generic artifact session={} event={} model={}",
+                        sessionId, normalizedEventKey, normalizedModelVersion);
+                return;
+            }
+            if (owningSession.isEmpty()
+                    || !StringUtils.hasText(owningSession.get().getPolicyVersion())
+                    || !StringUtils.hasText(owningSession.get().getCodeRevision())) {
+                log.warn("[model-call] rejected incomplete session identity session={} event={}",
+                        sessionId, normalizedEventKey);
+                return;
+            }
+            if (decisionSample == null
+                    || finite(decisionSample.getSelectionScore()) == null
+                    || finite(decisionSample.getSignalQuality()) == null) {
+                log.warn("[model-call] rejected incomplete required telemetry session={} event={}",
+                        sessionId, normalizedEventKey);
+                return;
+            }
+            String pinned = owningSession.map(PaperTradeSession::getEffectiveModelVersion).orElse(null);
+            if (StringUtils.hasText(pinned)
+                    && !ModelArtifactIdentityService.isGenericSelector(pinned)
+                    && !pinned.equals(normalizedModelVersion)) {
+                log.warn("[model-call] rejected artifact drift session={} event={} pinned={} incoming={}",
+                        sessionId, normalizedEventKey, pinned, normalizedModelVersion);
+                return;
+            }
+        }
 
         if (isNew) {
             call.setSessionId(sessionId);
@@ -133,8 +199,9 @@ public class ModelCallLedgerService {
             call.setCompetitionName(safeText(row.competitionName(), "Table Tennis"));
             call.setSource(safeText(row.source(), "UNKNOWN"));
             call.setStrategy(safeText(strategy, "CONSERVATIVE"));
-            call.setModelVersion(safeText(modelVersion, "ENSEMBLE"));
-            updateSessionModelIdentity(sessionId, call.getModelVersion());
+            call.setModelVersion(safeText(normalizedModelVersion, "ENSEMBLE"));
+            applyArtifactIdentity(call, artifactIdentity, owningSession.orElse(null));
+            updateSessionModelIdentity(sessionId, call.getModelVersion(), artifactIdentity);
             call.setCaptureType(incomingPrematch
                     ? PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE
                     : PaperTradeModelCall.CAPTURE_LIVE_FIRST);
@@ -164,10 +231,16 @@ public class ModelCallLedgerService {
         if (call.getTopTrigger() == null && decisionSample != null) {
             applyPredictorSnapshot(call, row, decisionSample);
         }
-        callRepository.save(call);
+        call = callRepository.save(call);
+        if (researchOpportunityLedgerService != null && owningSession.isPresent()) {
+            researchOpportunityLedgerService.capture(owningSession.get(), call, decisionSample);
+        }
     }
 
-    private void updateSessionModelIdentity(Long sessionId, String effectiveVersion) {
+    private void updateSessionModelIdentity(
+            Long sessionId,
+            String effectiveVersion,
+            ModelArtifactIdentityService.ModelArtifactIdentity identity) {
         if (sessionId == null || !StringUtils.hasText(effectiveVersion)) {
             return;
         }
@@ -176,9 +249,29 @@ public class ModelCallLedgerService {
             if (!normalized.equals(session.getEffectiveModelVersion())) {
                 session.setEffectiveModelVersion(normalized);
                 session.setEffectiveModelFamily(inferModelFamily(normalized));
-                sessionRepository.save(session);
             }
+            if (identity != null && identity.complete()) {
+                session.setEffectiveArtifactChecksum(identity.artifactChecksum());
+                session.setFeatureSchemaChecksum(identity.featureSchemaChecksum());
+                session.setCalibrationId(identity.calibrationId());
+            }
+            sessionRepository.save(session);
         });
+    }
+
+    private static void applyArtifactIdentity(
+            PaperTradeModelCall call,
+            ModelArtifactIdentityService.ModelArtifactIdentity identity,
+            PaperTradeSession session) {
+        if (identity != null && identity.complete()) {
+            call.setArtifactChecksum(identity.artifactChecksum());
+            call.setFeatureSchemaChecksum(identity.featureSchemaChecksum());
+            call.setCalibrationId(identity.calibrationId());
+        }
+        if (session != null) {
+            call.setPolicyId(session.getPolicyVersion());
+            call.setCodeRevision(session.getCodeRevision());
+        }
     }
 
     private static String inferModelFamily(String version) {
@@ -200,7 +293,21 @@ public class ModelCallLedgerService {
             return emptyScorecard(take);
         }
 
-        PaperTradeSession session = activeSession.get();
+        return scorecard(activeSession.get(), take);
+    }
+
+    /**
+     * Historical equivalent of {@link #scorecard(int)}. The run id is
+     * explicit so research pages never silently fall back to the current
+     * active session when an operator is inspecting an older run.
+     */
+    @Transactional(readOnly = true)
+    public ModelCallScorecardDto scorecard(long sessionId, int limit) {
+        PaperTradeSession session = requireSession(sessionId);
+        return scorecard(session, clamp(limit, 5, MAX_RESULTS));
+    }
+
+    private ModelCallScorecardDto scorecard(PaperTradeSession session, int take) {
         List<PaperTradeModelCall> calls = callRepository.findBySessionIdOrderByCapturedAtDesc(session.getId());
         Map<Long, ModelCallViewerReview> latestReviews = latestReviews(session.getId());
         Map<String, TrackedMatchObservation> latestObservations = latestObservations(session.getId());
@@ -362,7 +469,16 @@ public class ModelCallLedgerService {
                 sessionRepository.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE);
         if (activeSession.isEmpty()) return emptyAnalytics();
 
-        PaperTradeSession session = activeSession.get();
+        return analytics(activeSession.get(), take);
+    }
+
+    /** Complete all-call analytics for one immutable historical run. */
+    @Transactional(readOnly = true)
+    public LiveRunAnalyticsDto analytics(long sessionId, int limit) {
+        return analytics(requireSession(sessionId), clamp(limit, 20, 500));
+    }
+
+    private LiveRunAnalyticsDto analytics(PaperTradeSession session, int take) {
         List<PaperTradeModelCall> calls = callRepository.findBySessionIdOrderByCapturedAtDesc(session.getId());
         Map<String, TrackedMatchObservation> observations = latestObservations(session.getId());
         Map<String, PaperTradeDecisionSample> decisions = latestDecisionSamples(session.getId());
@@ -526,7 +642,26 @@ public class ModelCallLedgerService {
                     0, 0, 0, 0, 0, 0, 0, List.of());
         }
 
-        PaperTradeSession session = activeSession.get();
+        return monitor(activeSession.get(), take);
+    }
+
+    /** Pipeline state and calls for one explicit run, active or closed. */
+    @Transactional(readOnly = true)
+    public ModelCallMonitorDto monitor(long sessionId, int limit) {
+        return monitor(requireSession(sessionId), clamp(limit, 5, MAX_RESULTS));
+    }
+
+    /**
+     * Complete immutable ledger for offline research jobs. This intentionally
+     * bypasses the interactive response cap; it must not be exposed as an
+     * unpaged browser endpoint.
+     */
+    @Transactional(readOnly = true)
+    public ModelCallMonitorDto monitorAllForResearch(long sessionId) {
+        return monitor(requireSession(sessionId), Integer.MAX_VALUE);
+    }
+
+    private ModelCallMonitorDto monitor(PaperTradeSession session, int take) {
         Map<Long, ModelCallViewerReview> reviews = latestReviews(session.getId());
         Map<String, TrackedMatchObservation> observations = latestObservations(session.getId());
         Map<String, PaperTradeDecisionSample> decisions = latestDecisionSamples(session.getId());
@@ -550,6 +685,14 @@ public class ModelCallLedgerService {
                 countStage(trackedCalls, "SYSTEM_CONFIRMED"),
                 countStage(trackedCalls, "RESULT_CONFLICT"),
                 List.copyOf(calls));
+    }
+
+    private PaperTradeSession requireSession(long sessionId) {
+        if (sessionId <= 0) {
+            throw new IllegalArgumentException("Run id must be positive");
+        }
+        return sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Run " + sessionId + " was not found"));
     }
 
     @Transactional(readOnly = true)
@@ -825,10 +968,14 @@ public class ModelCallLedgerService {
             call.setPredictedWinnerPlayerId(null);
             call.setPredictedWinnerName(null);
             call.setModelProbability(p1 == null || p2 == null ? null : Math.max(p1, p2));
+            call.setRawModelProbability(null);
             call.setModelFairAmericanOdds(null);
             call.setHardRockAmericanOdds(null);
             call.setOpponentHardRockAmericanOdds(null);
             call.setHardRockNoVigProbability(null);
+            call.setModelMarketNoVigGap(null);
+            call.setConfidenceLow(null);
+            call.setConfidenceHigh(null);
             return;
         }
 
@@ -838,6 +985,9 @@ public class ModelCallLedgerService {
                 ? safeText(row.player1Name(), "Player 1")
                 : safeText(row.player2Name(), "Player 2"));
         call.setModelProbability(player1 ? p1 : p2);
+        call.setRawModelProbability(finiteProbability(player1
+                ? row.rawModelProbabilityPlayer1()
+                : row.rawModelProbabilityPlayer2()));
         call.setModelFairAmericanOdds(player1
                 ? row.modelFairAmericanOddsPlayer1()
                 : row.modelFairAmericanOddsPlayer2());
@@ -848,6 +998,20 @@ public class ModelCallLedgerService {
         call.setHardRockNoVigProbability(totalImplied > 0.0
                 ? clamp(chosenImplied / totalImplied, 0.0, 1.0)
                 : null);
+        if (call.getHardRockNoVigProbability() != null) {
+            call.setModelMarketNoVigGap(call.getModelProbability() - call.getHardRockNoVigProbability());
+        } else {
+            call.setModelMarketNoVigGap(null);
+        }
+        Double p1Low = finiteProbability(row.modelConfidenceLowPlayer1());
+        Double p1High = finiteProbability(row.modelConfidenceHighPlayer1());
+        if (p1Low != null && p1High != null && p1Low <= p1High) {
+            call.setConfidenceLow(player1 ? p1Low : 1.0 - p1High);
+            call.setConfidenceHigh(player1 ? p1High : 1.0 - p1Low);
+        } else {
+            call.setConfidenceLow(null);
+            call.setConfidenceHigh(null);
+        }
     }
 
     private static void applyPredictorSnapshot(PaperTradeModelCall call,
@@ -868,6 +1032,7 @@ public class ModelCallLedgerService {
         call.setSelectionScore(sample == null ? null : finite(sample.getSelectionScore()));
         call.setSignalQuality(sample == null ? null : finite(sample.getSignalQuality()));
         call.setConfidenceWidth(sample == null ? null : finite(sample.getConfidenceWidth()));
+        call.setGateResults(sample == null ? null : sample.getGateResults());
     }
 
     private static PredictorSnapshot predictorSnapshot(PaperTradeModelCall call,

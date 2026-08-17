@@ -3,6 +3,9 @@ package com.ttl.tabletennis.config;
 import db.migration.V20260729001__phase_01_evidence_integrity;
 import db.migration.V20260729002__phase_02_score_backed_settlement;
 import db.migration.V20260807001__phase_04_learning_eligibility;
+import db.migration.V20260815001__odds_snapshot_no_vig_market;
+import db.migration.V20260815002__model_call_artifact_identity;
+import db.migration.V20260817001__research_run_foundation;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.migration.Context;
 import org.junit.jupiter.api.Test;
@@ -21,6 +24,75 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class FlywayMigrationTests {
+
+    @Test
+    void researchFoundationMigrationBackfillsOneSharedOpportunityWithoutSampleInflation() throws Exception {
+        String url = "jdbc:h2:mem:research-foundation-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE paper_trade_session (
+                        id BIGINT PRIMARY KEY, effective_model_family VARCHAR(40),
+                        effective_model_version VARCHAR(100), effective_artifact_checksum VARCHAR(64),
+                        feature_schema_checksum VARCHAR(64), calibration_id VARCHAR(100),
+                        policy_version VARCHAR(100), created_at TIMESTAMP NOT NULL)
+                    """);
+            statement.execute("""
+                    CREATE TABLE paper_trade_model_call (
+                        id BIGINT PRIMARY KEY, session_id BIGINT NOT NULL, event_key VARCHAR(320) NOT NULL,
+                        external_event_id VARCHAR(160), source_feed_event_id VARCHAR(160), event_name VARCHAR(220),
+                        competition_name VARCHAR(180), player1_id BIGINT, player2_id BIGINT,
+                        player1_name VARCHAR(180), player2_name VARCHAR(180), start_time_iso VARCHAR(80),
+                        capture_type VARCHAR(24), captured_at TIMESTAMP, match_id_high_watermark BIGINT,
+                        model_version VARCHAR(100), artifact_checksum VARCHAR(64), feature_schema_checksum VARCHAR(64),
+                        calibration_id VARCHAR(100), predicted_winner_player_id BIGINT,
+                        predicted_winner_name VARCHAR(180), model_probability DOUBLE, raw_model_probability DOUBLE,
+                        confidence_low DOUBLE, confidence_high DOUBLE, model_fair_american_odds INT,
+                        selection_score DOUBLE, signal_quality DOUBLE, top_trigger VARCHAR(180),
+                        feature_contributions VARCHAR(2400), decision_status VARCHAR(32),
+                        decision_reason VARCHAR(180), suggested_edge DOUBLE, hard_rock_no_vig_probability DOUBLE,
+                        hard_rock_american_odds INT, opponent_hard_rock_american_odds INT)
+                    """);
+            statement.execute("""
+                    INSERT INTO paper_trade_session VALUES
+                    (7, 'ENSEMBLE', 'model-r3', 'artifact', 'schema', 'PLATT', 'strict-r3',
+                     TIMESTAMP '2026-08-17 08:00:00')
+                    """);
+            statement.execute("""
+                    INSERT INTO paper_trade_model_call VALUES
+                    (11, 7, 'event-1', 'external-1', 'feed-1', 'Alpha vs Beta', 'TT Elite',
+                     1, 2, 'Alpha', 'Beta', '2026-08-17T09:00:00-04:00', 'PREMATCH_CLOSE',
+                     TIMESTAMP '2026-08-17 08:59:00', 100, 'model-r3', 'artifact', 'schema', 'PLATT',
+                     1, 'Alpha', 0.62, 0.61, 0.55, 0.69, -163, 5.1, 0.8, 'RATING_EDGE',
+                     'elo=0.20', 'SKIPPED', 'PRICE_GATE', 0.03, 0.58, -145, 125)
+                    """);
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260817001__research_run_foundation migration = new V20260817001__research_run_foundation();
+
+            migration.migrate(context);
+            migration.migrate(context);
+
+            DatabaseMetaData metadata = connection.getMetaData();
+            assertTrue(tableExists(metadata, "decision_opportunity"));
+            assertTrue(tableExists(metadata, "run_model_lane_evaluation"));
+            assertTrue(tableExists(metadata, "run_portfolio_decision"));
+            assertTrue(tableExists(metadata, "experiment_collection"));
+            try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM decision_opportunity")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+            try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM run_model_lane_evaluation")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+            try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM run_portfolio_decision")) {
+                assertTrue(rows.next());
+                assertEquals(2, rows.getInt(1));
+            }
+        }
+    }
 
     @Test
     void phase00MigrationCreatesShadowTablesAndAddsCorrelationColumns() throws Exception {
@@ -438,6 +510,88 @@ class FlywayMigrationTests {
         }
     }
 
+    @Test
+    void noVigMigrationBackfillsTimestampMatchedTwoWayPrices() throws Exception {
+        String url = "jdbc:h2:mem:no-vig-market-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE odds_snapshot (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        tracked_event_id VARCHAR(64) NOT NULL,
+                        side VARCHAR(4) NOT NULL,
+                        observed_at TIMESTAMP NOT NULL,
+                        implied_prob DOUBLE NOT NULL
+                    )
+                    """);
+            statement.execute("""
+                    INSERT INTO odds_snapshot (tracked_event_id, side, observed_at, implied_prob)
+                    VALUES ('event-1', 'P1', TIMESTAMP '2026-08-15 10:00:00', 0.55),
+                           ('event-1', 'P2', TIMESTAMP '2026-08-15 10:00:00', 0.50)
+                    """);
+
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260815001__odds_snapshot_no_vig_market migration =
+                    new V20260815001__odds_snapshot_no_vig_market();
+            migration.migrate(context);
+            migration.migrate(context);
+
+            try (ResultSet rows = statement.executeQuery("""
+                    SELECT side, no_vig_probability, market_overround
+                    FROM odds_snapshot ORDER BY side
+                    """)) {
+                assertTrue(rows.next());
+                assertEquals(0.55 / 1.05, rows.getDouble("no_vig_probability"), 1.0e-9);
+                assertEquals(0.05, rows.getDouble("market_overround"), 1.0e-9);
+                assertTrue(rows.next());
+                assertEquals(0.50 / 1.05, rows.getDouble("no_vig_probability"), 1.0e-9);
+            }
+        }
+    }
+
+    @Test
+    void artifactIdentityMigrationBackfillsAndRequiresFrozenTelemetry() throws Exception {
+        String url = "jdbc:h2:mem:artifact-identity-" + UUID.randomUUID()
+                + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+        try (Connection connection = DriverManager.getConnection(url, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE paper_trade_model_call (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        selection_score DOUBLE,
+                        signal_quality DOUBLE
+                    )
+                    """);
+            statement.execute("CREATE TABLE paper_trade_decision_sample (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("CREATE TABLE paper_trade_session (id BIGINT AUTO_INCREMENT PRIMARY KEY)");
+            statement.execute("INSERT INTO paper_trade_model_call (selection_score, signal_quality) VALUES (NULL, NULL)");
+
+            Context context = mock(Context.class);
+            when(context.getConnection()).thenReturn(connection);
+            V20260815002__model_call_artifact_identity migration =
+                    new V20260815002__model_call_artifact_identity();
+            migration.migrate(context);
+            migration.migrate(context);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertTrue(columnExists(metaData, "paper_trade_model_call", "artifact_checksum"));
+            assertTrue(columnExists(metaData, "paper_trade_model_call", "raw_model_probability"));
+            assertTrue(columnExists(metaData, "paper_trade_model_call", "gate_results"));
+            assertTrue(columnExists(metaData, "paper_trade_decision_sample", "gate_results"));
+            assertTrue(columnExists(metaData, "paper_trade_session", "frozen_run_summary_checksum"));
+            assertTrue(columnRequired(metaData, "paper_trade_model_call", "selection_score"));
+            assertTrue(columnRequired(metaData, "paper_trade_model_call", "signal_quality"));
+            try (ResultSet row = statement.executeQuery(
+                    "SELECT selection_score, signal_quality FROM paper_trade_model_call")) {
+                assertTrue(row.next());
+                assertEquals(0.0, row.getDouble("selection_score"));
+                assertEquals(0.0, row.getDouble("signal_quality"));
+            }
+        }
+    }
+
     private boolean tableExists(DatabaseMetaData metaData, String tableName) throws Exception {
         try (ResultSet rs = metaData.getTables(null, null, null, new String[]{"TABLE"})) {
             while (rs.next()) {
@@ -468,6 +622,18 @@ class FlywayMigrationTests {
                 if (matches(rs.getString("TABLE_NAME"), tableName)
                         && matches(rs.getString("INDEX_NAME"), indexName)) {
                     return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private boolean columnRequired(DatabaseMetaData metaData, String tableName, String columnName) throws Exception {
+        try (ResultSet rs = metaData.getColumns(null, null, null, null)) {
+            while (rs.next()) {
+                if (matches(rs.getString("TABLE_NAME"), tableName)
+                        && matches(rs.getString("COLUMN_NAME"), columnName)) {
+                    return "NO".equalsIgnoreCase(rs.getString("IS_NULLABLE"));
                 }
             }
             return false;

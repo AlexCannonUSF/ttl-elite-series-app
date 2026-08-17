@@ -39,6 +39,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -175,6 +177,13 @@ public class TtSeriesScraper {
     }
 
     public int scrapeAndSaveMatchDetails(List<String> postUrls) throws IOException {
+        if (activeRun.get() == null) {
+            return executeMutationRun("BULK_URLS", () -> scrapeAndSaveMatchDetailsInternal(postUrls));
+        }
+        return scrapeAndSaveMatchDetailsInternal(postUrls);
+    }
+
+    private int scrapeAndSaveMatchDetailsInternal(List<String> postUrls) throws IOException {
         if (postUrls == null || postUrls.isEmpty()) return 0;
 
         int savedTotal = 0;
@@ -632,11 +641,12 @@ public class TtSeriesScraper {
 
             if (changed) {
                 matchRepository.save(current);
+                recordMatchMutation(false, p1, p2);
                 log.debug("[scrape] updated match {}", externalId);
             } else {
                 log.debug("[scrape] skip {}, already in DB", externalId);
             }
-            return false;
+            return changed;
         }
 
         Match match = new Match();
@@ -647,13 +657,29 @@ public class TtSeriesScraper {
         MatchResultParser.applyToMatch(match, sanitizedResult);
 
         matchRepository.save(match);
-        lastSavedMatches.incrementAndGet();
-        ActiveRun run = activeRun.get();
-        if (run != null) {
-            run.savedMatches.incrementAndGet();
-        }
+        recordMatchMutation(true, p1, p2);
         log.debug("[scrape] saved match {} -> {} vs {}", externalId, row.player1Raw, row.player2Raw);
         return true;
+    }
+
+    private void recordMatchMutation(boolean created, Player player1, Player player2) {
+        lastSavedMatches.incrementAndGet();
+        ActiveRun run = activeRun.get();
+        if (run == null) {
+            return;
+        }
+        run.savedMatches.incrementAndGet();
+        if (created) {
+            run.newMatches.incrementAndGet();
+        } else {
+            run.updatedMatches.incrementAndGet();
+        }
+        if (player1 != null && player1.getId() != null) {
+            run.affectedPlayerIds.add(player1.getId());
+        }
+        if (player2 != null && player2.getId() != null) {
+            run.affectedPlayerIds.add(player2.getId());
+        }
     }
 
     private String sanitizeResultForPersistence(String rawResult, String postId, String externalId) {
@@ -1414,6 +1440,26 @@ public class TtSeriesScraper {
         }
     }
 
+    private int executeMutationRun(String mode, CheckedIntSupplier supplier) throws IOException {
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            if (!markStart(mode)) {
+                throw new IOException("Scrape already running. Wait for the active run to finish.");
+            }
+            try {
+                validateScraperConfig();
+                return supplier.getAsInt();
+            } catch (IOException ex) {
+                markError(ex);
+                throw ex;
+            } catch (Exception ex) {
+                markError(ex);
+                throw new IOException("Scrape failed: " + ex.getMessage(), ex);
+            } finally {
+                markFinish();
+            }
+        }
+    }
+
     private void validateScraperConfig() {
         if (!StringUtils.hasText(baseUrl)) {
             throw new IllegalStateException("Scraper configuration missing: ttl.baseUrl is empty.");
@@ -1498,18 +1544,19 @@ public class TtSeriesScraper {
             });
         }
 
-        // Fire the scrape-complete event so listeners (e.g. the
-        // ratings auto-rebuild listener) can react. Only fire on a
-        // successful run that actually added match rows — there's
-        // nothing for ratings to learn from a zero-row scrape.
+        // Publish every committed match mutation, even when a later request in
+        // the same batch failed. The saved rows are already durable and must be
+        // reflected in ratings/caches without waiting for another scrape run.
         if (eventPublisher != null
-                && "SUCCESS".equalsIgnoreCase(status)
                 && record.savedMatches() > 0) {
             try {
                 eventPublisher.publishEvent(new ScrapeCompletedEvent(
                         record.runId(),
                         record.mode(),
                         record.savedMatches(),
+                        run.newMatches.get(),
+                        run.updatedMatches.get(),
+                        run.affectedPlayerIds,
                         record.finishedAt()
                 ));
             } catch (RuntimeException ex) {
@@ -1620,12 +1667,20 @@ public class TtSeriesScraper {
         void run() throws Exception;
     }
 
+    @FunctionalInterface
+    private interface CheckedIntSupplier {
+        int getAsInt() throws Exception;
+    }
+
     private static final class ActiveRun {
         private final int runId;
         private final String mode;
         private final LocalDateTime startedAt;
         private final Long persistedRunId;
         private final AtomicInteger savedMatches = new AtomicInteger(0);
+        private final AtomicInteger newMatches = new AtomicInteger(0);
+        private final AtomicInteger updatedMatches = new AtomicInteger(0);
+        private final Set<Long> affectedPlayerIds = ConcurrentHashMap.newKeySet();
         private volatile String status = "RUNNING";
         private volatile String errorMessage;
 

@@ -6,6 +6,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SnapshotIndexCacheTests {
@@ -42,5 +43,10 @@ class SnapshotIndexCacheTests {
         assertEquals(27.0, cache.findTopTs2(1L, null).orElseThrow().mu());
         assertEquals(0.3, cache.findTopWl(1L, null).orElseThrow().rating());
         assertTrue(cache.findTopWl(2L, null).isEmpty());
+
+        jdbc.execute("DROP TABLE player_rating_ts2");
+        assertThrows(IllegalStateException.class, cache::refresh);
+        assertEquals(1510.0, cache.findTopRating(1L, "ELO", null).orElseThrow().rating(),
+                "a failed refresh must preserve the last coherent index generation");
     }
 }

@@ -100,9 +100,13 @@ class PlayerIdentityServiceTests {
 
     @Test
     void findCanonicalPlayerResolvesInitialPlusLastName() {
-        Player target = playerRepository.save(new Player("Alan", "Wos"));
+        // Keep this fixture unique across the shared Spring/H2 test context.
+        // Other integration tests may commit real-looking player names, which
+        // must not turn this initial-resolution unit into an order-dependent
+        // assertion about which duplicate canonical row was inserted first.
+        Player target = playerRepository.save(new Player("Alan", "InitialLookupFixture20260815"));
 
-        Optional<Player> resolved = playerIdentityService.findCanonicalPlayer("A. Wos");
+        Optional<Player> resolved = playerIdentityService.findCanonicalPlayer("A. InitialLookupFixture20260815");
 
         assertTrue(resolved.isPresent());
         assertEquals(target.getId(), resolved.get().getId());

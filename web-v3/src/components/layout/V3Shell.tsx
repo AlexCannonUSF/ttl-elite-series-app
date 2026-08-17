@@ -3,17 +3,15 @@ import {
   Activity,
   BrainCircuit,
   CircleDollarSign,
-  Database,
   Gauge,
-  GitCompareArrows,
   House,
-  RadioTower,
-  RefreshCw,
-  ShieldCheck,
-  SlidersHorizontal,
-  TrendingUp,
+  Star,
+  Rewind,
+  Rows3,
+  Trophy,
+  Users,
+  WalletCards,
   Waves,
-  Workflow,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 
@@ -31,21 +29,19 @@ type V3ShellProps = {
 }
 
 const userSections = [
-  { label: 'Live markets', icon: Activity, to: '/user' },
+  { label: 'Live', icon: Activity, to: '/user' },
+  { label: 'Simulation', icon: WalletCards, to: '/user/simulation' },
+  { label: 'Results', icon: Trophy, to: '/user/results' },
+  { label: 'Players', icon: Users, to: '/user/players' },
+  { label: 'Watchlist', icon: Star, to: '/user/watchlist' },
 ]
 
 const adminSections = [
   { label: 'Command', icon: Gauge, to: '/admin' },
-  { label: 'Live Run', icon: TrendingUp, to: '/admin/live-run' },
-  { label: 'Model', icon: BrainCircuit, to: '/admin/model-quality' },
-  { label: 'Pipeline', icon: Workflow, to: '/admin/pipeline' },
-  { label: 'Ops', icon: Waves, to: '/admin/ops' },
-  { label: 'Feeds', icon: RadioTower, to: '/admin/feeds' },
-  { label: 'Ingest', icon: RefreshCw, to: '/admin/ingest' },
-  { label: 'Streams', icon: SlidersHorizontal, to: '/admin/streams' },
-  { label: 'Settlement', icon: GitCompareArrows, to: '/admin/diffs' },
-  { label: 'Review', icon: ShieldCheck, to: '/admin/review' },
-  { label: 'Scraper', icon: Database, to: '/admin/scrape' },
+  { label: 'Runs', icon: Rows3, to: '/admin/runs' },
+  { label: 'Replay Lab', icon: Rewind, to: '/admin/replay' },
+  { label: 'Model Lab', icon: BrainCircuit, to: '/admin/model-quality' },
+  { label: 'Data & Ops', icon: Waves, to: '/admin/ops' },
 ]
 
 function inferAdmin(pathname: string) {

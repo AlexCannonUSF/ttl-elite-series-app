@@ -122,9 +122,14 @@ public class PredictionFacade {
                 (now - e.getValue().capturedAtMillis()) >= PREDICT_CACHE_TTL_MS);
     }
 
-    /** Test-only hook to wipe the prediction cache between cases. */
-    public void clearPredictCacheForTest() {
+    /** Wipe derived matchup predictions after ratings or match history changes. */
+    public void invalidateForFreshPlayerData() {
         predictCache.clear();
+    }
+
+    /** Test-only compatibility hook. */
+    public void clearPredictCacheForTest() {
+        invalidateForFreshPlayerData();
     }
 
     public List<ModelRegistryEntryDto> recentRegistry(String family, int limit) {

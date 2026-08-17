@@ -61,6 +61,21 @@ public class PaperTradeModelCall {
     @Column(name = "model_version", length = 80)
     private String modelVersion;
 
+    @Column(name = "artifact_checksum", length = 64)
+    private String artifactChecksum;
+
+    @Column(name = "feature_schema_checksum", length = 64)
+    private String featureSchemaChecksum;
+
+    @Column(name = "calibration_id", length = 100)
+    private String calibrationId;
+
+    @Column(name = "policy_id", length = 100)
+    private String policyId;
+
+    @Column(name = "code_revision", length = 80)
+    private String codeRevision;
+
     @Column(name = "capture_type", nullable = false, length = 24)
     private String captureType;
 
@@ -99,6 +114,9 @@ public class PaperTradeModelCall {
 
     @Column(name = "model_probability")
     private Double modelProbability;
+
+    @Column(name = "raw_model_probability")
+    private Double rawModelProbability;
 
     @Column(name = "model_fair_american_odds")
     private Integer modelFairAmericanOdds;
@@ -146,14 +164,26 @@ public class PaperTradeModelCall {
     @Column(name = "suggested_edge")
     private Double suggestedEdge;
 
-    @Column(name = "selection_score")
+    @Column(name = "selection_score", nullable = false)
     private Double selectionScore;
 
-    @Column(name = "signal_quality")
+    @Column(name = "signal_quality", nullable = false)
     private Double signalQuality;
 
     @Column(name = "confidence_width")
     private Double confidenceWidth;
+
+    @Column(name = "confidence_low")
+    private Double confidenceLow;
+
+    @Column(name = "confidence_high")
+    private Double confidenceHigh;
+
+    @Column(name = "model_market_no_vig_gap")
+    private Double modelMarketNoVigGap;
+
+    @Column(name = "gate_results", length = 1200)
+    private String gateResults;
 
     @PrePersist
     void prePersist() {
@@ -162,6 +192,12 @@ public class PaperTradeModelCall {
         }
         if (capturedAt == null) {
             capturedAt = LocalDateTime.now();
+        }
+        if (selectionScore == null || !Double.isFinite(selectionScore)) {
+            selectionScore = 0.0;
+        }
+        if (signalQuality == null || !Double.isFinite(signalQuality)) {
+            signalQuality = 0.0;
         }
     }
 
@@ -180,6 +216,16 @@ public class PaperTradeModelCall {
     public void setStrategy(String strategy) { this.strategy = strategy; }
     public String getModelVersion() { return modelVersion; }
     public void setModelVersion(String modelVersion) { this.modelVersion = modelVersion; }
+    public String getArtifactChecksum() { return artifactChecksum; }
+    public void setArtifactChecksum(String artifactChecksum) { this.artifactChecksum = artifactChecksum; }
+    public String getFeatureSchemaChecksum() { return featureSchemaChecksum; }
+    public void setFeatureSchemaChecksum(String featureSchemaChecksum) { this.featureSchemaChecksum = featureSchemaChecksum; }
+    public String getCalibrationId() { return calibrationId; }
+    public void setCalibrationId(String calibrationId) { this.calibrationId = calibrationId; }
+    public String getPolicyId() { return policyId; }
+    public void setPolicyId(String policyId) { this.policyId = policyId; }
+    public String getCodeRevision() { return codeRevision; }
+    public void setCodeRevision(String codeRevision) { this.codeRevision = codeRevision; }
     public String getCaptureType() { return captureType; }
     public void setCaptureType(String captureType) { this.captureType = captureType; }
     public LocalDateTime getCapturedAt() { return capturedAt; }
@@ -206,6 +252,8 @@ public class PaperTradeModelCall {
     public void setPredictedWinnerName(String predictedWinnerName) { this.predictedWinnerName = predictedWinnerName; }
     public Double getModelProbability() { return modelProbability; }
     public void setModelProbability(Double modelProbability) { this.modelProbability = modelProbability; }
+    public Double getRawModelProbability() { return rawModelProbability; }
+    public void setRawModelProbability(Double rawModelProbability) { this.rawModelProbability = rawModelProbability; }
     public Integer getModelFairAmericanOdds() { return modelFairAmericanOdds; }
     public void setModelFairAmericanOdds(Integer modelFairAmericanOdds) { this.modelFairAmericanOdds = modelFairAmericanOdds; }
     public Integer getHardRockAmericanOdds() { return hardRockAmericanOdds; }
@@ -242,4 +290,12 @@ public class PaperTradeModelCall {
     public void setSignalQuality(Double signalQuality) { this.signalQuality = signalQuality; }
     public Double getConfidenceWidth() { return confidenceWidth; }
     public void setConfidenceWidth(Double confidenceWidth) { this.confidenceWidth = confidenceWidth; }
+    public Double getConfidenceLow() { return confidenceLow; }
+    public void setConfidenceLow(Double confidenceLow) { this.confidenceLow = confidenceLow; }
+    public Double getConfidenceHigh() { return confidenceHigh; }
+    public void setConfidenceHigh(Double confidenceHigh) { this.confidenceHigh = confidenceHigh; }
+    public Double getModelMarketNoVigGap() { return modelMarketNoVigGap; }
+    public void setModelMarketNoVigGap(Double modelMarketNoVigGap) { this.modelMarketNoVigGap = modelMarketNoVigGap; }
+    public String getGateResults() { return gateResults; }
+    public void setGateResults(String gateResults) { this.gateResults = gateResults; }
 }

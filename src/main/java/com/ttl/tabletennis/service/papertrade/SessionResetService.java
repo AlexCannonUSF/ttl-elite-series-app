@@ -63,12 +63,7 @@ public class SessionResetService {
             List<PaperTradeSession> activeSessions =
                     sessionRepository.findByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE);
             if (!activeSessions.isEmpty()) {
-                LocalDateTime closedAt = LocalDateTime.now();
-                activeSessions.forEach(active -> {
-                    active.setStatus(PaperTradeSession.STATUS_CLOSED);
-                    active.setClosedAt(closedAt);
-                });
-                sessionLifecycleService.saveSessions(activeSessions);
+                sessionLifecycleService.closeSessions(activeSessions, LocalDateTime.now());
             }
 
             PaperTradeSession created = sessionLifecycleService.createSession(startingBankroll, label);

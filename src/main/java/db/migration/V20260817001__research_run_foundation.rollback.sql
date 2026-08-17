@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS experiment_run_link;
+DROP TABLE IF EXISTS experiment_collection;
+DROP TABLE IF EXISTS run_annotation;
+DROP TABLE IF EXISTS run_benchmark_evaluation;
+DROP TABLE IF EXISTS run_portfolio_decision;
+DROP TABLE IF EXISTS run_portfolio_definition;
+DROP TABLE IF EXISTS run_model_lane_evaluation;
+DROP TABLE IF EXISTS run_model_lane_definition;
+DROP TABLE IF EXISTS decision_opportunity;

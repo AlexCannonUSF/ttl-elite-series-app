@@ -36,6 +36,7 @@ import type {
   PaperTradeBet,
   PaperTradingSession,
 } from '@/features/live-studio/types'
+import { useWatchlist } from '@/features/watchlist/store'
 import { cn } from '@/lib/utils'
 
 const REFRESH_INTERVAL_MS = 8000
@@ -58,6 +59,7 @@ export function LiveBoardRoute() {
   const [matchupIntel, setMatchupIntel] = useState<MatchupAnalysis | null>(null)
   const [intelError, setIntelError] = useState<string | null>(null)
   const [intelLoading, setIntelLoading] = useState(false)
+  const { items: watchlist, toggle: toggleWatchlist } = useWatchlist()
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -155,6 +157,7 @@ export function LiveBoardRoute() {
   }, [loadBoard, strategy])
 
   const openBets = session?.openBetsList ?? []
+  const watchedMatchIds = useMemo(() => new Set(watchlist.filter((item) => item.kind === 'MATCH').map((item) => item.id)), [watchlist])
 
   const myPickByRow = useMemo(() => {
     const map = new Map<string, PaperTradeBet>()
@@ -273,39 +276,21 @@ export function LiveBoardRoute() {
         </>
       }
     >
-      <section className="user-board-banner overflow-hidden rounded-[30px] border border-emerald-300/15 p-5 text-white shadow-2xl shadow-black/20 sm:p-7">
-        <div className="grid items-end gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-2 rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-200">
-                <span className="size-1.5 animate-pulse rounded-full bg-rose-400" />
-                {diagnostics.liveRows} live now
-              </span>
-              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-200">
-                Hard Rock + no-vig fair + margin match
-              </span>
-            </div>
-            <h2 className="mt-5 max-w-3xl text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
-              The match room built for the decision, not the noise.
-            </h2>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-              Live matches stay first, then the schedule runs chronologically. Every market shows the price you can take,
-              our no-vig fair price, the same model price carrying Hard Rock's current hold, and the evidence that makes the difference credible—or says to pass.
-            </p>
+      <section className="user-board-banner overflow-hidden rounded-[24px] border border-emerald-300/15 p-4 text-white shadow-2xl shadow-black/20">
+        <div className="grid items-center gap-4 xl:grid-cols-[1fr_auto]">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em]">
+            <span className="inline-flex items-center gap-2 rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1.5 text-rose-200"><span className="size-1.5 animate-pulse rounded-full bg-rose-400" />{diagnostics.liveRows} live</span>
+            <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-emerald-200">{diagnostics.recommendedRows} value reads</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-slate-300">{session?.openBets ?? 0} official picks</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-slate-300">{diagnostics.totalRows} markets</span>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            <HeroMetric label="Markets" value={String(diagnostics.totalRows)} />
-            <HeroMetric label="Value reads" value={String(diagnostics.recommendedRows)} />
-            <HeroMetric label="Open picks" value={String(session?.openBets ?? 0)} />
-          </div>
+          <p className="text-xs text-slate-300">Hard Rock executable · fair price 0% margin · model-at-book-margin shown like-for-like</p>
         </div>
       </section>
 
       <div className="mt-5">
         <SessionRibbon />
       </div>
-
-      <ModelPerformanceScorecard />
 
       {error ? (
         <div className="mt-5 inline-flex items-center gap-2 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
@@ -383,8 +368,10 @@ export function LiveBoardRoute() {
                   key={rowKey(row)}
                   row={row}
                   myPick={myPickByRow.get(rowKey(row)) ?? null}
+                  watched={watchedMatchIds.has(rowKey(row))}
                   selected={selectedRow ? rowKey(selectedRow) === rowKey(row) : false}
                   onSelect={() => setSelectedKey(rowKey(row))}
+                  onToggleWatch={() => toggleWatchlist({ id: rowKey(row), kind: 'MATCH', label: `${row.player1Name} vs. ${row.player2Name}`, detail: `${row.competitionName} · ${formatStart(row.startTimeIso)}`, href: `/user/matches/${encodeURIComponent(matchDetailKey(row))}/prediction` })}
                 />
               ))}
             </div>
@@ -415,6 +402,8 @@ export function LiveBoardRoute() {
           )}
         </div>
       </section>
+
+      <ModelPerformanceScorecard />
     </V3Shell>
   )
 }
@@ -424,11 +413,15 @@ function MarketWatchCard({
   row,
   myPick,
   selected,
+  watched,
+  onToggleWatch,
 }: {
   onSelect: () => void
+  onToggleWatch: () => void
   row: LiveOddsRecommendation
   myPick: PaperTradeBet | null
   selected: boolean
+  watched: boolean
 }) {
   const sideP1 = row.suggestedSide === row.player1Name
   const sideP2 = row.suggestedSide === row.player2Name
@@ -439,8 +432,10 @@ function MarketWatchCard({
   const suggestedAtBookMargin = calculateModelPriceAtBookMargin(suggestedModelProbability, bookMargin)
 
   return (
-    <button
+    <article
       aria-pressed={selected}
+      role="button"
+      tabIndex={0}
       className={cn(
         'group w-full rounded-[22px] border p-4 text-left transition',
         selected
@@ -448,7 +443,7 @@ function MarketWatchCard({
           : 'border-[var(--line)] bg-white/60 hover:border-emerald-300 hover:bg-white',
       )}
       onClick={onSelect}
-      type="button"
+      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect() } }}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -456,9 +451,7 @@ function MarketWatchCard({
           {row.recommended ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-800"><Flame className="size-3" />Value</span> : null}
           {myPick ? <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700"><Star className="size-3" />My pick</span> : null}
         </div>
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">
-          <Clock3 className="size-3" />{formatTimeOnly(row.startTimeIso)}
-        </span>
+        <div className="flex items-center gap-2"><span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]"><Clock3 className="size-3" />{formatTimeOnly(row.startTimeIso)}</span><button aria-label={watched ? `Remove ${row.eventName} from watchlist` : `Add ${row.eventName} to watchlist`} aria-pressed={watched} className={cn('grid size-8 place-items-center rounded-xl border transition', watched ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-[var(--line)] bg-white text-[var(--ink-muted)] hover:border-amber-300 hover:text-amber-700')} onClick={(event) => { event.stopPropagation(); onToggleWatch() }} type="button"><Star className={cn('size-4', watched && 'fill-current')} /></button></div>
       </div>
 
       <div className="mt-3">
@@ -493,7 +486,7 @@ function MarketWatchCard({
         <CompactPrice label="Our fair · 0%" value={formatAmerican(suggestedFair)} detail={`${formatAmerican(suggestedAtBookMargin)} @ HR hold`} />
         <CompactPrice label="Bet edge" value={formatSignedPct(row.suggestedEdge)} detail="Model − offered" accent={(row.suggestedEdge ?? 0) > 0} />
       </div>
-    </button>
+    </article>
   )
 }
 
@@ -515,10 +508,6 @@ function CompactPrice({
       {detail ? <p className="mt-0.5 truncate text-[8px] text-[var(--ink-muted)]">{detail}</p> : null}
     </div>
   )
-}
-
-function HeroMetric({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-[18px] border border-white/10 bg-white/[0.05] p-3"><p className="font-mono text-xl font-bold">{value}</p><p className="mt-1 text-[9px] uppercase tracking-[0.15em] text-slate-400">{label}</p></div>
 }
 
 /** Match a board row to one of the user's open paper bets. */

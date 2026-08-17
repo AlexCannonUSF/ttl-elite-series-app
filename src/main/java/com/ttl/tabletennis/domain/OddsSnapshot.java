@@ -43,6 +43,12 @@ public class OddsSnapshot {
     @Column(name = "implied_prob", nullable = false)
     private double impliedProb;
 
+    @Column(name = "no_vig_probability")
+    private Double noVigProbability;
+
+    @Column(name = "market_overround")
+    private Double marketOverround;
+
     @Column(name = "market_state", nullable = false, length = 24)
     private String marketState;
 
@@ -118,6 +124,22 @@ public class OddsSnapshot {
 
     public void setImpliedProb(double impliedProb) {
         this.impliedProb = impliedProb;
+    }
+
+    public Double getNoVigProbability() {
+        return noVigProbability;
+    }
+
+    public void setNoVigProbability(Double noVigProbability) {
+        this.noVigProbability = noVigProbability;
+    }
+
+    public Double getMarketOverround() {
+        return marketOverround;
+    }
+
+    public void setMarketOverround(Double marketOverround) {
+        this.marketOverround = marketOverround;
     }
 
     public String getMarketState() {

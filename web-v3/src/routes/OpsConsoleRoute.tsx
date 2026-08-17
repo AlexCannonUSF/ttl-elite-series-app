@@ -10,6 +10,7 @@ import {
   RefreshCcw,
   ShieldCheck,
   TimerReset,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -122,11 +123,11 @@ export function OpsConsoleRoute() {
   return (
     <V3Shell
       eyebrow="TTLElite Series 3.0"
-      title="Ops Console"
-      description="One control-room page for feed health, ingestion pressure, stream-worker readiness, settlement replay, and manual-review backlog."
+      title="Data & Operations"
+      description="One control room for players and identity, feed health, ingestion pressure, stream workers, scraper state, settlement evidence, and manual review."
       badges={
         <>
-          <Badge variant="accent">Ops Console</Badge>
+          <Badge variant="accent">Data & Ops</Badge>
           <Badge>Auto Refresh 5s</Badge>
         </>
       }
@@ -194,6 +195,13 @@ export function OpsConsoleRoute() {
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
+            <AttentionLink
+              detail="Search canonical players, inspect ratings and form, and surface identity quality before model review."
+              icon={Users}
+              label="Open player intelligence"
+              to="/user/players"
+              tone="ok"
+            />
             <AttentionLink
               detail={`${posture.feedWatch} feed(s) outside healthy, ${formatNumber(posture.dlqDepth)} DLQ row(s).`}
               icon={RadioTower}

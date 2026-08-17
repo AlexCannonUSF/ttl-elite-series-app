@@ -8,6 +8,12 @@ import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -16,10 +22,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SessionLifecycleServiceTests {
+
+    @Test
+    void concurrentStartupCreatesExactlyOneActiveSession() throws Exception {
+        PaperTradeSessionRepository repo = mock(PaperTradeSessionRepository.class);
+        PaperTradingShadowService shadow = mock(PaperTradingShadowService.class);
+        AtomicReference<PaperTradeSession> active = new AtomicReference<>();
+        when(repo.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE))
+                .thenAnswer(invocation -> Optional.ofNullable(active.get()));
+        when(repo.save(any(PaperTradeSession.class))).thenAnswer(invocation -> {
+            PaperTradeSession session = invocation.getArgument(0);
+            active.set(session);
+            return session;
+        });
+
+        SessionLifecycleService service = new SessionLifecycleService(repo, shadow);
+        service.overrideDefaultStartingBankrollForTest(500.0);
+        int workers = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<PaperTradeSession>> futures = java.util.stream.IntStream.range(0, workers)
+                    .mapToObj(ignored -> pool.submit(() -> {
+                        ready.countDown();
+                        start.await(5, TimeUnit.SECONDS);
+                        return service.getOrCreateActiveSession();
+                    }))
+                    .toList();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            PaperTradeSession canonical = futures.get(0).get(5, TimeUnit.SECONDS);
+            for (Future<PaperTradeSession> future : futures) {
+                assertSame(canonical, future.get(5, TimeUnit.SECONDS));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        verify(repo, times(1)).save(any(PaperTradeSession.class));
+        verify(shadow, times(1)).mirrorSession(any(PaperTradeSession.class));
+    }
 
     @Test
     void getOrCreateActiveSession_returnsExistingActive() {
@@ -138,5 +186,27 @@ class SessionLifecycleServiceTests {
         ArgumentCaptor<List<PaperTradeSession>> captor = ArgumentCaptor.forClass(List.class);
         verify(shadow).mirrorSessions(captor.capture());
         assertSame(saved, captor.getValue(), "shadow receives the persisted list, not the input");
+    }
+
+    @Test
+    void applicationShutdownClosesTheActiveRun() {
+        PaperTradeSessionRepository repo = mock(PaperTradeSessionRepository.class);
+        PaperTradingShadowService shadow = mock(PaperTradingShadowService.class);
+        PaperTradeSession active = new PaperTradeSession();
+        active.setStatus(PaperTradeSession.STATUS_ACTIVE);
+        when(repo.findFirstByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE))
+                .thenReturn(Optional.of(active));
+        when(repo.save(active)).thenReturn(active);
+
+        SessionLifecycleService service = new SessionLifecycleService(repo, shadow);
+        service.closeActiveSessionOnShutdown();
+
+        assertEquals(PaperTradeSession.STATUS_CLOSED, active.getStatus());
+        assertNotNull(active.getClosedAt());
+        assertNotNull(active.getFrozenRunSummary());
+        assertNotNull(active.getFrozenRunSummaryChecksum());
+        assertEquals(64, active.getFrozenRunSummaryChecksum().length());
+        verify(repo).save(active);
+        verify(shadow).mirrorSession(active);
     }
 }

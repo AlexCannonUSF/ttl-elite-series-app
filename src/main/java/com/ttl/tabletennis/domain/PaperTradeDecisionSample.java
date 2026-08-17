@@ -127,6 +127,9 @@ public class PaperTradeDecisionSample {
     @Column(name = "decision_reason", nullable = false, length = 120)
     private String decisionReason;
 
+    @Column(name = "gate_results", length = 1200)
+    private String gateResults;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -429,6 +432,14 @@ public class PaperTradeDecisionSample {
 
     public void setDecisionReason(String decisionReason) {
         this.decisionReason = decisionReason;
+    }
+
+    public String getGateResults() {
+        return gateResults;
+    }
+
+    public void setGateResults(String gateResults) {
+        this.gateResults = gateResults;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -73,10 +73,13 @@ public class OddsSnapshotFactory {
         String rawPayloadRef = event == null ? "" : event.rawPayloadRef();
 
         List<OddsSnapshot> snapshots = new ArrayList<>(2);
+        double impliedA = impliedProbability(odds.getOddsA());
+        double impliedB = impliedProbability(odds.getOddsB());
+        double impliedTotal = impliedA > 0.0 && impliedB > 0.0 ? impliedA + impliedB : 0.0;
         maybeAddSnapshot(snapshots, trackedEventId, bookerEventId, matchKey, sourceId, marketState,
-                observedAt, correlationId, rawPayloadRef, SIDE_P1, odds.getOddsA());
+                observedAt, correlationId, rawPayloadRef, SIDE_P1, odds.getOddsA(), impliedA, impliedTotal);
         maybeAddSnapshot(snapshots, trackedEventId, bookerEventId, matchKey, sourceId, marketState,
-                observedAt, correlationId, rawPayloadRef, SIDE_P2, odds.getOddsB());
+                observedAt, correlationId, rawPayloadRef, SIDE_P2, odds.getOddsB(), impliedB, impliedTotal);
         return snapshots;
     }
 
@@ -97,12 +100,15 @@ public class OddsSnapshotFactory {
         LocalDateTime observedAt = observedAt(null, oddsQuote.getQuoteTimestampMs(), oddsQuote.getScrapedAt());
 
         List<OddsSnapshot> snapshots = new ArrayList<>(2);
+        double impliedP1 = impliedProbability(oddsQuote.getDecimalOddsPlayer1());
+        double impliedP2 = impliedProbability(oddsQuote.getDecimalOddsPlayer2());
+        double impliedTotal = impliedP1 > 0.0 && impliedP2 > 0.0 ? impliedP1 + impliedP2 : 0.0;
         maybeAddSnapshot(snapshots, trackedEventId, null, matchKey, sourceId, MARKET_OPEN,
                 observedAt, safeTrim(oddsQuote.getCorrelationId()), "",
-                SIDE_P1, oddsQuote.getDecimalOddsPlayer1());
+                SIDE_P1, oddsQuote.getDecimalOddsPlayer1(), impliedP1, impliedTotal);
         maybeAddSnapshot(snapshots, trackedEventId, null, matchKey, sourceId, MARKET_OPEN,
                 observedAt, safeTrim(oddsQuote.getCorrelationId()), "",
-                SIDE_P2, oddsQuote.getDecimalOddsPlayer2());
+                SIDE_P2, oddsQuote.getDecimalOddsPlayer2(), impliedP2, impliedTotal);
         return snapshots;
     }
 
@@ -116,7 +122,9 @@ public class OddsSnapshotFactory {
                                   String correlationId,
                                   String rawPayloadRef,
                                   String side,
-                                  double decimalOdds) {
+                                  double decimalOdds,
+                                  double impliedProbability,
+                                  double twoWayImpliedTotal) {
         if (decimalOdds <= 1.0) {
             return;
         }
@@ -127,13 +135,21 @@ public class OddsSnapshotFactory {
         snapshot.setMatchKey(matchKey);
         snapshot.setSide(side);
         snapshot.setPriceDecimal(decimalOdds);
-        snapshot.setImpliedProb(1.0 / decimalOdds);
+        snapshot.setImpliedProb(impliedProbability);
+        if (twoWayImpliedTotal > 0.0 && Double.isFinite(twoWayImpliedTotal)) {
+            snapshot.setNoVigProbability(impliedProbability / twoWayImpliedTotal);
+            snapshot.setMarketOverround(twoWayImpliedTotal - 1.0);
+        }
         snapshot.setMarketState(marketState);
         snapshot.setSourceId(sourceId);
         snapshot.setObservedAt(observedAt);
         snapshot.setCorrelationId(correlationId);
         snapshot.setRawPayloadRef(rawPayloadRef);
         snapshots.add(snapshot);
+    }
+
+    private double impliedProbability(double decimalOdds) {
+        return decimalOdds > 1.0 && Double.isFinite(decimalOdds) ? 1.0 / decimalOdds : 0.0;
     }
 
     String normalizeSourceId(String source) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ttl.tabletennis.domain.Match;
+import com.ttl.tabletennis.domain.OddsSnapshot;
 import com.ttl.tabletennis.domain.PaperTradeBet;
 import com.ttl.tabletennis.domain.PaperTradeLearningSample;
 import com.ttl.tabletennis.domain.PredictionModelRegistryEntry;
@@ -13,8 +14,10 @@ import com.ttl.tabletennis.dto.MatchupFeatureVectorDto;
 import com.ttl.tabletennis.dto.ModelRegistryEntryDto;
 import com.ttl.tabletennis.dto.ModelTrainingReportDto;
 import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.OddsSnapshotRepository;
 import com.ttl.tabletennis.repository.PaperTradeLearningSampleRepository;
 import com.ttl.tabletennis.repository.PredictionModelRegistryRepository;
+import com.ttl.tabletennis.util.NameUtils;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.PersistenceContext;
@@ -24,8 +27,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.time.format.DateTimeFormatter;
 import java.nio.charset.StandardCharsets;
@@ -37,12 +43,14 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -69,7 +77,12 @@ public class PredictionModelService {
     private static final double MAX_STANDARDIZED_FEATURE = 6.0;
     private static final DateTimeFormatter VERSION_TS = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final LocalDate MIN_REASONABLE_MATCH_DATE = LocalDate.of(2015, 1, 1);
-    private static final String MODEL_SCHEMA_VERSION = "java-prematch-v2";
+    /**
+     * R2.1 uses only antisymmetric inputs. Every feature changes sign when
+     * player order is reversed, which lets the complete predictor enforce
+     * P(A,B) = 1 - P(B,A) as a hard runtime invariant.
+     */
+    private static final String MODEL_SCHEMA_VERSION = "java-prematch-symmetric-v3";
 
     private static final String[] BASE_FEATURE_NAMES = new String[]{
             "Head-to-Head (Decayed)",
@@ -81,9 +94,6 @@ public class PredictionModelService {
             "Glicko Rating Delta",
             "Glicko RD Advantage",
             "Volatility Advantage",
-            "P1 Recent Form",
-            "P2 Recent Form",
-            "Form × H2H Interaction",
             "TrueSkill2 Probability Delta",
             "Weng-Lin Probability Delta",
             "Rater Ensemble Delta",
@@ -91,6 +101,7 @@ public class PredictionModelService {
     };
 
     private final MatchRepository matchRepository;
+    private final OddsSnapshotRepository oddsSnapshotRepository;
     private final FeatureService featureService;
     private final PaperTradeLearningSampleRepository learningSampleRepository;
     private final PredictionModelRegistryRepository registryRepository;
@@ -141,6 +152,24 @@ public class PredictionModelService {
     @Value("${ttl.prediction.requireMarketBenchmark:true}")
     private boolean requireMarketBenchmark;
 
+    @Value("${ttl.prediction.marketBenchmark.minSamples:500}")
+    private int marketBenchmarkMinSamples;
+
+    @Value("${ttl.prediction.marketBenchmark.minCoverage:0.99}")
+    private double marketBenchmarkMinCoverage;
+
+    @Value("${ttl.prediction.promotion.maxEce:0.03}")
+    private double promotionMaxEce;
+
+    @Value("${ttl.prediction.promotion.maxSideAccuracyGap:0.05}")
+    private double promotionMaxSideAccuracyGap;
+
+    @Value("${ttl.prediction.promotion.minFutureOutcomes:500}")
+    private int promotionMinFutureOutcomes;
+
+    @Value("${ttl.prediction.promotion.minFutureDays:5}")
+    private int promotionMinFutureDays;
+
     @Value("${ttl.prediction.minLiftForAdvanced:0.002}")
     private double minLiftForAdvanced;
 
@@ -155,6 +184,9 @@ public class PredictionModelService {
 
     @Value("${ttl.prediction.probabilityTemperature:1.25}")
     private double probabilityTemperature;
+
+    @Value("${ttl.prediction.calibrationTemperatureGrid:1.25,1.40,1.55,1.75}")
+    private String calibrationTemperatureGrid;
 
     @Value("${ttl.prediction.consensusShrink:0.35}")
     private double consensusShrink;
@@ -179,6 +211,18 @@ public class PredictionModelService {
 
     @Value("${ttl.prediction.sampleCiBoost:0.22}")
     private double sampleCiBoost;
+
+    @Value("${ttl.prediction.formFeatureCap:0.30}")
+    private double formFeatureCap;
+
+    @Value("${ttl.prediction.scheduleFeatureCap:0.25}")
+    private double scheduleFeatureCap;
+
+    @Value("${ttl.prediction.wengLinFeatureEnabled:false}")
+    private boolean wengLinFeatureEnabled;
+
+    @Value("${ttl.prediction.raterConsensusFeatureEnabled:false}")
+    private boolean raterConsensusFeatureEnabled;
 
     @Value("${ttl.prediction.liveLearningEnabled:true}")
     private boolean liveLearningEnabled;
@@ -223,11 +267,13 @@ public class PredictionModelService {
                                   FeatureService featureService,
                                   PaperTradeLearningSampleRepository learningSampleRepository,
                                   PredictionModelRegistryRepository registryRepository,
+                                  OddsSnapshotRepository oddsSnapshotRepository,
                                   ObjectMapper objectMapper) {
         this.matchRepository = matchRepository;
         this.featureService = featureService;
         this.learningSampleRepository = learningSampleRepository;
         this.registryRepository = registryRepository;
+        this.oddsSnapshotRepository = oddsSnapshotRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -324,6 +370,10 @@ public class PredictionModelService {
                 .stream()
                 .map(this::toRegistryDto)
                 .toList();
+    }
+
+    public String featureSchemaChecksum() {
+        return expectedFeatureSchemaHash();
     }
 
     public ModelTrainingReportDto latestTrainingReport() {
@@ -478,19 +528,21 @@ public class PredictionModelService {
             List<TrainingSample> test = split.test();
             List<Double> lambdas = parseLambdas();
 
-            double bestLambda = selectBestLambda(train, lambdas, FeatureSet.base());
+            CrossValidationSelection baseCv = selectBestLambda(train, lambdas, FeatureSet.base());
+            double bestLambda = baseCv.lambda();
             LogisticModel logistic = trainLogisticModel(train, bestLambda, FeatureSet.base(), trainEpochs, learningRate);
             CandidateMetrics logisticCalibration = evaluateCandidate(logistic, calibration);
             maybeCalibrate(logistic, calibration, logisticCalibration);
             logisticCalibration = evaluateCandidate(logistic, calibration)
-                    .withCalibrationMethod(logistic.calibrator == null ? "NONE" : "PLATT");
+                    .withCalibrationMethod(logistic.calibrationMethod());
 
-            double gbtLambda = selectBestLambda(train, lambdas, FeatureSet.gbtLike());
+            CrossValidationSelection gbtCv = selectBestLambda(train, lambdas, FeatureSet.gbtLike());
+            double gbtLambda = gbtCv.lambda();
             LogisticModel gbtLike = trainLogisticModel(train, gbtLambda, FeatureSet.gbtLike(), trainEpochs, learningRate);
             CandidateMetrics gbtCalibration = evaluateCandidate(gbtLike, calibration);
             maybeCalibrate(gbtLike, calibration, gbtCalibration);
             gbtCalibration = evaluateCandidate(gbtLike, calibration)
-                    .withCalibrationMethod(gbtLike.calibrator == null ? "NONE" : "PLATT");
+                    .withCalibrationMethod(gbtLike.calibrationMethod());
 
             RandomForestLikeModel rfLike = trainRandomForest(train, FeatureSet.base(), Math.max(10, rfTrees));
             CandidateMetrics rfCalibration = evaluateCandidate(rfLike, calibration);
@@ -508,9 +560,9 @@ public class PredictionModelService {
             CandidateMetrics selectedOnCalibration = ranked.get(0);
 
             CandidateMetrics logisticMetrics = evaluateCandidate(logistic, test)
-                    .withCalibrationMethod(logistic.calibrator == null ? "NONE" : "PLATT");
+                    .withCalibrationMethod(logistic.calibrationMethod());
             CandidateMetrics gbtMetrics = evaluateCandidate(gbtLike, test)
-                    .withCalibrationMethod(gbtLike.calibrator == null ? "NONE" : "PLATT");
+                    .withCalibrationMethod(gbtLike.calibrationMethod());
             CandidateMetrics rfMetrics = evaluateCandidate(rfLike, test);
             CandidateMetrics ensembleMetrics = evaluateCandidate(ensemble, test);
 
@@ -522,16 +574,40 @@ public class PredictionModelService {
             );
             CandidateMetrics champion = testByFamily.get(selectedOnCalibration.family);
             BenchmarkMetrics benchmarks = evaluateBenchmarks(train, test);
+            MarketBenchmarkMetrics marketBenchmark = evaluateMarketBenchmark(champion.model, test);
             boolean timeSliceStable = stableAcrossTimeSlices(champion.model, train, test);
             BootstrapStability bootstrap = bootstrapStability(champion.model, train, test);
-            boolean stable = timeSliceStable && bootstrap.passed();
+            SwapInvariantAudit swapAudit = auditSwapInvariance(champion.model, 10_000);
+            boolean stable = timeSliceStable && bootstrap.passed() && swapAudit.passed();
             boolean beatsKnownBaselines = champion.brierScore + minLiftForAdvanced < benchmarks.constantBrier()
                     && champion.brierScore + minLiftForAdvanced < benchmarks.eloBrier()
                     && champion.brierScore + minLiftForAdvanced < benchmarks.recentFormBrier();
-            boolean marketBenchmarkAvailable = false;
+            int untouchedOutcomes = originalOrientationSamples(test).size();
+            long untouchedDays = originalOrientationSamples(test).stream()
+                    .map(TrainingSample::matchDate)
+                    .distinct()
+                    .count();
+            boolean futureSampleGatePassed = untouchedOutcomes >= Math.max(100, promotionMinFutureOutcomes)
+                    && untouchedDays >= Math.max(3, promotionMinFutureDays);
+            boolean marketBenchmarkAvailable = marketBenchmark.coveredSamples() >= Math.max(50, marketBenchmarkMinSamples)
+                    && marketBenchmark.coverage() >= clamp(marketBenchmarkMinCoverage, 0.90, 1.0)
+                    && marketBenchmark.asOfViolations() == 0;
+            boolean beatsMarket = marketBenchmarkAvailable
+                    && champion.brierScore <= marketBenchmark.brierScore() + EPS
+                    && champion.logLoss <= marketBenchmark.logLoss() + EPS;
+            double expectedCalibrationError = expectedCalibrationError(champion.model, test, 10);
+            boolean calibrationGatePassed = expectedCalibrationError <= clamp(promotionMaxEce, 0.01, 0.10);
+            SideAccuracyAudit sideAccuracy = sideAccuracyAudit(champion.model, test);
+            boolean sideAccuracyGatePassed = sideAccuracy.marketControlledGap()
+                    <= clamp(promotionMaxSideAccuracyGap, 0.01, 0.20);
+            boolean groupedCvGatePassed = baseCv.usedFolds() >= 2 && gbtCv.usedFolds() >= 2;
             boolean promotionApproved = beatsKnownBaselines
                     && stable
-                    && (!requireMarketBenchmark || marketBenchmarkAvailable);
+                    && groupedCvGatePassed
+                    && futureSampleGatePassed
+                    && calibrationGatePassed
+                    && sideAccuracyGatePassed
+                    && (!requireMarketBenchmark || (marketBenchmarkAvailable && beatsMarket));
 
             LocalDate trainFrom = train.get(0).matchDate;
             LocalDate trainTo = train.get(train.size() - 1).matchDate;
@@ -544,6 +620,8 @@ public class PredictionModelService {
             releaseEvidence.put("datasetFingerprint", datasetFingerprint(samples));
             releaseEvidence.put("calibrationFrom", calibration.get(0).matchDate.toString());
             releaseEvidence.put("calibrationTo", calibration.get(calibration.size() - 1).matchDate.toString());
+            releaseEvidence.put("calibrationTemperatureGrid", parseCalibrationTemperatures());
+            releaseEvidence.put("selectedCalibrationMethod", champion.calibrationMethod);
             releaseEvidence.put("testFrom", valFrom.toString());
             releaseEvidence.put("testTo", valTo.toString());
             releaseEvidence.put("temporalGapDays", Math.max(0, temporalGapDays));
@@ -552,20 +630,58 @@ public class PredictionModelService {
             releaseEvidence.put("constantBrier", benchmarks.constantBrier());
             releaseEvidence.put("eloBrier", benchmarks.eloBrier());
             releaseEvidence.put("recentFormBrier", benchmarks.recentFormBrier());
-            releaseEvidence.put("marketBenchmark", "UNAVAILABLE_NO_HISTORICAL_CLOSING_PRICE_JOIN");
+            releaseEvidence.put("marketBenchmark", marketBenchmarkAvailable
+                    ? "TIMESTAMP_MATCHED_HARD_ROCK_NO_VIG"
+                    : "INSUFFICIENT_TIMESTAMP_MATCHED_HARD_ROCK_NO_VIG");
+            releaseEvidence.put("marketBenchmarkTotalSamples", marketBenchmark.totalSamples());
+            releaseEvidence.put("marketBenchmarkCoveredSamples", marketBenchmark.coveredSamples());
+            releaseEvidence.put("marketBenchmarkCoverage", marketBenchmark.coverage());
+            releaseEvidence.put("marketBenchmarkAsOfViolations", marketBenchmark.asOfViolations());
+            releaseEvidence.put("marketBrier", marketBenchmark.brierScore());
+            releaseEvidence.put("marketLogLoss", marketBenchmark.logLoss());
+            releaseEvidence.put("marketAccuracy", marketBenchmark.accuracy());
+            releaseEvidence.put("marketBenchmarkAvailable", marketBenchmarkAvailable);
+            releaseEvidence.put("beatsMarketBrierAndLogLoss", beatsMarket);
+            releaseEvidence.put("untouchedFutureOutcomes", untouchedOutcomes);
+            releaseEvidence.put("untouchedFutureDays", untouchedDays);
+            releaseEvidence.put("futureSampleGatePassed", futureSampleGatePassed);
+            releaseEvidence.put("expectedCalibrationError", expectedCalibrationError);
+            releaseEvidence.put("calibrationGatePassed", calibrationGatePassed);
+            releaseEvidence.put("player1WinnerAccuracy", sideAccuracy.player1WinnerAccuracy());
+            releaseEvidence.put("player2WinnerAccuracy", sideAccuracy.player2WinnerAccuracy());
+            releaseEvidence.put("playerSideRawAccuracyGap", sideAccuracy.rawGap());
+            releaseEvidence.put("playerSideAccuracyGap", sideAccuracy.marketControlledGap());
+            releaseEvidence.put("playerSideMarketControlledSamples", sideAccuracy.marketControlledSamples());
+            releaseEvidence.put("sideAccuracyGatePassed", sideAccuracyGatePassed);
+            releaseEvidence.put("playerPairGroupedWalkForwardCv", true);
+            releaseEvidence.put("groupedRegularization", true);
+            releaseEvidence.put("basePairGroupedCvFolds", baseCv.usedFolds());
+            releaseEvidence.put("gbtPairGroupedCvFolds", gbtCv.usedFolds());
+            releaseEvidence.put("groupedCvGatePassed", groupedCvGatePassed);
+            releaseEvidence.put("clusterBootstrapDimensions", List.of("date", "player", "player_pair"));
             releaseEvidence.put("timeSliceStabilityPassed", timeSliceStable);
             releaseEvidence.put("bootstrapSamples", bootstrap.samples());
             releaseEvidence.put("bootstrapConstantSkillLower95", bootstrap.constantSkillLower95());
             releaseEvidence.put("bootstrapEloSkillLower95", bootstrap.eloSkillLower95());
             releaseEvidence.put("bootstrapRecentFormSkillLower95", bootstrap.recentFormSkillLower95());
             releaseEvidence.put("bootstrapStabilityPassed", bootstrap.passed());
+            releaseEvidence.put("pairedTrainingAugmentation", true);
+            releaseEvidence.put("swapInvariantTrials", swapAudit.trials());
+            releaseEvidence.put("swapInvariantFailures", swapAudit.failures());
+            releaseEvidence.put("swapInvariantMaxProbabilityError", swapAudit.maxProbabilityError());
+            releaseEvidence.put("swapInvariantPassed", swapAudit.passed());
             releaseEvidence.put("stabilityPassed", stable);
             releaseEvidence.put("promotionApproved", promotionApproved);
             releaseEvidence.put("promotionReason", promotionApproved
-                    ? "PASSED_UNTOUCHED_TEST_AND_STABILITY_GATES"
+                    ? "PASSED_ALL_INTEGRITY_MARKET_AND_FUTURE_GATES"
                     : (!beatsKnownBaselines ? "FAILED_KNOWN_BASELINE_LIFT"
                     : (!stable ? "FAILED_TEMPORAL_STABILITY"
-                    : "MARKET_BENCHMARK_UNAVAILABLE")));
+                    : (!groupedCvGatePassed ? "FAILED_PAIR_GROUPED_CROSS_VALIDATION"
+                    : (!futureSampleGatePassed ? "INSUFFICIENT_FUTURE_OUTCOMES"
+                    : (!marketBenchmarkAvailable ? "MARKET_BENCHMARK_UNAVAILABLE"
+                    : (!beatsMarket ? "FAILED_MARKET_BENCHMARK"
+                    : (!calibrationGatePassed ? "FAILED_CALIBRATION_ECE"
+                    : "FAILED_PLAYER_SIDE_ACCURACY_GAP"))))))));
 
             Map<String, TrainedModel> trained = new HashMap<>();
             trained.put(FAMILY_LOGISTIC, persistCandidate(
@@ -578,7 +694,7 @@ public class PredictionModelService {
                     valTo,
                     logisticMetrics,
                     bestLambda,
-                    cvFolds,
+                    baseCv.usedFolds(),
                     promotionApproved && FAMILY_LOGISTIC.equals(championFamily),
                     "L2 logistic regression over historical feature vectors",
                     releaseEvidence
@@ -593,7 +709,7 @@ public class PredictionModelService {
                     valTo,
                     gbtMetrics,
                     gbtLambda,
-                    cvFolds,
+                    gbtCv.usedFolds(),
                     promotionApproved && FAMILY_GBT_LIKE.equals(championFamily),
                     "Non-linear feature expansion (GBDT-like surrogate)",
                     releaseEvidence
@@ -731,7 +847,8 @@ public class PredictionModelService {
                 glickoProbability,
                 gbtProbability,
                 rfProbability,
-                ensembleProbability
+                ensembleProbability,
+                clamp01(probabilityP1)
         );
     }
 
@@ -922,6 +1039,7 @@ public class PredictionModelService {
         }
 
         List<Match> matches = matchRepository.findCompletedMatchesBetween(from, to);
+        HistoricalMarketIndex marketIndex = historicalMarketIndex(from, to);
         Map<LocalDate, List<TrainingCandidate>> candidatesByDate = new LinkedHashMap<>();
         Map<String, Boolean> seenIdentities = new HashMap<>();
         for (Match match : matches) {
@@ -969,16 +1087,81 @@ public class PredictionModelService {
                 LocalDate asOf = date.minusDays(1);
                 MatchupFeatureVectorDto fv = featureService.buildMatchupFeatureVector(
                         match.getPlayer1().getId(), match.getPlayer2().getId(), asOf);
+                double[] features = toBaseFeatures(fv);
+                double sampleWeight = trainingSampleWeight(fv);
+                MarketObservation market = marketIndex.lookup(match);
+                String pairKey = canonicalPairKey(
+                        match.getPlayer1().getId(), match.getPlayer2().getId());
                 samples.add(new TrainingSample(
                         date,
-                        toBaseFeatures(fv),
+                        features,
                         candidate.label(),
-                        trainingSampleWeight(fv),
-                        candidate.identity()));
+                        sampleWeight,
+                        candidate.identity() + "|AB",
+                        pairKey,
+                        match.getPlayer1().getId(),
+                        match.getPlayer2().getId(),
+                        market == null ? null : market.player1NoVigProbability(),
+                        market == null ? null : market.observedAt(),
+                        market == null ? null : market.startAt()));
+                // Paired augmentation prevents player-order imbalance from
+                // leaking into the fitted intercept or feature coefficients.
+                samples.add(new TrainingSample(
+                        date,
+                        negate(features),
+                        1 - candidate.label(),
+                        sampleWeight,
+                        candidate.identity() + "|BA",
+                        pairKey,
+                        match.getPlayer2().getId(),
+                        match.getPlayer1().getId(),
+                        market == null ? null : 1.0 - market.player1NoVigProbability(),
+                        market == null ? null : market.observedAt(),
+                        market == null ? null : market.startAt()));
             }
         }
         samples.sort(Comparator.comparing(TrainingSample::matchDate));
         return samples;
+    }
+
+    private HistoricalMarketIndex historicalMarketIndex(LocalDate from, LocalDate to) {
+        LocalDateTime observedFrom = from.minusDays(14).atStartOfDay();
+        LocalDateTime observedTo = to.plusDays(2).atStartOfDay();
+        return HistoricalMarketIndex.from(
+                oddsSnapshotRepository.findHistoricalNoVigSnapshots(observedFrom, observedTo));
+    }
+
+    private static String canonicalPairKey(Long player1Id, Long player2Id) {
+        long left = player1Id == null ? Long.MIN_VALUE : player1Id;
+        long right = player2Id == null ? Long.MIN_VALUE : player2Id;
+        return Math.min(left, right) + ":" + Math.max(left, right);
+    }
+
+    private static String marketPairDateKey(String player1, String player2, LocalDate date) {
+        String left = NameUtils.normalizeForLookup(player1);
+        String right = NameUtils.normalizeForLookup(player2);
+        String pair = left.compareTo(right) <= 0 ? left + "|" + right : right + "|" + left;
+        return pair + "|" + date;
+    }
+
+    private static LocalDateTime parseMarketStart(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String normalized = value.trim();
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(normalized), ZoneOffset.UTC);
+        } catch (RuntimeException ignored) {
+            // Continue through the other supported ISO representations.
+        }
+        try {
+            return OffsetDateTime.parse(normalized).withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+        } catch (RuntimeException ignored) {
+            // Continue to an explicitly zone-less timestamp.
+        }
+        try {
+            return LocalDateTime.parse(normalized);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private String stableMatchIdentity(Match match) {
@@ -1108,6 +1291,149 @@ public class PredictionModelService {
         );
     }
 
+    private MarketBenchmarkMetrics evaluateMarketBenchmark(PredictModel model,
+                                                            List<TrainingSample> test) {
+        List<TrainingSample> originals = originalOrientationSamples(test);
+        int total = originals.size();
+        int covered = 0;
+        int correct = 0;
+        int asOfViolations = 0;
+        double brier = 0.0;
+        double logLoss = 0.0;
+        double weightSum = 0.0;
+        for (TrainingSample sample : originals) {
+            Double market = sample.marketProbability();
+            if (market == null || !Double.isFinite(market)) {
+                continue;
+            }
+            covered++;
+            if (sample.marketObservedAt() == null
+                    || sample.marketStartAt() == null
+                    || !sample.marketObservedAt().isBefore(sample.marketStartAt())) {
+                asOfViolations++;
+                continue;
+            }
+            double probability = clampProbability(market);
+            double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+            weightSum += weight;
+            brier += weight * Math.pow(probability - sample.label(), 2.0);
+            logLoss += weight * (-(sample.label() * Math.log(probability)
+                    + (1 - sample.label()) * Math.log(1.0 - probability)));
+            if ((probability >= 0.5) == (sample.label() == 1)) {
+                correct++;
+            }
+        }
+        double validCovered = Math.max(0, covered - asOfViolations);
+        return new MarketBenchmarkMetrics(
+                total,
+                (int) validCovered,
+                total == 0 ? 0.0 : validCovered / total,
+                weightSum <= EPS ? Double.POSITIVE_INFINITY : brier / weightSum,
+                weightSum <= EPS ? Double.POSITIVE_INFINITY : logLoss / weightSum,
+                validCovered <= 0 ? 0.0 : correct / validCovered,
+                asOfViolations
+        );
+    }
+
+    private List<TrainingSample> originalOrientationSamples(List<TrainingSample> samples) {
+        return samples.stream()
+                .filter(sample -> sample.identity().endsWith("|AB"))
+                .toList();
+    }
+
+    private double expectedCalibrationError(PredictModel model,
+                                            List<TrainingSample> samples,
+                                            int requestedBins) {
+        List<TrainingSample> originals = originalOrientationSamples(samples);
+        if (originals.isEmpty()) return 1.0;
+        int bins = clamp(requestedBins, 5, 20);
+        double[] predicted = new double[bins];
+        double[] observed = new double[bins];
+        double[] weights = new double[bins];
+        for (TrainingSample sample : originals) {
+            double probability = clampProbability(model.predict(sample.baseFeatures()));
+            int bin = Math.min(bins - 1, (int) Math.floor(probability * bins));
+            double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+            predicted[bin] += probability * weight;
+            observed[bin] += sample.label() * weight;
+            weights[bin] += weight;
+        }
+        double total = Arrays.stream(weights).sum();
+        double ece = 0.0;
+        for (int i = 0; i < bins; i++) {
+            if (weights[i] <= EPS) continue;
+            ece += (weights[i] / Math.max(EPS, total))
+                    * Math.abs((predicted[i] / weights[i]) - (observed[i] / weights[i]));
+        }
+        return ece;
+    }
+
+    private SideAccuracyAudit sideAccuracyAudit(PredictModel model,
+                                                List<TrainingSample> samples) {
+        final int marketBins = 10;
+        int[] p1BinSamples = new int[marketBins];
+        int[] p2BinSamples = new int[marketBins];
+        int[] p1BinCorrect = new int[marketBins];
+        int[] p2BinCorrect = new int[marketBins];
+        int player1WinnerSamples = 0;
+        int player2WinnerSamples = 0;
+        int player1WinnerCorrect = 0;
+        int player2WinnerCorrect = 0;
+        for (TrainingSample sample : originalOrientationSamples(samples)) {
+            boolean predictedP1 = model.predict(sample.baseFeatures()) >= 0.5;
+            if (sample.label() == 1) {
+                player1WinnerSamples++;
+                if (predictedP1) player1WinnerCorrect++;
+            } else {
+                player2WinnerSamples++;
+                if (!predictedP1) player2WinnerCorrect++;
+            }
+            if (sample.marketProbability() != null
+                    && Double.isFinite(sample.marketProbability())
+                    && sample.marketProbability() > 0.0
+                    && sample.marketProbability() < 1.0) {
+                double actualWinnerMarketProbability = sample.label() == 1
+                        ? sample.marketProbability()
+                        : 1.0 - sample.marketProbability();
+                int bin = Math.min(marketBins - 1,
+                        Math.max(0, (int) Math.floor(actualWinnerMarketProbability * marketBins)));
+                if (sample.label() == 1) {
+                    p1BinSamples[bin]++;
+                    if (predictedP1) p1BinCorrect[bin]++;
+                } else {
+                    p2BinSamples[bin]++;
+                    if (!predictedP1) p2BinCorrect[bin]++;
+                }
+            }
+        }
+        double p1Accuracy = player1WinnerSamples == 0 ? 0.0
+                : (double) player1WinnerCorrect / player1WinnerSamples;
+        double p2Accuracy = player2WinnerSamples == 0 ? 0.0
+                : (double) player2WinnerCorrect / player2WinnerSamples;
+        double rawGap = player1WinnerSamples == 0 || player2WinnerSamples == 0
+                ? 1.0
+                : Math.abs(p1Accuracy - p2Accuracy);
+        double controlledGapSum = 0.0;
+        int controlledSamples = 0;
+        for (int bin = 0; bin < marketBins; bin++) {
+            int balancedWeight = Math.min(p1BinSamples[bin], p2BinSamples[bin]);
+            if (balancedWeight == 0) continue;
+            double p1BinAccuracy = (double) p1BinCorrect[bin] / p1BinSamples[bin];
+            double p2BinAccuracy = (double) p2BinCorrect[bin] / p2BinSamples[bin];
+            controlledGapSum += balancedWeight * Math.abs(p1BinAccuracy - p2BinAccuracy);
+            controlledSamples += balancedWeight;
+        }
+        double marketControlledGap = controlledSamples == 0
+                ? 1.0
+                : controlledGapSum / controlledSamples;
+        return new SideAccuracyAudit(
+                p1Accuracy,
+                p2Accuracy,
+                rawGap,
+                marketControlledGap,
+                controlledSamples * 2);
+    }
+
     private double constantProbability(List<TrainingSample> train) {
         double weightedWins = 0.0;
         double trainWeight = 0.0;
@@ -1148,45 +1474,84 @@ public class PredictionModelService {
                                                    List<TrainingSample> train,
                                                    List<TrainingSample> test) {
         final int samples = 500;
-        if (test.size() < 30) {
+        List<TrainingSample> originals = originalOrientationSamples(test);
+        if (originals.size() < 30) {
             return new BootstrapStability(false, 0, -1.0, -1.0, -1.0);
         }
         double constant = constantProbability(train);
-        Random random = new Random(0x54544c4d4f44454cL);
-        List<Double> constantSkill = new ArrayList<>(samples);
-        List<Double> eloSkill = new ArrayList<>(samples);
-        List<Double> recentFormSkill = new ArrayList<>(samples);
-        for (int iteration = 0; iteration < samples; iteration++) {
+        ClusterSkillBounds byDate = bootstrapClusterSkill(
+                model, originals, constant, samples, 0x54544c44415445L,
+                sample -> Set.of(sample.matchDate().toString()));
+        ClusterSkillBounds byPair = bootstrapClusterSkill(
+                model, originals, constant, samples, 0x54544c50414952L,
+                sample -> Set.of(sample.pairKey()));
+        ClusterSkillBounds byPlayer = bootstrapClusterSkill(
+                model, originals, constant, samples, 0x54544c504c4159L,
+                sample -> Set.of("P:" + sample.player1Id(), "P:" + sample.player2Id()));
+        double constantLower = Math.min(byDate.constantLower95(),
+                Math.min(byPair.constantLower95(), byPlayer.constantLower95()));
+        double eloLower = Math.min(byDate.eloLower95(),
+                Math.min(byPair.eloLower95(), byPlayer.eloLower95()));
+        double recentLower = Math.min(byDate.recentLower95(),
+                Math.min(byPair.recentLower95(), byPlayer.recentLower95()));
+        boolean passed = byDate.valid() && byPair.valid() && byPlayer.valid()
+                && constantLower > minLiftForAdvanced
+                && eloLower > minLiftForAdvanced
+                && recentLower > minLiftForAdvanced;
+        return new BootstrapStability(passed, samples, constantLower, eloLower, recentLower);
+    }
+
+    private ClusterSkillBounds bootstrapClusterSkill(
+            PredictModel model,
+            List<TrainingSample> samples,
+            double constant,
+            int iterations,
+            long seed,
+            Function<TrainingSample, Set<String>> clusterKeys) {
+        Map<String, List<TrainingSample>> clusters = new LinkedHashMap<>();
+        for (TrainingSample sample : samples) {
+            for (String key : clusterKeys.apply(sample)) {
+                clusters.computeIfAbsent(key, ignored -> new ArrayList<>()).add(sample);
+            }
+        }
+        if (clusters.size() < 3) {
+            return ClusterSkillBounds.invalid();
+        }
+        List<List<TrainingSample>> groups = new ArrayList<>(clusters.values());
+        Random random = new Random(seed);
+        List<Double> constantSkill = new ArrayList<>(iterations);
+        List<Double> eloSkill = new ArrayList<>(iterations);
+        List<Double> recentFormSkill = new ArrayList<>(iterations);
+        for (int iteration = 0; iteration < iterations; iteration++) {
             double modelLoss = 0.0;
             double constantLoss = 0.0;
             double eloLoss = 0.0;
             double recentFormLoss = 0.0;
             double weightSum = 0.0;
-            for (int draw = 0; draw < test.size(); draw++) {
-                TrainingSample sample = test.get(random.nextInt(test.size()));
-                double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
-                double label = sample.label();
-                double modelProbability = clampProbability(model.predict(sample.baseFeatures()));
-                double eloProbability = clampProbability(0.5 + sample.baseFeatures()[4]);
-                double recentProbability = clampProbability(0.5 + sample.baseFeatures()[1]);
-                weightSum += weight;
-                modelLoss += weight * Math.pow(modelProbability - label, 2.0);
-                constantLoss += weight * Math.pow(constant - label, 2.0);
-                eloLoss += weight * Math.pow(eloProbability - label, 2.0);
-                recentFormLoss += weight * Math.pow(recentProbability - label, 2.0);
+            for (int draw = 0; draw < groups.size(); draw++) {
+                for (TrainingSample sample : groups.get(random.nextInt(groups.size()))) {
+                    double weight = clamp(sample.sampleWeight(), 0.05, 3.0);
+                    double label = sample.label();
+                    double modelProbability = clampProbability(model.predict(sample.baseFeatures()));
+                    double eloProbability = clampProbability(0.5 + sample.baseFeatures()[4]);
+                    double recentProbability = clampProbability(0.5 + sample.baseFeatures()[1]);
+                    weightSum += weight;
+                    modelLoss += weight * Math.pow(modelProbability - label, 2.0);
+                    constantLoss += weight * Math.pow(constant - label, 2.0);
+                    eloLoss += weight * Math.pow(eloProbability - label, 2.0);
+                    recentFormLoss += weight * Math.pow(recentProbability - label, 2.0);
+                }
             }
             double divisor = Math.max(EPS, weightSum);
             constantSkill.add((constantLoss - modelLoss) / divisor);
             eloSkill.add((eloLoss - modelLoss) / divisor);
             recentFormSkill.add((recentFormLoss - modelLoss) / divisor);
         }
-        double constantLower = lowerFivePercentile(constantSkill);
-        double eloLower = lowerFivePercentile(eloSkill);
-        double recentLower = lowerFivePercentile(recentFormSkill);
-        boolean passed = constantLower > minLiftForAdvanced
-                && eloLower > minLiftForAdvanced
-                && recentLower > minLiftForAdvanced;
-        return new BootstrapStability(passed, samples, constantLower, eloLower, recentLower);
+        return new ClusterSkillBounds(
+                lowerFivePercentile(constantSkill),
+                lowerFivePercentile(eloSkill),
+                lowerFivePercentile(recentFormSkill),
+                true);
     }
 
     private double lowerFivePercentile(List<Double> values) {
@@ -1201,12 +1566,42 @@ public class PredictionModelService {
         for (TrainingSample sample : samples) {
             canonical.append('|').append(sample.identity())
                     .append('|').append(sample.matchDate())
-                    .append('|').append(sample.label());
+                    .append('|').append(sample.label())
+                    .append('|').append(sample.pairKey())
+                    .append('|').append(sample.marketProbability())
+                    .append('|').append(sample.marketObservedAt())
+                    .append('|').append(sample.marketStartAt());
             for (double value : sample.baseFeatures()) {
                 canonical.append('|').append(String.format(Locale.ROOT, "%.8f", value));
             }
         }
         return sha256(canonical.toString());
+    }
+
+    /**
+     * Release-blocking property audit over randomized antisymmetric feature
+     * vectors. The hard predictor wrapper should make every probability pair
+     * complementary to machine precision, independent of model family.
+     */
+    private SwapInvariantAudit auditSwapInvariance(PredictModel model, int requestedTrials) {
+        int trials = Math.max(10_000, requestedTrials);
+        Random random = new Random(0x52_32_31L);
+        int failures = 0;
+        double maxError = 0.0;
+        for (int i = 0; i < trials; i++) {
+            double[] forward = new double[BASE_FEATURE_NAMES.length];
+            for (int j = 0; j < forward.length; j++) {
+                forward[j] = (random.nextDouble() * 2.0) - 1.0;
+            }
+            double pForward = clamp01(model.predict(forward));
+            double pReverse = clamp01(model.predict(negate(forward)));
+            double error = Math.abs((pForward + pReverse) - 1.0);
+            maxError = Math.max(maxError, error);
+            if (!Double.isFinite(error) || error > 1.0e-6) {
+                failures++;
+            }
+        }
+        return new SwapInvariantAudit(trials, failures, maxError, failures == 0);
     }
 
     private String sha256(String value) {
@@ -1238,24 +1633,34 @@ public class PredictionModelService {
         double scheduleReliability = Math.min(p1ScheduleReliability, p2ScheduleReliability);
 
         double h2hDelta = (fv.headToHeadWinRatePlayer1() - 0.5) * h2hReliability;
-        double recentDiff = (fv.player1().recentForm() - fv.player2().recentForm()) * recentReliability;
-        double adjDiff = (fv.player1().opponentAdjustedForm() - fv.player2().opponentAdjustedForm()) * opponentReliability;
-        double scheduleDiff = ((fv.player1().scheduleStrength() - fv.player2().scheduleStrength()) / 300.0) * scheduleReliability;
+        double formCap = clamp(formFeatureCap, 0.10, 0.50);
+        double recentDiff = clamp(
+                (fv.player1().recentForm() - fv.player2().recentForm()) * recentReliability,
+                -formCap,
+                formCap);
+        double adjDiff = clamp(
+                (fv.player1().opponentAdjustedForm() - fv.player2().opponentAdjustedForm()) * opponentReliability,
+                -formCap,
+                formCap);
+        double scheduleCap = clamp(scheduleFeatureCap, 0.10, 0.40);
+        double scheduleDiff = clamp(
+                ((fv.player1().scheduleStrength() - fv.player2().scheduleStrength()) / 300.0) * scheduleReliability,
+                -scheduleCap,
+                scheduleCap);
         double eloDelta = fv.eloProbabilityPlayer1() - 0.5;
         double glickoDelta = fv.glickoProbabilityPlayer1() - 0.5;
         double ratingDiff = (fv.player1().glickoRating() - fv.player2().glickoRating()) / 400.0;
         double rdAdvantage = (fv.player2().glickoRatingDeviation() - fv.player1().glickoRatingDeviation()) / 200.0;
         double volAdvantage = (fv.player2().glickoVolatility() - fv.player1().glickoVolatility()) / 0.2;
-        double p1Form = 0.5 + ((fv.player1().recentForm() - 0.5) * p1RecentReliability);
-        double p2Form = 0.5 + ((fv.player2().recentForm() - 0.5) * p2RecentReliability);
-        double interaction = recentDiff * h2hDelta;
         double trueSkill2Delta = fv.trueSkill2ProbabilityPlayer1() - 0.5;
-        double wengLinDelta = fv.wengLinProbabilityPlayer1() - 0.5;
+        double wengLinDelta = wengLinFeatureEnabled ? fv.wengLinProbabilityPlayer1() - 0.5 : 0.0;
         double raterEnsembleDelta = fv.raterEnsembleProbabilityPlayer1() - 0.5;
         double ratingAgreement = fv.reliabilitySummary() == null
                 ? 0.0
                 : clamp(fv.reliabilitySummary().ratingAgreement(), 0.0, 1.0);
-        double raterConsensusSignal = raterEnsembleDelta * ratingAgreement;
+        double raterConsensusSignal = raterConsensusFeatureEnabled
+                ? raterEnsembleDelta * ratingAgreement
+                : 0.0;
         return new double[]{
                 h2hDelta,
                 recentDiff,
@@ -1266,9 +1671,6 @@ public class PredictionModelService {
                 ratingDiff,
                 rdAdvantage,
                 volAdvantage,
-                p1Form,
-                p2Form,
-                interaction,
                 trueSkill2Delta,
                 wengLinDelta,
                 raterEnsembleDelta,
@@ -1279,26 +1681,25 @@ public class PredictionModelService {
     private double baselineProbability(double[] x) {
         double z = 0.0;
         z += 0.55 * x[0];
-        z += 0.45 * x[1];
-        z += 0.50 * x[2];
-        z += 0.35 * x[3];
+        z += 0.30 * x[1];
+        z += 0.30 * x[2];
+        z += 0.15 * x[3];
         z += 1.15 * x[4];
         z += 1.15 * x[5];
         z += 0.45 * x[6];
         z += 0.25 * x[7];
         z += 0.15 * x[8];
-        z += 0.10 * x[11];
-        z += 0.75 * x[12];
-        z += 0.80 * x[13];
-        z += 0.70 * x[14];
-        z += 0.45 * x[15];
+        z += 0.75 * x[9];
+        z += 0.80 * x[10];
+        z += 0.70 * x[11];
+        z += 0.45 * x[12];
         return sigmoid(z);
     }
 
     private List<MatchupAnalysisDto.FeatureContributionDto> baselineContributions(double[] x) {
         double[] weights = new double[]{
-                0.55, 0.45, 0.50, 0.35, 1.15, 1.15, 0.45, 0.25,
-                0.15, 0.0, 0.0, 0.10, 0.75, 0.80, 0.70, 0.45
+                0.55, 0.30, 0.30, 0.15, 1.15, 1.15, 0.45, 0.25,
+                0.15, 0.75, 0.80, 0.70, 0.45
         };
         List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
         for (int i = 0; i < BASE_FEATURE_NAMES.length; i++) {
@@ -1313,26 +1714,51 @@ public class PredictionModelService {
         return out;
     }
 
-    private double selectBestLambda(List<TrainingSample> train, List<Double> lambdas, FeatureSet featureSet) {
-        int n = train.size();
-        int folds = clamp(cvFolds, 2, Math.min(8, n / 8));
+    private CrossValidationSelection selectBestLambda(List<TrainingSample> train,
+                                                      List<Double> lambdas,
+                                                      FeatureSet featureSet) {
+        List<LocalDate> dates = train.stream()
+                .map(TrainingSample::matchDate)
+                .distinct()
+                .sorted()
+                .toList();
+        int folds = clamp(cvFolds, 2, Math.min(8, Math.max(2, dates.size() - 2)));
         double bestLambda = lambdas.get(0);
         double bestBrier = Double.POSITIVE_INFINITY;
         double bestLogLoss = Double.POSITIVE_INFINITY;
+        int bestUsedFolds = 0;
 
         for (double lambda : lambdas) {
             double brierTotal = 0.0;
             double logLossTotal = 0.0;
             int usedFolds = 0;
-            int validationChunk = Math.max(5, Math.min(24, n / (folds + 1)));
+            int validationDateCount = Math.max(1, dates.size() / (folds + 2));
+            Set<Integer> usedStarts = new java.util.HashSet<>();
             for (int fold = 0; fold < folds; fold++) {
-                int latestTrainStart = Math.max(10, n - validationChunk);
-                int trainEnd = Math.max(10, ((fold + 1) * latestTrainStart) / folds);
-                int start = Math.min(trainEnd, n - validationChunk);
-                int end = Math.min(n, start + validationChunk);
-                if (start >= end) continue;
-                List<TrainingSample> foldTrain = train.subList(0, start);
-                List<TrainingSample> validation = train.subList(start, end);
+                int latestStart = Math.max(2, dates.size() - validationDateCount);
+                int startIndex = Math.max(2, ((fold + 1) * latestStart) / (folds + 1));
+                if (!usedStarts.add(startIndex) || startIndex >= dates.size()) continue;
+                int endIndex = Math.min(dates.size(), startIndex + validationDateCount);
+                LocalDate validationStart = dates.get(startIndex);
+                LocalDate validationEnd = dates.get(endIndex - 1);
+                List<TrainingSample> validation = train.stream()
+                        .filter(sample -> !sample.matchDate().isBefore(validationStart)
+                                && !sample.matchDate().isAfter(validationEnd))
+                        .toList();
+                Set<String> validationPairs = validation.stream()
+                        .map(TrainingSample::pairKey)
+                        .collect(java.util.stream.Collectors.toSet());
+                Set<Long> validationPlayers = validation.stream()
+                        .flatMap(sample -> java.util.stream.Stream.of(sample.player1Id(), sample.player2Id()))
+                        .filter(Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toSet());
+                LocalDate trainCutoff = validationStart.minusDays(Math.max(0, temporalGapDays) + 1L);
+                List<TrainingSample> foldTrain = train.stream()
+                        .filter(sample -> !sample.matchDate().isAfter(trainCutoff))
+                        .filter(sample -> !validationPairs.contains(sample.pairKey()))
+                        .filter(sample -> !validationPlayers.contains(sample.player1Id())
+                                && !validationPlayers.contains(sample.player2Id()))
+                        .toList();
                 if (foldTrain.size() < 10 || validation.size() < 5) continue;
 
                 LogisticModel model = trainLogisticModel(foldTrain, lambda, featureSet, Math.max(80, trainEpochs / 2), learningRate);
@@ -1348,9 +1774,10 @@ public class PredictionModelService {
                 bestBrier = meanBrier;
                 bestLogLoss = meanLogLoss;
                 bestLambda = lambda;
+                bestUsedFolds = usedFolds;
             }
         }
-        return bestLambda;
+        return new CrossValidationSelection(bestLambda, bestUsedFolds, bestBrier, bestLogLoss);
     }
 
     private LogisticModel trainLogisticModel(List<TrainingSample> train,
@@ -1379,11 +1806,10 @@ public class PredictionModelService {
         double[] means = new double[d];
         double[] stds = new double[d];
         for (int j = 0; j < d; j++) {
-            double sum = 0.0;
-            for (int i = 0; i < n; i++) {
-                sum += sampleWeights[i] * X[i][j];
-            }
-            means[j] = sum / weightSum;
+            // Antisymmetric paired training makes zero the semantic neutral
+            // point. Pinning the center to zero preserves exact sign reversal
+            // even under floating-point accumulation and artifact reloads.
+            means[j] = 0.0;
             double sq = 0.0;
             for (int i = 0; i < n; i++) {
                 double dx = X[i][j] - means[j];
@@ -1399,27 +1825,44 @@ public class PredictionModelService {
         for (int epoch = 0; epoch < totalEpochs; epoch++) {
             double[] grad = new double[d + 1];
             for (int i = 0; i < n; i++) {
-                double z = weights[0];
+                // The intercept remains exactly zero. With paired examples
+                // and antisymmetric inputs, a neutral matchup must stay 50/50.
+                double z = 0.0;
                 for (int j = 0; j < d; j++) {
                     z += weights[j + 1] * standardized(X[i][j], means[j], stds[j]);
                 }
                 double p = sigmoid(z);
                 double err = (p - y[i]) * sampleWeights[i];
-                grad[0] += err;
                 for (int j = 0; j < d; j++) {
                     grad[j + 1] += err * standardized(X[i][j], means[j], stds[j]);
                 }
             }
             double invW = 1.0 / weightSum;
-            weights[0] -= rate * grad[0] * invW;
+            weights[0] = 0.0;
             for (int j = 1; j <= d; j++) {
-                double reg = lambda * weights[j];
+                double reg = lambda * regularizationMultiplier(featureSet.featureNames[j - 1]) * weights[j];
                 weights[j] -= rate * (grad[j] * invW + reg);
             }
             rate *= 0.995;
         }
 
         return new LogisticModel(featureSet.featureNames, featureSet.transform, means, stds, weights, lambda);
+    }
+
+    private static double regularizationMultiplier(String featureName) {
+        String normalized = featureName == null ? "" : featureName.toLowerCase(Locale.ROOT);
+        if (normalized.contains("form") || normalized.contains("schedule")) {
+            return 1.50;
+        }
+        if (normalized.contains("head-to-head") || normalized.contains("h2h")) {
+            return 1.25;
+        }
+        if (normalized.contains("rating") || normalized.contains("glicko")
+                || normalized.contains("trueskill") || normalized.contains("weng-lin")
+                || normalized.contains("rater") || normalized.contains("elo")) {
+            return 1.00;
+        }
+        return 1.15;
     }
 
     private void maybeCalibrate(LogisticModel model,
@@ -1430,55 +1873,61 @@ public class PredictionModelService {
             return;
         }
 
-        double[] logits = new double[validation.size()];
-        int[] labels = new int[validation.size()];
-        for (int i = 0; i < validation.size(); i++) {
-            logits[i] = model.rawScore(validation.get(i).baseFeatures);
-            labels[i] = validation.get(i).label;
-        }
-
-        PlattCalibrator calibrator = fitPlatt(logits, labels);
-        if (calibrator == null) {
+        List<Double> temperatures = parseCalibrationTemperatures();
+        if (temperatures.isEmpty()) {
             currentMetrics.calibrationMethod = "NONE";
             return;
         }
 
-        CandidateMetrics calibrated = evaluateCandidate(model.withCalibrator(calibrator), validation);
-        if (calibrated.brierScore + 0.001 < currentMetrics.brierScore) {
-            model.calibrator = calibrator;
-            currentMetrics.accuracy = calibrated.accuracy;
-            currentMetrics.logLoss = calibrated.logLoss;
-            currentMetrics.brierScore = calibrated.brierScore;
-            currentMetrics.calibrationMethod = "PLATT";
-        } else {
-            currentMetrics.calibrationMethod = "NONE";
+        PlattCalibrator selected = null;
+        CandidateMetrics selectedMetrics = null;
+        for (double temperature : temperatures) {
+            String method = "TEMPERATURE_GRID_"
+                    + String.format(Locale.ROOT, "%.2f", temperature).replace('.', '_');
+            PlattCalibrator candidate = new PlattCalibrator(1.0 / temperature, 0.0, method);
+            CandidateMetrics metrics = evaluateCandidate(model.withCalibrator(candidate), validation);
+            if (selectedMetrics == null
+                    || metrics.logLoss + EPS < selectedMetrics.logLoss
+                    || (Math.abs(metrics.logLoss - selectedMetrics.logLoss) <= EPS
+                    && metrics.brierScore < selectedMetrics.brierScore)) {
+                selected = candidate;
+                selectedMetrics = metrics;
+            }
         }
+
+        if (selected == null || selectedMetrics == null) {
+            currentMetrics.calibrationMethod = "NONE";
+            return;
+        }
+
+        // The grid is preregistered. It is selected on the calibration window
+        // only; the untouched future test window is never consulted here.
+        model.calibrator = selected;
+        currentMetrics.accuracy = selectedMetrics.accuracy;
+        currentMetrics.logLoss = selectedMetrics.logLoss;
+        currentMetrics.brierScore = selectedMetrics.brierScore;
+        currentMetrics.calibrationMethod = selected.method;
     }
 
-    private PlattCalibrator fitPlatt(double[] logits, int[] labels) {
-        if (logits.length != labels.length || logits.length < 20) {
-            return null;
-        }
-        double a = 1.0;
-        double b = 0.0;
-        double lr = 0.05;
-        int n = logits.length;
-        for (int epoch = 0; epoch < 400; epoch++) {
-            double gradA = 0.0;
-            double gradB = 0.0;
-            for (int i = 0; i < n; i++) {
-                double p = sigmoid(a * logits[i] + b);
-                double err = p - labels[i];
-                gradA += err * logits[i];
-                gradB += err;
+    private List<Double> parseCalibrationTemperatures() {
+        LinkedHashSet<Double> parsed = new LinkedHashSet<>();
+        if (StringUtils.hasText(calibrationTemperatureGrid)) {
+            for (String token : calibrationTemperatureGrid.split(",")) {
+                try {
+                    double value = Double.parseDouble(token.trim());
+                    if (Double.isFinite(value) && value >= 1.0 && value <= 3.0) {
+                        parsed.add(value);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Ignore malformed override values; fail closed to the
+                    // documented preregistered grid below if none are valid.
+                }
             }
-            gradA /= n;
-            gradB /= n;
-            a -= lr * gradA;
-            b -= lr * gradB;
-            lr *= 0.998;
         }
-        return new PlattCalibrator(a, b);
+        if (parsed.isEmpty()) {
+            parsed.addAll(List.of(1.25, 1.40, 1.55, 1.75));
+        }
+        return List.copyOf(parsed);
     }
 
     private RandomForestLikeModel trainRandomForest(List<TrainingSample> train, FeatureSet featureSet, int trees) {
@@ -2072,6 +2521,7 @@ public class PredictionModelService {
     }
 
     private ModelRegistryEntryDto toRegistryDto(PredictionModelRegistryEntry e) {
+        RegistryReleaseMetadata release = registryReleaseMetadata(e);
         return new ModelRegistryEntryDto(
                 e.getId(),
                 e.getModelVersion(),
@@ -2088,8 +2538,38 @@ public class PredictionModelService {
                 e.getFolds(),
                 e.isActive(),
                 e.getNotes(),
-                e.getCreatedAt()
+                e.getCreatedAt(),
+                release.artifactChecksum(),
+                release.featureSchemaChecksum(),
+                release.promotionStatus(),
+                release.promotionReason()
         );
+    }
+
+    private RegistryReleaseMetadata registryReleaseMetadata(PredictionModelRegistryEntry entry) {
+        if (entry == null || !StringUtils.hasText(entry.getPayloadJson())) {
+            return new RegistryReleaseMetadata(null, null,
+                    entry != null && entry.isActive() ? "APPROVED" : "RESEARCH", null);
+        }
+        try {
+            JsonNode payload = objectMapper.readTree(entry.getPayloadJson());
+            String featureSchema = payload.path("featureSchemaHash").asText(null);
+            String reason = payload.path("promotionReason").asText(null);
+            boolean promotionApproved = payload.path("promotionApproved").asBoolean(false);
+            String status = entry.isActive()
+                    ? "APPROVED"
+                    : promotionApproved
+                    ? "SHADOW"
+                    : StringUtils.hasText(reason) ? "PROMOTION_FAILED" : "RESEARCH";
+            return new RegistryReleaseMetadata(
+                    sha256(entry.getModelVersion() + "|" + entry.getPayloadJson()),
+                    featureSchema,
+                    status,
+                    reason);
+        } catch (Exception ignored) {
+            return new RegistryReleaseMetadata(null, null,
+                    entry.isActive() ? "APPROVED" : "RESEARCH", null);
+        }
     }
 
     private ModelTrainingReportDto.CandidateMetricDto toCandidateDto(String family,
@@ -2281,7 +2761,8 @@ public class PredictionModelService {
         if (payload.hasNonNull("calibratorA") && payload.hasNonNull("calibratorB")) {
             model.calibrator = new PlattCalibrator(
                     payload.path("calibratorA").asDouble(),
-                    payload.path("calibratorB").asDouble()
+                    payload.path("calibratorB").asDouble(),
+                    payload.path("calibratorMethod").asText("PLATT_LEGACY")
             );
         }
         return model;
@@ -2476,6 +2957,14 @@ public class PredictionModelService {
         return ez / (1.0 + ez);
     }
 
+    private static double[] negate(double[] values) {
+        double[] reversed = Arrays.copyOf(values, values.length);
+        for (int i = 0; i < reversed.length; i++) {
+            reversed[i] = -reversed[i];
+        }
+        return reversed;
+    }
+
     /**
      * Neutralizes untrained/constant columns and clips out-of-distribution
      * z-scores. A near-zero training standard deviation must never amplify a
@@ -2524,14 +3013,43 @@ public class PredictionModelService {
                                      double glickoProbability,
                                      double gbtLikeProbability,
                                      double rfLikeProbability,
-                                     double ensembleProbability) {
+                                     double ensembleProbability,
+                                     double rawPlayer1Probability) {
+
+        /** Compatibility constructor for callers built against the pre-R2.1 snapshot. */
+        public PredictionSnapshot(String modelFamily,
+                                  String modelVersion,
+                                  String calibrationMethod,
+                                  double player1Probability,
+                                  double player2Probability,
+                                  double player1ConfidenceLow,
+                                  double player1ConfidenceHigh,
+                                  List<MatchupAnalysisDto.FeatureContributionDto> featureContributions,
+                                  MatchupFeatureVectorDto featureVector,
+                                  double baselineProbability,
+                                  double logisticProbability,
+                                  double glickoProbability,
+                                  double gbtLikeProbability,
+                                  double rfLikeProbability,
+                                  double ensembleProbability) {
+            this(modelFamily, modelVersion, calibrationMethod, player1Probability, player2Probability,
+                    player1ConfidenceLow, player1ConfidenceHigh, featureContributions, featureVector,
+                    baselineProbability, logisticProbability, glickoProbability, gbtLikeProbability,
+                    rfLikeProbability, ensembleProbability, player1Probability);
+        }
     }
 
     private record TrainingSample(LocalDate matchDate,
                                   double[] baseFeatures,
                                   int label,
                                   double sampleWeight,
-                                  String identity) {
+                                  String identity,
+                                  String pairKey,
+                                  Long player1Id,
+                                  Long player2Id,
+                                  Double marketProbability,
+                                  LocalDateTime marketObservedAt,
+                                  LocalDateTime marketStartAt) {
     }
 
     private record TrainingCandidate(Match match, String identity, int label) {
@@ -2542,9 +3060,128 @@ public class PredictionModelService {
                                  List<TrainingSample> test) {
     }
 
+    private record CrossValidationSelection(double lambda,
+                                            int usedFolds,
+                                            double brierScore,
+                                            double logLoss) {
+    }
+
     private record BenchmarkMetrics(double constantBrier,
                                     double eloBrier,
                                     double recentFormBrier) {
+    }
+
+    private record MarketBenchmarkMetrics(int totalSamples,
+                                          int coveredSamples,
+                                          double coverage,
+                                          double brierScore,
+                                          double logLoss,
+                                          double accuracy,
+                                          int asOfViolations) {
+    }
+
+    private record SideAccuracyAudit(double player1WinnerAccuracy,
+                                     double player2WinnerAccuracy,
+                                     double rawGap,
+                                     double marketControlledGap,
+                                     int marketControlledSamples) {
+    }
+
+    private record MarketObservation(double player1NoVigProbability,
+                                     LocalDateTime observedAt,
+                                     LocalDateTime startAt) {
+    }
+
+    private static final class HistoricalMarketIndex {
+        private final Map<String, List<HistoricalMarketEvent>> byPairDate;
+
+        private HistoricalMarketIndex(Map<String, List<HistoricalMarketEvent>> byPairDate) {
+            this.byPairDate = byPairDate;
+        }
+
+        private static HistoricalMarketIndex from(List<OddsSnapshot> snapshots) {
+            Map<String, List<OddsSnapshot>> byMatchKey = new LinkedHashMap<>();
+            if (snapshots != null) {
+                for (OddsSnapshot snapshot : snapshots) {
+                    if (snapshot == null
+                            || !StringUtils.hasText(snapshot.getMatchKey())
+                            || snapshot.getMatchKey().startsWith("mk:")) {
+                        continue;
+                    }
+                    byMatchKey.computeIfAbsent(snapshot.getMatchKey(), ignored -> new ArrayList<>())
+                            .add(snapshot);
+                }
+            }
+
+            Map<String, List<HistoricalMarketEvent>> index = new LinkedHashMap<>();
+            for (Map.Entry<String, List<OddsSnapshot>> entry : byMatchKey.entrySet()) {
+                HistoricalMarketEvent event = HistoricalMarketEvent.from(entry.getKey(), entry.getValue());
+                if (event == null) continue;
+                String key = marketPairDateKey(event.player1(), event.player2(), event.startAt().toLocalDate());
+                index.computeIfAbsent(key, ignored -> new ArrayList<>()).add(event);
+            }
+            return new HistoricalMarketIndex(index);
+        }
+
+        private MarketObservation lookup(Match match) {
+            if (match == null || match.getDate() == null
+                    || match.getPlayer1() == null || match.getPlayer2() == null) {
+                return null;
+            }
+            String p1 = NameUtils.normalizeForLookup(match.getPlayer1().getName());
+            String p2 = NameUtils.normalizeForLookup(match.getPlayer2().getName());
+            String key = marketPairDateKey(p1, p2, match.getDate());
+            List<MarketObservation> candidates = byPairDate.getOrDefault(key, List.of()).stream()
+                    .map(event -> event.observationFor(p1, p2))
+                    .filter(Objects::nonNull)
+                    .toList();
+            // Multiple same-pair events on one day cannot be associated with a
+            // date-only archive match without guessing. Fail closed.
+            return candidates.size() == 1 ? candidates.get(0) : null;
+        }
+    }
+
+    private record HistoricalMarketEvent(String player1,
+                                         String player2,
+                                         LocalDateTime startAt,
+                                         List<OddsSnapshot> snapshots) {
+        private static HistoricalMarketEvent from(String matchKey, List<OddsSnapshot> snapshots) {
+            int first = matchKey == null ? -1 : matchKey.indexOf('|');
+            int second = first < 0 ? -1 : matchKey.indexOf('|', first + 1);
+            if (first <= 0 || second <= first + 1 || second >= matchKey.length() - 1) {
+                return null;
+            }
+            String player1 = NameUtils.normalizeForLookup(matchKey.substring(0, first));
+            String player2 = NameUtils.normalizeForLookup(matchKey.substring(first + 1, second));
+            LocalDateTime start = parseMarketStart(matchKey.substring(second + 1));
+            if (!StringUtils.hasText(player1) || !StringUtils.hasText(player2) || start == null) {
+                return null;
+            }
+            return new HistoricalMarketEvent(player1, player2, start, List.copyOf(snapshots));
+        }
+
+        private MarketObservation observationFor(String matchPlayer1, String matchPlayer2) {
+            String side;
+            if (player1.equals(matchPlayer1) && player2.equals(matchPlayer2)) {
+                side = "P1";
+            } else if (player1.equals(matchPlayer2) && player2.equals(matchPlayer1)) {
+                side = "P2";
+            } else {
+                return null;
+            }
+            OddsSnapshot latest = snapshots.stream()
+                    .filter(snapshot -> side.equalsIgnoreCase(snapshot.getSide()))
+                    .filter(snapshot -> snapshot.getObservedAt() != null
+                            && snapshot.getObservedAt().isBefore(startAt))
+                    .filter(snapshot -> snapshot.getNoVigProbability() != null
+                            && Double.isFinite(snapshot.getNoVigProbability())
+                            && snapshot.getNoVigProbability() > 0.0
+                            && snapshot.getNoVigProbability() < 1.0)
+                    .max(Comparator.comparing(OddsSnapshot::getObservedAt))
+                    .orElse(null);
+            return latest == null ? null : new MarketObservation(
+                    latest.getNoVigProbability(), latest.getObservedAt(), startAt);
+        }
     }
 
     private record BootstrapStability(boolean passed,
@@ -2552,6 +3189,21 @@ public class PredictionModelService {
                                       double constantSkillLower95,
                                       double eloSkillLower95,
                                       double recentFormSkillLower95) {
+    }
+
+    private record ClusterSkillBounds(double constantLower95,
+                                      double eloLower95,
+                                      double recentLower95,
+                                      boolean valid) {
+        private static ClusterSkillBounds invalid() {
+            return new ClusterSkillBounds(-1.0, -1.0, -1.0, false);
+        }
+    }
+
+    private record SwapInvariantAudit(int trials,
+                                      int failures,
+                                      double maxProbabilityError,
+                                      boolean passed) {
     }
 
     private record ValidationObservation(double predicted, int label, double weight) {
@@ -2567,6 +3219,12 @@ public class PredictionModelService {
     }
 
     private record ModelSelection(String family, TrainedModel model, boolean baseline) {
+    }
+
+    private record RegistryReleaseMetadata(String artifactChecksum,
+                                           String featureSchemaChecksum,
+                                           String promotionStatus,
+                                           String promotionReason) {
     }
 
     private record ConsensusProfile(double mean, double disagreement) {
@@ -2694,24 +3352,16 @@ public class PredictionModelService {
                     BASE_FEATURE_NAMES[0], BASE_FEATURE_NAMES[1], BASE_FEATURE_NAMES[2], BASE_FEATURE_NAMES[3],
                     BASE_FEATURE_NAMES[4], BASE_FEATURE_NAMES[5], BASE_FEATURE_NAMES[6], BASE_FEATURE_NAMES[7],
                     BASE_FEATURE_NAMES[8], BASE_FEATURE_NAMES[9], BASE_FEATURE_NAMES[10], BASE_FEATURE_NAMES[11],
-                    BASE_FEATURE_NAMES[12], BASE_FEATURE_NAMES[13], BASE_FEATURE_NAMES[14], BASE_FEATURE_NAMES[15],
-                    "Recent Form Delta^2", "Glicko Probability Delta^2", "Rating Delta^2",
-                    "H2H × Recent Form Delta", "Recent Form × OppAdj Delta", "Elo × Glicko Probability Delta"
+                    BASE_FEATURE_NAMES[12],
+                    "Recent Form Delta^3", "Glicko Probability Delta^3", "Rating Delta^3",
+                    "H2H × Recent × OppAdj", "Recent × |OppAdj|", "Elo × |Glicko Delta|"
             };
             return new FeatureSet(expandedNames, x -> new double[]{
                     x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11],
-                    x[12], x[13], x[14], x[15],
-                    x[1] * x[1], x[5] * x[5], x[6] * x[6],
-                    x[0] * x[1], x[1] * x[2], x[4] * x[5]
+                    x[12],
+                    x[1] * x[1] * x[1], x[5] * x[5] * x[5], x[6] * x[6] * x[6],
+                    x[0] * x[1] * x[2], x[1] * Math.abs(x[2]), x[4] * Math.abs(x[5])
             });
-        }
-
-        static Function<double[], double[]> legacyGbtTransform() {
-            return x -> new double[]{
-                    x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11],
-                    x[1] * x[1], x[5] * x[5], x[6] * x[6],
-                    x[0] * x[1], x[1] * x[2], x[4] * x[5]
-            };
         }
     }
 
@@ -2755,6 +3405,12 @@ public class PredictionModelService {
 
         @Override
         public double predict(double[] baseFeatures) {
+            double forward = directionalProbability(baseFeatures);
+            double reverse = directionalProbability(negate(baseFeatures));
+            return clamp01(0.5 * (forward + (1.0 - reverse)));
+        }
+
+        private double directionalProbability(double[] baseFeatures) {
             double z = rawScore(baseFeatures);
             double probability = sigmoid(z);
             if (calibrator != null) {
@@ -2769,6 +3425,10 @@ public class PredictionModelService {
             return clone;
         }
 
+        private String calibrationMethod() {
+            return calibrator == null ? "NONE" : calibrator.method;
+        }
+
         private double rawScore(double[] baseFeatures) {
             double[] x = transform.apply(baseFeatures);
             double z = weights[0];
@@ -2781,9 +3441,12 @@ public class PredictionModelService {
         @Override
         public List<MatchupAnalysisDto.FeatureContributionDto> contributions(double[] baseFeatures) {
             double[] x = transform.apply(baseFeatures);
+            double[] reversed = transform.apply(negate(baseFeatures));
             List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
             for (int j = 0; j < x.length; j++) {
-                double contribution = weights[j + 1] * standardized(x[j], means[j], stds[j]);
+                double forward = weights[j + 1] * standardized(x[j], means[j], stds[j]);
+                double reverse = weights[j + 1] * standardized(reversed[j], means[j], stds[j]);
+                double contribution = 0.5 * (forward - reverse);
                 out.add(new MatchupAnalysisDto.FeatureContributionDto(featureNames[j], round4(contribution)));
             }
             out.sort((a, b) -> Double.compare(Math.abs(b.contribution()), Math.abs(a.contribution())));
@@ -2805,6 +3468,7 @@ public class PredictionModelService {
             if (calibrator != null) {
                 payload.put("calibratorA", calibrator.a);
                 payload.put("calibratorB", calibrator.b);
+                payload.put("calibratorMethod", calibrator.method);
             }
             return payload;
         }
@@ -2833,6 +3497,12 @@ public class PredictionModelService {
 
         @Override
         public double predict(double[] baseFeatures) {
+            double forward = directionalProbability(baseFeatures);
+            double reverse = directionalProbability(negate(baseFeatures));
+            return clamp01(0.5 * (forward + (1.0 - reverse)));
+        }
+
+        private double directionalProbability(double[] baseFeatures) {
             double[] x = transform.apply(baseFeatures);
             if (stumps.isEmpty()) return 0.5;
             double sum = 0.0;
@@ -2848,9 +3518,17 @@ public class PredictionModelService {
             double[] x = transform.apply(baseFeatures);
             List<MatchupAnalysisDto.FeatureContributionDto> out = new ArrayList<>();
             for (int i = 0; i < featureNames.length; i++) {
-                double[] pert = Arrays.copyOf(x, x.length);
-                pert[i] = featureMeans[i];
-                double pertProb = predictFromTransformed(pert);
+                double[] neutralBase = Arrays.copyOf(baseFeatures, baseFeatures.length);
+                if (i < neutralBase.length) {
+                    neutralBase[i] = 0.0;
+                } else {
+                    // Expanded odd features are derived from the base vector;
+                    // their attribution is already represented by their
+                    // originating deltas and is left at zero here.
+                    out.add(new MatchupAnalysisDto.FeatureContributionDto(featureNames[i], 0.0));
+                    continue;
+                }
+                double pertProb = predict(neutralBase);
                 out.add(new MatchupAnalysisDto.FeatureContributionDto(featureNames[i], round4(base - pertProb)));
             }
             out.sort((a, b) -> Double.compare(Math.abs(b.contribution()), Math.abs(a.contribution())));
@@ -2968,10 +3646,12 @@ public class PredictionModelService {
     private static class PlattCalibrator {
         private final double a;
         private final double b;
+        private final String method;
 
-        private PlattCalibrator(double a, double b) {
+        private PlattCalibrator(double a, double b, String method) {
             this.a = a;
             this.b = b;
+            this.method = StringUtils.hasText(method) ? method : "PLATT_LEGACY";
         }
 
         private double apply(double logit) {

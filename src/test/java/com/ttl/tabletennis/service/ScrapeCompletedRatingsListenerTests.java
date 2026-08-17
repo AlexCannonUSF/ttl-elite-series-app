@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -101,6 +102,41 @@ class ScrapeCompletedRatingsListenerTests {
         verify(trueSkill2Service).rebuild(null, null);
         verify(wengLinService).rebuild(null, null);
         verify(glicko2RatingService).rebuild(null, null);
+    }
+
+    @Test
+    void refreshesLiveStatisticsAndInvalidatesPredictionCaches() {
+        ScrapeCompletedRatingsListener listener = listener(
+                Clock.fixed(Instant.parse("2026-05-19T10:00:00Z"), ZoneOffset.UTC));
+        SnapshotIndexCache snapshotIndexCache = mock(SnapshotIndexCache.class);
+        FeatureService featureService = mock(FeatureService.class);
+        PredictionFacade predictionFacade = mock(PredictionFacade.class);
+        OddsValueEngineService oddsValueEngineService = mock(OddsValueEngineService.class);
+        listener.setLiveModelRefreshDependencies(
+                snapshotIndexCache, featureService, predictionFacade, oddsValueEngineService);
+
+        Set<Long> affectedPlayers = Set.of(11L, 22L);
+        listener.rebuild(new ScrapeCompletedEvent(
+                7, "OFFICIAL_RESULTS", 2, 1, 1, affectedPlayers,
+                LocalDateTime.of(2026, 5, 19, 12, 0)));
+
+        verify(snapshotIndexCache).refresh();
+        verify(featureService).invalidateForFreshMatchData(affectedPlayers);
+        verify(predictionFacade).invalidateForFreshPlayerData();
+        verify(oddsValueEngineService).invalidateRecommendationsForFreshPlayerData();
+    }
+
+    @Test
+    void zeroDebounceProcessesEveryCompletedMutationBatch() {
+        ScrapeCompletedRatingsListener listener = listener(
+                Clock.fixed(Instant.parse("2026-05-19T10:00:00Z"), ZoneOffset.UTC));
+        ReflectionTestUtils.setField(listener, "debounceSeconds", 0L);
+
+        listener.rebuild(event(1, 2));
+        listener.rebuild(event(2, 3));
+
+        verify(eloSyncService, times(2)).syncFromRankingPage();
+        verify(glicko2RatingService, times(2)).rebuild(null, null);
     }
 
     private ScrapeCompletedRatingsListener listener(Clock clock) {

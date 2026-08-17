@@ -31,6 +31,8 @@ import type {
   MatchupAnalysis,
   TrackedMatchObservation,
 } from '@/features/live-studio/types'
+import { fetchMarketIntelligence } from '@/features/market/api'
+import type { MarketIntelligence } from '@/features/market/types'
 import { fetchPredictionPanel, parseMatchKey, type ParsedMatchKey } from '@/features/prediction/api'
 import type {
   PredictionContribution,
@@ -127,6 +129,7 @@ export function MatchDetailRoute() {
   const [matchupIntel, setMatchupIntel] = useState<MatchupAnalysis | null>(null)
   const [intelError, setIntelError] = useState<string | null>(null)
   const [marketRow, setMarketRow] = useState<LiveOddsRecommendation | null>(null)
+  const [marketIntelligence, setMarketIntelligence] = useState<MarketIntelligence | null>(null)
   const [timeline, setTimeline] = useState<TrackedMatchObservation[]>([])
   const [errors, setErrors] = useState<LoadErrors>({})
   const [loading, setLoading] = useState(true)
@@ -160,6 +163,7 @@ export function MatchDetailRoute() {
 
     const nextErrors: LoadErrors = {}
     let nextMarketRow: LiveOddsRecommendation | null = null
+    let nextMarketIntelligence: MarketIntelligence | null = null
     let nextEvidence: ScoreTruthEvidenceResponse | null = null
     let nextTimeline: TrackedMatchObservation[] = []
     let nextPrediction: PredictionPanelResponse | null = null
@@ -183,6 +187,18 @@ export function MatchDetailRoute() {
 
     if (!nextMarketRow && nextEvidence) {
       nextMarketRow = findMarketRow(nextEvidence.evidence.trackedEventId, boardRows)
+    }
+
+    const marketIdentity = nextMarketRow?.externalEventId
+      ?? nextEvidence?.evidence.trackedEventId
+      ?? nextMarketRow?.sourceFeedEventId
+      ?? nextMarketRow?.matchupKey
+    if (marketIdentity) {
+      try {
+        nextMarketIntelligence = await fetchMarketIntelligence(marketIdentity)
+      } catch (error) {
+        nextErrors.market = error instanceof Error ? error.message : 'Unable to load timestamped market intelligence.'
+      }
     }
 
     const timelineKey = resolveTimelineKey(matchId, nextEvidence, nextMarketRow)
@@ -234,6 +250,7 @@ export function MatchDetailRoute() {
     setMatchupIntel(nextMatchupIntel)
     setIntelError(nextIntelError)
     setMarketRow(nextMarketRow)
+    setMarketIntelligence(nextMarketIntelligence)
     setTimeline(nextTimeline)
     setErrors(nextErrors)
     setLoadedAt(new Date().toISOString())
@@ -348,7 +365,7 @@ export function MatchDetailRoute() {
         {activeTab === 'evidence' ? <EvidenceTab data={evidence} error={errors.evidence} /> : null}
         {activeTab === 'prediction' ? <PredictionTab data={prediction} error={errors.prediction} /> : null}
         {activeTab === 'history' ? <HistoryTab data={timeline} error={errors.history} /> : null}
-        {activeTab === 'market' ? <MarketTab row={marketRow} error={errors.market} /> : null}
+        {activeTab === 'market' ? <MarketTab row={marketRow} intelligence={marketIntelligence} error={errors.market} /> : null}
       </div>
     </V3Shell>
   )
@@ -652,9 +669,11 @@ function HistoryTab({
 
 function MarketTab({
   error,
+  intelligence,
   row,
 }: {
   error?: string
+  intelligence: MarketIntelligence | null
   row: LiveOddsRecommendation | null
 }) {
   if (!row) {
@@ -743,8 +762,14 @@ function MarketTab({
           <SmallMetric label="Score" value={row.liveScore ?? row.scoreDetail ?? 'N/A'} />
         </CardContent>
       </Card>
+      <MarketIntelligencePanel intelligence={intelligence} row={row} />
     </section>
   )
+}
+
+function MarketIntelligencePanel({ intelligence, row }: { intelligence: MarketIntelligence | null; row: LiveOddsRecommendation }) {
+  if (!intelligence) return <Card className="xl:col-span-2"><CardContent className="py-10 text-center text-sm text-[var(--ink-muted)]">No persisted market history is linked to this event yet.</CardContent></Card>
+  return <Card className="xl:col-span-2"><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><Badge variant={intelligence.executionAvailable ? 'accent' : 'neutral'} className="w-fit">{intelligence.executionAvailable ? 'Hard Rock executable' : 'Reference only'}</Badge><span className="text-xs text-[var(--ink-muted)]">Freshest {formatAge(intelligence.freshestQuoteAgeSeconds)}</span></div><CardTitle>Odds ladder and consensus</CardTitle><CardDescription>Hard Rock is the executable Florida price. Other authorized books are timestamped references only; consensus never replaces the price a wager could actually receive.</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-3 sm:grid-cols-3"><SmallMetric label="Consensus sources" value={String(intelligence.consensusSourceCount)} /><SmallMetric label={`${row.player1Name} consensus`} value={formatPct(intelligence.consensusPlayer1Probability)} /><SmallMetric label="Dispersion" value={intelligence.consensusDispersionPctPoints == null ? 'Needs 2 books' : `${intelligence.consensusDispersionPctPoints.toFixed(2)} pp`} /></div><div className="overflow-x-auto rounded-2xl border border-[var(--line)]"><table className="w-full min-w-[760px] text-left text-xs"><thead className="bg-slate-100/80 text-[10px] uppercase tracking-[0.14em] text-[var(--ink-muted)]"><tr><th className="px-3 py-3">Book</th><th className="px-3 py-3">Role</th><th className="px-3 py-3">State</th><th className="px-3 py-3 text-right">{row.player1Name}</th><th className="px-3 py-3 text-right">{row.player2Name}</th><th className="px-3 py-3 text-right">No-vig view</th><th className="px-3 py-3 text-right">Hold</th><th className="px-3 py-3 text-right">Age</th></tr></thead><tbody>{intelligence.books.map((book) => <tr className="border-t border-[var(--line)] bg-white/60" key={book.sourceCode}><td className="px-3 py-3 font-bold">{book.displayName}</td><td className="px-3 py-3"><Badge variant={book.executable ? 'accent' : 'neutral'}>{book.executable ? 'Executable' : 'Reference'}</Badge></td><td className="px-3 py-3">{book.marketState}{book.stale ? ' · stale' : ''}</td><td className="px-3 py-3 text-right font-mono">{formatAmerican(book.player1AmericanOdds)}</td><td className="px-3 py-3 text-right font-mono">{formatAmerican(book.player2AmericanOdds)}</td><td className="px-3 py-3 text-right font-mono">{formatPct(book.player1NoVigProbability)}</td><td className="px-3 py-3 text-right font-mono">{book.overroundPct == null ? '—' : `${book.overroundPct.toFixed(2)}%`}</td><td className="px-3 py-3 text-right">{formatAge(book.ageSeconds)}</td></tr>)}</tbody></table></div>{intelligence.warnings.map((warning) => <p className="flex gap-2 text-xs leading-5 text-amber-900" key={warning}><AlertTriangle className="mt-0.5 size-3 shrink-0" />{warning}</p>)}</CardContent></Card>
 }
 
 function MarketSideRow({
@@ -1234,6 +1259,13 @@ function formatAmerican(value: number | null | undefined) {
     return 'N/A'
   }
   return value > 0 ? `+${value}` : String(value)
+}
+
+function formatAge(seconds: number | null | undefined) {
+  if (seconds == null || seconds < 0 || !Number.isFinite(seconds)) return 'Unknown'
+  if (seconds < 60) return `${Math.round(seconds)}s ago`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+  return `${Math.round(seconds / 3600)}h ago`
 }
 
 function formatPct(value: number | null | undefined) {

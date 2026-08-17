@@ -10,6 +10,12 @@ const ModelPipelineRoute = lazy(() => import('@/routes/ModelPipelineRoute').then
 const MlQualityRoute = lazy(() => import('@/routes/MlQualityRoute').then((module) => ({ default: module.MlQualityRoute })))
 const AdminHubRoute = lazy(() => import('@/routes/AdminHubRoute').then((module) => ({ default: module.AdminHubRoute })))
 const AdminLiveRunRoute = lazy(() => import('@/routes/AdminLiveRunRoute').then((module) => ({ default: module.AdminLiveRunRoute })))
+const RunsRoute = lazy(() => import('@/routes/RunsRoute').then((module) => ({ default: module.RunsRoute })))
+const ReplayLabRoute = lazy(() => import('@/routes/ReplayLabRoute').then((module) => ({ default: module.ReplayLabRoute })))
+const UserSimulationRoute = lazy(() => import('@/routes/UserSimulationRoute').then((module) => ({ default: module.UserSimulationRoute })))
+const UserResultsRoute = lazy(() => import('@/routes/UserResultsRoute').then((module) => ({ default: module.UserResultsRoute })))
+const PlayersRoute = lazy(() => import('@/routes/PlayersRoute').then((module) => ({ default: module.PlayersRoute })))
+const WatchlistRoute = lazy(() => import('@/routes/WatchlistRoute').then((module) => ({ default: module.WatchlistRoute })))
 const OpsConsoleRoute = lazy(() => import('@/routes/OpsConsoleRoute').then((module) => ({ default: module.OpsConsoleRoute })))
 const OpsDiffsRoute = lazy(() => import('@/routes/OpsDiffsRoute').then((module) => ({ default: module.OpsDiffsRoute })))
 const OpsFeedsRoute = lazy(() => import('@/routes/OpsFeedsRoute').then((module) => ({ default: module.OpsFeedsRoute })))
@@ -54,6 +60,26 @@ export const router = createBrowserRouter([
     element: lazyRoute(MatchDetailRoute),
   },
   {
+    path: '/user/simulation',
+    element: lazyRoute(UserSimulationRoute),
+  },
+  {
+    path: '/user/results',
+    element: lazyRoute(UserResultsRoute),
+  },
+  {
+    path: '/user/players',
+    element: lazyRoute(PlayersRoute),
+  },
+  {
+    path: '/user/players/:playerId',
+    element: lazyRoute(PlayersRoute),
+  },
+  {
+    path: '/user/watchlist',
+    element: lazyRoute(WatchlistRoute),
+  },
+  {
     path: '/user/tracking/:callId',
     element: lazyRoute(ModelCallTrackingRoute),
   },
@@ -68,6 +94,14 @@ export const router = createBrowserRouter([
   {
     path: '/admin/live-run',
     element: lazyRoute(AdminLiveRunRoute),
+  },
+  {
+    path: '/admin/runs',
+    element: lazyRoute(RunsRoute),
+  },
+  {
+    path: '/admin/replay',
+    element: lazyRoute(ReplayLabRoute),
   },
   {
     path: '/admin/pipeline',

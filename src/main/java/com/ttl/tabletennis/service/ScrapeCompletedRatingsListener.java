@@ -21,8 +21,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Disabled by setting {@code ttl.ratings.autoRebuildOnScrape.enabled=false}.
  *
- * <p>A debounce window prevents a burst of scrapes from thrashing the
- * rating math — the default is 5 minutes, controlled by
+ * <p>An optional debounce window can prevent a burst of scrapes from
+ * thrashing the rating math. It defaults to zero so every completed mutation
+ * batch is incorporated immediately; operators may opt into a delay through
  * {@code ttl.ratings.autoRebuildOnScrape.debounceSeconds}.
  */
 @Component
@@ -36,11 +37,15 @@ public class ScrapeCompletedRatingsListener {
     private final Glicko2RatingService glicko2RatingService;
     private final Clock clock;
     private final AtomicReference<Instant> lastRunAt = new AtomicReference<>(Instant.EPOCH);
+    private SnapshotIndexCache snapshotIndexCache;
+    private FeatureService featureService;
+    private PredictionFacade predictionFacade;
+    private OddsValueEngineService oddsValueEngineService;
 
     @Value("${ttl.ratings.autoRebuildOnScrape.enabled:true}")
     private boolean enabled;
 
-    @Value("${ttl.ratings.autoRebuildOnScrape.debounceSeconds:300}")
+    @Value("${ttl.ratings.autoRebuildOnScrape.debounceSeconds:0}")
     private long debounceSeconds;
 
     @Autowired
@@ -63,6 +68,17 @@ public class ScrapeCompletedRatingsListener {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
+    @Autowired(required = false)
+    void setLiveModelRefreshDependencies(SnapshotIndexCache snapshotIndexCache,
+                                         FeatureService featureService,
+                                         PredictionFacade predictionFacade,
+                                         OddsValueEngineService oddsValueEngineService) {
+        this.snapshotIndexCache = snapshotIndexCache;
+        this.featureService = featureService;
+        this.predictionFacade = predictionFacade;
+        this.oddsValueEngineService = oddsValueEngineService;
+    }
+
     @Async
     @EventListener
     public void onScrapeCompleted(ScrapeCompletedEvent event) {
@@ -70,7 +86,7 @@ public class ScrapeCompletedRatingsListener {
     }
 
     /** Package-visible for tests so they can drive the listener synchronously. */
-    void rebuild(ScrapeCompletedEvent event) {
+    synchronized void rebuild(ScrapeCompletedEvent event) {
         if (!enabled) {
             log.debug("[ratings] auto-rebuild disabled; skipping scrape event {}", event.runId());
             return;
@@ -95,6 +111,18 @@ public class ScrapeCompletedRatingsListener {
         runStep("trueskill2", () -> trueSkill2Service.rebuild(null, null));
         runStep("wenglin", () -> wengLinService.rebuild(null, null));
         runStep("glicko2", () -> glicko2RatingService.rebuild(null, null));
+        if (snapshotIndexCache != null) {
+            runStep("snapshot-index", snapshotIndexCache::refresh);
+        }
+        if (featureService != null) {
+            featureService.invalidateForFreshMatchData(event.affectedPlayerIds());
+        }
+        if (predictionFacade != null) {
+            predictionFacade.invalidateForFreshPlayerData();
+        }
+        if (oddsValueEngineService != null) {
+            oddsValueEngineService.invalidateRecommendationsForFreshPlayerData();
+        }
         log.info("[ratings] auto-rebuild finished for scrape runId={}", event.runId());
     }
 
