@@ -10,10 +10,31 @@ import com.ttl.tabletennis.repository.RunPortfolioDefinitionRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class ParallelModelLaneServiceTests {
+
+    @Test
+    void marketAnchorIsSwapInvariantAndStaysBetweenMarketAndModel() {
+        double weight = ParallelModelLaneService.adaptiveModelWeight(0.21, 0.08, 0.50);
+        double player1 = ParallelModelLaneService.anchoredProbability(0.62, 0.70, weight);
+        double swappedPlayer2 = ParallelModelLaneService.anchoredProbability(0.38, 0.30, weight);
+
+        assertThat(player1).isBetween(0.62, 0.70);
+        assertThat(player1 + swappedPlayer2).isCloseTo(1.0, within(1.0e-12));
+    }
+
+    @Test
+    void marketAnchorTrustsModelLessAsDisagreementGrows() {
+        double closeWeight = ParallelModelLaneService.adaptiveModelWeight(0.21, 0.02, 0.50);
+        double wideWeight = ParallelModelLaneService.adaptiveModelWeight(0.21, 0.18, 0.50);
+
+        assertThat(closeWeight).isGreaterThan(wideWeight);
+        assertThat(wideWeight).isLessThan(0.15);
+    }
 
     @Test
     void disabledShadowEngineCannotTouchProductionOrResearchRepositories() {

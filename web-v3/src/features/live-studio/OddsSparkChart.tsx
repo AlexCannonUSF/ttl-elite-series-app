@@ -100,17 +100,19 @@ export function OddsSparkChart({ player1Name, player2Name, points }: OddsSparkCh
       <p id={descriptionId} className="sr-only">
         The chart plots recent decimal odds for both players from the local live-board polling history.
       </p>
-      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-        <span className="inline-flex items-center gap-2">
+      <div className="border-b border-[var(--line)] px-4 py-3">
+        <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--ink-muted)]">Market price history</p><h3 className="mt-1 text-sm font-bold text-[var(--ink-strong)]">Hard Rock decimal odds through observation time</h3></div><span className="rounded-full border border-[var(--line)] bg-white/70 px-2 py-1 font-mono text-[10px] text-[var(--ink-muted)]">n={points.length}</span></div>
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs font-semibold text-[var(--ink-muted)]"><span className="inline-flex items-center gap-2">
           <span aria-hidden="true" className="size-2 rounded-full bg-teal-700" />
           {player1Name}
         </span>
         <span className="inline-flex items-center gap-2">
           <span aria-hidden="true" className="size-2 rounded-full bg-amber-700" />
           {player2Name}
-        </span>
+        </span></div>
       </div>
       <div ref={containerRef} className="h-[245px] w-full" />
+      <div className="grid grid-cols-[auto_1fr] gap-3 border-t border-[var(--line)] px-4 py-2 text-[9px] font-semibold uppercase tracking-[0.13em] text-[var(--ink-muted)]"><span>Y · Decimal odds</span><span className="text-right">X · Observation time · local timezone</span></div>
     </div>
   )
 }

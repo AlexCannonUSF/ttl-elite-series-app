@@ -268,9 +268,9 @@ export function AdminLiveRunRoute() {
 function RunTrendChart({ points }: { points: LiveRunTrendPoint[] }) {
   if (!points.length) return <EmptyState label="Waiting for the first trusted result." />
   const width = 780
-  const height = 270
-  const padX = 42
-  const padY = 28
+  const height = 292
+  const padX = 58
+  const padY = 30
   const netValues = points.map((point) => point.cumulativeNetProfit)
   const netLow = Math.min(0, ...netValues)
   const netHigh = Math.max(0, ...netValues)
@@ -287,10 +287,18 @@ function RunTrendChart({ points }: { points: LiveRunTrendPoint[] }) {
         <span className="inline-flex items-center gap-2"><span className="h-0.5 w-6 bg-blue-500" /> Running accuracy</span>
         <span className="ml-auto">Latest: {formatSignedCurrency(points.at(-1)?.cumulativeNetProfit)} · {formatPctPoints(points.at(-1)?.runningAccuracyPct)}</span>
       </div>
-      <svg aria-label="Cumulative flat-dollar profit and accuracy trend" className="mt-4 w-full" role="img" viewBox={`0 0 ${width} ${height}`}>
+      <svg aria-label="Cumulative flat-dollar profit and running winner accuracy by trusted resolution" className="mt-4 w-full" role="img" viewBox={`0 0 ${width} ${height}`}>
+        <title>Run learning curve</title>
+        <desc>Green is cumulative hypothetical profit from one-dollar straight bets. Blue is running winner accuracy. Each point is one trusted resolution.</desc>
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const y = padY + ratio * (height - padY * 2)
-          return <line key={ratio} x1={padX} x2={width - padX} y1={y} y2={y} stroke="rgba(100,116,139,.18)" strokeWidth="1" />
+          const netTick = netHigh - ratio * netRange
+          const accuracyTick = 100 * (1 - ratio)
+          return <g key={ratio}>
+            <line x1={padX} x2={width - padX} y1={y} y2={y} stroke="rgba(100,116,139,.18)" strokeWidth="1" />
+            <text x={padX - 8} y={y + 3} textAnchor="end" className="fill-emerald-700 text-[9px]">{formatSignedCurrency(netTick)}</text>
+            <text x={width - padX + 8} y={y + 3} className="fill-blue-700 text-[9px]">{accuracyTick.toFixed(0)}%</text>
+          </g>
         })}
         <line x1={padX} x2={width - padX} y1={netY(0)} y2={netY(0)} stroke="rgba(15,23,42,.35)" strokeDasharray="5 5" />
         <path d={netPath} fill="none" stroke="rgb(16 185 129)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
@@ -302,10 +310,14 @@ function RunTrendChart({ points }: { points: LiveRunTrendPoint[] }) {
             </circle>
           </g>
         ))}
-        <text x={padX} y={height - 5} className="fill-slate-500 text-[10px]">1</text>
-        <text x={width - padX} y={height - 5} textAnchor="end" className="fill-slate-500 text-[10px]">{points.length} resolved</text>
-        <text x="4" y={padY + 4} className="fill-emerald-700 text-[10px]">${netHigh.toFixed(1)}</text>
-        <text x={width - 4} y={padY + 4} textAnchor="end" className="fill-blue-700 text-[10px]">100%</text>
+        {[0, 0.5, 1].map((ratio) => {
+          const sample = Math.max(1, Math.round(1 + ratio * (points.length - 1)))
+          const tickX = padX + ratio * (width - padX * 2)
+          return <text key={ratio} x={tickX} y={height - 17} textAnchor={ratio === 0 ? 'start' : ratio === 1 ? 'end' : 'middle'} className="fill-slate-500 text-[9px]">{sample}</text>
+        })}
+        <text x={width / 2} y={height - 3} textAnchor="middle" className="fill-slate-500 text-[9px] uppercase tracking-[0.16em]">Trusted resolution sequence</text>
+        <text x="10" y={height / 2} transform={`rotate(-90 10 ${height / 2})`} textAnchor="middle" className="fill-emerald-700 text-[9px] uppercase tracking-[0.14em]">Cumulative flat-$1 P&amp;L</text>
+        <text x={width - 8} y={height / 2} transform={`rotate(90 ${width - 8} ${height / 2})`} textAnchor="middle" className="fill-blue-700 text-[9px] uppercase tracking-[0.14em]">Winner accuracy</text>
       </svg>
     </div>
   )

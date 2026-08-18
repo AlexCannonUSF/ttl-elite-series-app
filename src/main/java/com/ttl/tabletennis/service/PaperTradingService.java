@@ -591,6 +591,10 @@ public class PaperTradingService {
         ExposureProfile exposureProfile = ExposureProfile.fromOpenBets(existingOpenBets);
         List<com.ttl.tabletennis.prediction.staking.OpenPosition> policyOpenPositions =
                 new ArrayList<>(toPolicyOpenPositions(existingOpenBets, session));
+        Set<String> openPlayerPairKeys = existingOpenBets.stream()
+                .map(bet -> canonicalPlayerPairKey(bet.getPlayer1Id(), bet.getPlayer2Id()))
+                .filter(StringUtils::hasText)
+                .collect(java.util.stream.Collectors.toSet());
         List<com.ttl.tabletennis.prediction.staking.SettledStake> policySettledHistory =
                 toPolicySettledHistory(session);
         double exposureCapitalBase = Math.max(
@@ -669,6 +673,18 @@ public class PaperTradingService {
             String dedupeKey = StringUtils.hasText(row.suggestedDedupeKey())
                     ? row.suggestedDedupeKey().trim()
                     : eventKey + "|" + normalizeKey(candidate.sideName());
+            String playerPairKey = canonicalPlayerPairKey(row.player1Id(), row.player2Id());
+            if (row.live()
+                    && StringUtils.hasText(playerPairKey)
+                    && openPlayerPairKeys.contains(playerPairKey)) {
+                persistDecisionSample(
+                        session.getId(), strategy, modelVersion, row, candidate,
+                        eventKey, dedupeKey, null, null, null, false,
+                        "SKIPPED", "DUPLICATE_OPEN_PLAYER_PAIR"
+                );
+                skipped++;
+                continue;
+            }
             if (betRepository.existsBySessionIdAndEventKeyAndStatus(session.getId(), eventKey, PaperTradeBet.STATUS_OPEN)) {
                 persistDecisionSample(
                         session.getId(),
@@ -770,6 +786,7 @@ public class PaperTradingService {
 
         Set<String> placedEventKeys = new HashSet<>();
         Set<String> placedDedupeKeys = new HashSet<>();
+        Set<String> placedPlayerPairKeys = new HashSet<>();
         int explorationPlaced = 0;
 
         for (int i = 0; i < rankedCandidates.size(); i++) {
@@ -804,7 +821,10 @@ public class PaperTradingService {
                 continue;
             }
             if (placedEventKeys.contains(ranked.eventKey())
-                    || placedDedupeKeys.contains(ranked.dedupeKey())) {
+                    || placedDedupeKeys.contains(ranked.dedupeKey())
+                    || (ranked.row().live()
+                    && placedPlayerPairKeys.contains(canonicalPlayerPairKey(
+                    ranked.row().player1Id(), ranked.row().player2Id())))) {
                 persistDecisionSample(
                         session.getId(),
                         strategy,
@@ -1046,6 +1066,8 @@ public class PaperTradingService {
             recordObservation(session.getId(), bet, row, placementScore, LocalDateTime.now());
             placedEventKeys.add(ranked.eventKey());
             placedDedupeKeys.add(ranked.dedupeKey());
+            placedPlayerPairKeys.add(canonicalPlayerPairKey(row.player1Id(), row.player2Id()));
+            openPlayerPairKeys.add(canonicalPlayerPairKey(row.player1Id(), row.player2Id()));
 
             session.setCurrentBankroll(round2(session.getCurrentBankroll() - stake));
             session.setTotalStaked(round2(session.getTotalStaked() + stake));
@@ -3724,18 +3746,23 @@ public class PaperTradingService {
         return null;
     }
 
-    private boolean isEventTimingEligible(LiveOddsRecommendationDto row) {
+    boolean isEventTimingEligible(LiveOddsRecommendationDto row) {
         if (row == null) {
             return false;
         }
-        if (!onlyUpcoming) {
-            return true;
+        // "Only upcoming" means do not resurrect stale prematch rows. A row
+        // that has positively transitioned to LIVE is still an actionable,
+        // unresolved market and must be evaluated by the live policy. The old
+        // ordering rejected every live row as EVENT_NOT_UPCOMING before the
+        // allowLive and live-edge gates could run.
+        if (row.matchCompleted() || row.resulted() || isFinishedPhase(row.matchPhase())) {
+            return false;
         }
         if (row.live()) {
-            return false;
+            return true;
         }
-        if (isFinishedPhase(row.matchPhase())) {
-            return false;
+        if (!onlyUpcoming) {
+            return true;
         }
 
         Optional<LocalDateTime> startOpt = parseStartDateTime(row.startTimeIso());
@@ -3745,6 +3772,15 @@ public class PaperTradingService {
         int graceMinutes = clamp(startTimeGraceMinutes, 0, 240);
         LocalDateTime cutoff = LocalDateTime.now().minusMinutes(graceMinutes);
         return !startOpt.get().isBefore(cutoff);
+    }
+
+    private static String canonicalPlayerPairKey(Long player1Id, Long player2Id) {
+        if (player1Id == null || player2Id == null || player1Id.equals(player2Id)) {
+            return null;
+        }
+        long low = Math.min(player1Id, player2Id);
+        long high = Math.max(player1Id, player2Id);
+        return low + "|" + high;
     }
 
     // isFinishedPhase moved to PaperTradingHelpers (import-static above).

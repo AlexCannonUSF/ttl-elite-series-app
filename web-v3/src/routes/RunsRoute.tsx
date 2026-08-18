@@ -501,12 +501,35 @@ function IdentityPanel({ detail }: { detail: ResearchRunDetail }) {
 
 function TrendChart({ points }: { points: ResearchRunDetail['analytics']['trend'] }) {
   if (points.length < 2) return <EmptyState text="Two settled calls are needed to draw the trend." />
-  const width = 900; const height = 230; const pad = 26
+  const width = 900; const height = 280; const padX = 62; const padY = 30
   const profits = points.map((point) => point.cumulativeNetProfit)
   const min = Math.min(0, ...profits); const max = Math.max(0, ...profits); const range = Math.max(1, max - min)
-  const path = points.map((point, index) => `${index ? 'L' : 'M'} ${pad + index * (width - pad * 2) / Math.max(1, points.length - 1)} ${height - pad - (point.cumulativeNetProfit - min) * (height - pad * 2) / range}`).join(' ')
-  const zeroY = height - pad - (0 - min) * (height - pad * 2) / range
-  return <div><svg className="h-[230px] w-full" preserveAspectRatio="none" role="img" aria-label="Cumulative flat one dollar profit trend" viewBox={`0 0 ${width} ${height}`}><line x1={pad} x2={width - pad} y1={zeroY} y2={zeroY} stroke="rgba(100,116,139,.35)" strokeDasharray="4 5" /><path d={path} fill="none" stroke="#2563eb" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" /></svg><div className="mt-2 flex justify-between text-[10px] text-[var(--ink-muted)]"><span>Resolution 1</span><span>{points.length} trusted resolutions</span></div></div>
+  const x = (index: number) => padX + index * (width - padX * 2) / Math.max(1, points.length - 1)
+  const profitY = (value: number) => height - padY - (value - min) * (height - padY * 2) / range
+  const accuracyY = (value: number) => height - padY - value / 100 * (height - padY * 2)
+  const profitPath = points.map((point, index) => `${index ? 'L' : 'M'} ${x(index)} ${profitY(point.cumulativeNetProfit)}`).join(' ')
+  const accuracyPath = points.map((point, index) => `${index ? 'L' : 'M'} ${x(index)} ${accuracyY(point.runningAccuracyPct)}`).join(' ')
+  const zeroY = profitY(0)
+  const latest = points.at(-1)!
+  return <figure aria-labelledby="historical-trend-title">
+    <div className="flex flex-wrap items-end gap-3">
+      <div><p id="historical-trend-title" className="text-xs font-bold text-[var(--ink-strong)]">Resolution-by-resolution learning curve</p><p className="mt-1 text-[10px] text-[var(--ink-muted)]">Hypothetical one-dollar straight bets; no claim of profitability.</p></div>
+      <div className="ml-auto flex flex-wrap gap-3 text-[10px] font-semibold text-[var(--ink-muted)]"><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-5 bg-emerald-500" />Cumulative P&amp;L</span><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-5 bg-blue-500" />Winner accuracy</span></div>
+    </div>
+    <svg className="mt-3 h-auto w-full" role="img" aria-label="Cumulative one-dollar profit and running winner accuracy through trusted resolutions" viewBox={`0 0 ${width} ${height}`}>
+      <title>Historical run performance</title><desc>Green shows cumulative flat one-dollar profit; blue shows running accuracy. Left axis is dollars, right axis is percent, and the horizontal axis is trusted resolution order.</desc>
+      {[0, .25, .5, .75, 1].map((ratio) => { const y = padY + ratio * (height - padY * 2); return <g key={ratio}><line x1={padX} x2={width - padX} y1={y} y2={y} stroke="rgba(100,116,139,.16)" /><text x={padX - 8} y={y + 3} textAnchor="end" className="fill-emerald-700 text-[9px]">{signedMoney(max - ratio * range)}</text><text x={width - padX + 8} y={y + 3} className="fill-blue-700 text-[9px]">{(100 * (1 - ratio)).toFixed(0)}%</text></g> })}
+      <line x1={padX} x2={width - padX} y1={zeroY} y2={zeroY} stroke="rgba(15,23,42,.42)" strokeDasharray="4 5" />
+      <path d={profitPath} fill="none" stroke="#10b981" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+      <path d={accuracyPath} fill="none" stroke="#2563eb" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+      {points.filter((_, index) => index === 0 || index === points.length - 1 || index % Math.max(1, Math.floor(points.length / 20)) === 0).map((point) => { const index = points.indexOf(point); return <circle key={point.callId} cx={x(index)} cy={profitY(point.cumulativeNetProfit)} fill={point.correct ? '#10b981' : '#f43f5e'} r="3"><title>{`#${point.sample} ${point.eventName}; ${point.correct ? 'correct' : 'wrong'}; P&L ${signedMoney(point.cumulativeNetProfit)}; accuracy ${point.runningAccuracyPct.toFixed(1)}%`}</title></circle> })}
+      {[0, .5, 1].map((ratio) => <text key={ratio} x={padX + ratio * (width - padX * 2)} y={height - 16} textAnchor={ratio === 0 ? 'start' : ratio === 1 ? 'end' : 'middle'} className="fill-slate-500 text-[9px]">{Math.max(1, Math.round(1 + ratio * (points.length - 1)))}</text>)}
+      <text x={width / 2} y={height - 3} textAnchor="middle" className="fill-slate-500 text-[9px] uppercase tracking-[0.16em]">Trusted resolution sequence</text>
+      <text x="10" y={height / 2} transform={`rotate(-90 10 ${height / 2})`} textAnchor="middle" className="fill-emerald-700 text-[9px] uppercase tracking-[0.14em]">Cumulative flat-$1 P&amp;L</text>
+      <text x={width - 8} y={height / 2} transform={`rotate(90 ${width - 8} ${height / 2})`} textAnchor="middle" className="fill-blue-700 text-[9px] uppercase tracking-[0.14em]">Winner accuracy</text>
+    </svg>
+    <figcaption className="mt-2 grid gap-2 rounded-xl border border-[var(--line)] bg-white/55 p-3 text-[10px] text-[var(--ink-muted)] sm:grid-cols-3"><span>Sample: <strong>{points.length}</strong> trusted outcomes</span><span>Latest accuracy: <strong>{latest.runningAccuracyPct.toFixed(1)}%</strong></span><span>Latest hypothetical P&amp;L: <strong>{signedMoney(latest.cumulativeNetProfit)}</strong></span></figcaption>
+  </figure>
 }
 
 function ExplainMetric({ label, value, detail, onClick }: { label: string; value: string; detail: string; onClick: () => void }) {

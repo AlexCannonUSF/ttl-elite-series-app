@@ -209,7 +209,7 @@ function OddsFlow({ history, row }: { history: LiveBoardHistoryPoint[]; row: Liv
   const min = Math.min(...values)
   const max = Math.max(...values)
   const spread = Math.max(max - min, 0.15)
-  const x = (index: number) => 14 + (index / Math.max(1, points.length - 1)) * 292
+  const x = (index: number) => 30 + (index / Math.max(1, points.length - 1)) * 276
   const y = (value: number) => 104 - ((value - min) / spread) * 74
   const pathFor = (side: 'player1Odds' | 'player2Odds') =>
     points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index).toFixed(1)} ${y(point[side]).toFixed(1)}`).join(' ')
@@ -227,12 +227,16 @@ function OddsFlow({ history, row }: { history: LiveBoardHistoryPoint[]; row: Liv
         <span className="text-right font-mono text-[10px] text-slate-400">{points.length} samples<br />8s refresh</span>
       </div>
       <svg className="mt-3 w-full" viewBox="0 0 320 122" role="img" aria-label={`Odds movement for ${row.player1Name} and ${row.player2Name}`}>
-        {[30, 67, 104].map((gridY) => <line key={gridY} x1="14" y1={gridY} x2="306" y2={gridY} stroke="rgba(148,163,184,.14)" strokeWidth="1" />)}
+        <title>Hard Rock odds movement</title><desc>Decimal odds for both players over the local observation timeline. Lower odds imply a higher market probability.</desc>
+        {[0, .5, 1].map((ratio) => { const gridY = 30 + ratio * 74; const value = max - ratio * spread; return <g key={ratio}><line x1="30" y1={gridY} x2="306" y2={gridY} stroke="rgba(148,163,184,.14)" strokeWidth="1" /><text x="27" y={gridY + 3} textAnchor="end" fill="rgba(203,213,225,.72)" fontSize="7">{value.toFixed(2)}</text></g> })}
         <path d={pathFor('player1Odds')} fill="none" stroke="#5ee7bd" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
         <path d={pathFor('player2Odds')} fill="none" stroke="#fbbf67" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
         <circle cx={x(points.length - 1)} cy={y(points.at(-1)?.player1Odds ?? row.decimalOddsPlayer1)} r="4" fill="#5ee7bd" stroke="#0b2620" strokeWidth="2" />
         <circle cx={x(points.length - 1)} cy={y(points.at(-1)?.player2Odds ?? row.decimalOddsPlayer2)} r="4" fill="#fbbf67" stroke="#0b2620" strokeWidth="2" />
+        <text x="30" y="117" fill="rgba(203,213,225,.72)" fontSize="7">First</text><text x="306" y="117" textAnchor="end" fill="rgba(203,213,225,.72)" fontSize="7">Latest</text>
+        <text x="9" y="67" transform="rotate(-90 9 67)" textAnchor="middle" fill="rgba(203,213,225,.72)" fontSize="7">Decimal odds</text>
       </svg>
+      <p className="mt-1 text-center text-[8px] font-semibold uppercase tracking-[0.14em] text-slate-500">Observation sequence · oldest to newest</p>
       <div className="grid grid-cols-2 gap-2 border-t border-white/10 pt-3 text-xs">
         <div className="min-w-0">
           <p className="flex items-center gap-2 truncate text-slate-300"><span className="size-2 rounded-full bg-emerald-300" />{row.player1Name}</p>

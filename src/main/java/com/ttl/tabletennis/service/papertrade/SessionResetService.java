@@ -64,6 +64,11 @@ public class SessionResetService {
                     sessionRepository.findByStatusOrderByIdDesc(PaperTradeSession.STATUS_ACTIVE);
             if (!activeSessions.isEmpty()) {
                 sessionLifecycleService.closeSessions(activeSessions, LocalDateTime.now());
+                // The database enforces a single ACTIVE session. Force the
+                // CLOSED updates out before inserting the successor so the
+                // reset is deterministic even when Hibernate would otherwise
+                // reorder the update and insert within this transaction.
+                sessionRepository.flush();
             }
 
             PaperTradeSession created = sessionLifecycleService.createSession(startingBankroll, label);

@@ -897,7 +897,10 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void syncSkipsPastOrLiveRowsWhenUpcomingOnlyEnabled() {
+    void syncAllowsLiveRowsButRejectsStalePrematchRowsWhenUpcomingOnlyEnabled() {
+        ReflectionTestUtils.setField(paperTradingService, "onlyUpcoming", true);
+        ReflectionTestUtils.setField(paperTradingService, "allowLive", true);
+
         Player alpha = playerRepository.save(new Player("Clock", "Alpha"));
         Player beta = playerRepository.save(new Player("Clock", "Beta"));
 
@@ -941,6 +944,9 @@ class PaperTradingServiceTests {
                 dedupeKey(alpha, beta, LocalDate.now().plusDays(1).toString(), alpha.getName())
         );
 
+        String pastStartIso = LocalDateTime.now()
+                .minusDays(2)
+                .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
         LiveOddsRecommendationDto pastRow = new LiveOddsRecommendationDto(
                 "TEST_BOOK",
                 "CONSERVATIVE",
@@ -948,7 +954,7 @@ class PaperTradingServiceTests {
                 "Clock Alpha vs Clock Beta Past",
                 "TTL Elite Series",
                 false,
-                LocalDate.now().minusDays(2).toString(),
+                pastStartIso,
                 null,
                 "UPCOMING",
                 alpha.getId(),
@@ -977,18 +983,21 @@ class PaperTradingServiceTests {
                 "Would qualify except past start",
                 "Head-to-Head Decay",
                 0.21,
-                matchupKey(alpha, beta, LocalDate.now().minusDays(2).toString()),
-                dedupeKey(alpha, beta, LocalDate.now().minusDays(2).toString(), alpha.getName())
+                matchupKey(alpha, beta, pastStartIso),
+                dedupeKey(alpha, beta, pastStartIso, alpha.getName())
         );
 
         when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
                 .thenReturn(List.of(liveRow, pastRow));
 
+        assertTrue(paperTradingService.isEventTimingEligible(liveRow));
+        assertFalse(paperTradingService.isEventTimingEligible(pastRow));
+
         PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
         assertEquals(2, result.rowsScanned());
-        assertEquals(0, result.betsPlaced());
-        assertEquals(2, result.betsSkipped());
-        assertEquals(0, result.session().openBets());
+        assertEquals(1, result.betsPlaced());
+        assertEquals(1, result.betsSkipped());
+        assertEquals(1, result.session().openBets());
     }
 
     @Test

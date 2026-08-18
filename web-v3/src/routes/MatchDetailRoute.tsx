@@ -921,21 +921,23 @@ function ReliabilityCurve({ bins }: { bins: ReliabilityBin[] }) {
   const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ')
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md text-[var(--ink-muted)]">
+    <figure className="max-w-md" aria-labelledby="match-calibration-title">
+      <p id="match-calibration-title" className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--ink-muted)]">Calibration evidence</p>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full text-[var(--ink-muted)]" role="img" aria-label="Model calibration reliability curve">
+      <title>Model calibration reliability curve</title><desc>Horizontal axis is mean predicted win probability. Vertical axis is observed win rate. The dashed diagonal marks perfect calibration.</desc>
+      {[0, .25, .5, .75, 1].map((tick) => <g key={tick}><line x1={xScale(tick)} y1={pad} x2={xScale(tick)} y2={height - pad} stroke="rgba(100,116,139,.12)" /><line x1={pad} y1={yScale(tick)} x2={width - pad} y2={yScale(tick)} stroke="rgba(100,116,139,.12)" /><text x={xScale(tick)} y={height - pad + 14} textAnchor="middle" className="fill-current text-[8px]">{Math.round(tick * 100)}%</text><text x={pad - 6} y={yScale(tick) + 3} textAnchor="end" className="fill-current text-[8px]">{Math.round(tick * 100)}%</text></g>)}
       <line x1={pad} y1={height - pad} x2={width - pad} y2={pad} stroke="currentColor" strokeDasharray="4 4" strokeWidth={1} />
       <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
       <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
       {points.length > 1 ? <path d={path} fill="none" stroke="rgb(37, 99, 235)" strokeWidth={2} /> : null}
       {points.map((point, index) => (
-        <circle
-          key={`${point.bin.lowerBound}-${index}`}
-          cx={point.x}
-          cy={point.y}
-          fill="rgba(37, 99, 235, 0.65)"
-          r={3 + (point.bin.count / total) * 8}
-        />
+        <circle key={`${point.bin.lowerBound}-${index}`} cx={point.x} cy={point.y} fill="rgba(37, 99, 235, 0.65)" r={3 + (point.bin.count / total) * 8}><title>{`${Math.round(point.bin.meanPredicted * 100)}% predicted, ${Math.round(point.bin.observedRate * 100)}% observed, n=${point.bin.count}`}</title></circle>
       ))}
-    </svg>
+      <text x={width / 2} y={height - 3} textAnchor="middle" className="fill-current text-[8px] uppercase tracking-[0.14em]">Mean predicted win probability</text>
+      <text x="9" y={height / 2} transform={`rotate(-90 9 ${height / 2})`} textAnchor="middle" className="fill-current text-[8px] uppercase tracking-[0.14em]">Observed win rate</text>
+      </svg>
+      <figcaption className="mt-2 text-[10px] leading-4 text-[var(--ink-muted)]">Bubble size is the number of trusted outcomes in each probability bin.</figcaption>
+    </figure>
   )
 }
 

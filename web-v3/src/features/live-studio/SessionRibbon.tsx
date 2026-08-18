@@ -264,8 +264,10 @@ function Sparkline({ points, tone }: { points: EquityPoint[]; tone: 'negative' |
     .join(' ')
 
   return (
-    <svg className="h-9 w-32" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Session P&L sparkline">
+    <svg className="h-9 w-32" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Cumulative paper profit sparkline from ${values[0]!.toFixed(2)} to ${values.at(-1)!.toFixed(2)} dollars across ${values.length} points`}>
+      <title>Cumulative paper P&amp;L</title><desc>Horizontal axis is settlement sequence. Vertical position is cumulative simulated dollars.</desc>
       <path d={d} fill="none" stroke={tone === 'positive' ? '#059669' : '#e11d48'} strokeLinecap="round" strokeWidth="2.5" />
+      <circle cx={width - padding} cy={height - padding - ((values.at(-1)! - min) / spread) * (height - padding * 2)} fill={tone === 'positive' ? '#059669' : '#e11d48'} r="2.5" />
     </svg>
   )
 }

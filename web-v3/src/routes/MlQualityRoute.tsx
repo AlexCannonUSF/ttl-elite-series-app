@@ -130,6 +130,8 @@ export function MlQualityRoute() {
 
       <ModelCommandCenter history={history} scorecard={scorecard} />
 
+      <R4ResearchBrief />
+
       <ExperimentCollections history={history} />
 
       <ParameterScenarioStudio history={history} />
@@ -247,6 +249,46 @@ export function MlQualityRoute() {
 }
 
 // ---- Subcomponents ---------------------------------------------------------
+
+function R4ResearchBrief() {
+  return (
+    <Card className="mb-5 overflow-hidden border-blue-300/40 bg-[linear-gradient(135deg,rgba(239,246,255,.98),rgba(255,255,255,.96))]">
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3"><Badge variant="accent" className="w-fit"><FlaskConical className="mr-1 size-3.5" /> R4 weekly challenger</Badge><span className="rounded-full border border-blue-200 bg-white/70 px-3 py-1 font-mono text-[10px] font-bold text-blue-800">market-anchor-residual-r4-20260817</span></div>
+        <CardTitle>What we learned, what changed, and what must prove itself</CardTitle>
+        <CardDescription>Frozen Aug 17 research brief. Champion remains R3; R4 is a shadow lane and cannot place production paper bets.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4 xl:grid-cols-3">
+        <ResearchBriefPanel title="Evidence from the strongest completed run" tone="rose">
+          <BriefMetric label="R3 winner accuracy" value="58.89%" detail="169 correct / 287 trusted" />
+          <BriefMetric label="Hard Rock favorite" value="62.37%" detail="Outperformed the model" />
+          <BriefMetric label="Flat-$1 model ROI" value="−10.22%" detail="95% CI −19.52% to −0.91%" />
+          <p>Large positive model-versus-market gaps were weaker, not stronger. Trigger leaders were too thin and correlated to justify production reweighting.</p>
+        </ResearchBriefPanel>
+        <ResearchBriefPanel title="The materially different R4 hypothesis" tone="blue">
+          <BriefMetric label="Market prior" value="79%+" detail="Hard Rock no-vig logit anchor" />
+          <BriefMetric label="Model residual" value="21% max" detail="Decays as disagreement widens" />
+          <BriefMetric label="Training protocol" value="400 / 200" detail="Runs 71+72 train · run 76 holdout" />
+          <p>R4 asks whether the model improves the market only at the margin. The fitted residual reduced holdout Brier from 0.2383 to 0.2366; accuracy was 59.0% vs. 59.5%, so this is promising calibration evidence—not a winner.</p>
+        </ResearchBriefPanel>
+        <ResearchBriefPanel title="One-week promotion contract" tone="emerald">
+          <BriefMetric label="Minimum evidence" value="300" detail="Trusted forward outcomes" />
+          <BriefMetric label="Primary score" value="Log loss" detail="Then Brier and calibration" />
+          <BriefMetric label="Economic guard" value="EV after vig" detail="No-vig edge alone is insufficient" />
+          <p>Promote nothing unless R4 beats R3 and the market benchmark out of sample, preserves identity/settlement integrity, and avoids concentrated gains from one player, trigger, or time regime.</p>
+        </ResearchBriefPanel>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ResearchBriefPanel({ children, title, tone }: { children: ReactNode; title: string; tone: 'rose' | 'blue' | 'emerald' }) {
+  return <section className={cn('rounded-[22px] border p-4', tone === 'rose' ? 'border-rose-200 bg-rose-50/65' : tone === 'emerald' ? 'border-emerald-200 bg-emerald-50/65' : 'border-blue-200 bg-blue-50/65')}><h3 className="text-sm font-bold text-[var(--ink-strong)]">{title}</h3><div className="mt-3 grid grid-cols-3 gap-2 [&>p]:col-span-3 [&>p]:mt-1 [&>p]:text-[10px] [&>p]:leading-4 [&>p]:text-[var(--ink-muted)]">{children}</div></section>
+}
+
+function BriefMetric({ detail, label, value }: { detail: string; label: string; value: string }) {
+  return <div className="rounded-xl border border-white/80 bg-white/75 p-2"><p className="text-[8px] font-bold uppercase tracking-[0.12em] text-[var(--ink-muted)]">{label}</p><p className="mt-1 font-mono text-sm font-bold text-[var(--ink-strong)]">{value}</p><p className="mt-1 text-[8px] leading-3 text-[var(--ink-muted)]">{detail}</p></div>
+}
 
 function ExperimentCollections({ history }: { history: ModelRunHistory | null }) {
   const [experiments, setExperiments] = useState<ExperimentCollection[]>([])
@@ -519,9 +561,9 @@ function formatRatio(value: number | null) { return value == null ? 'N/A' : `${(
 function shortChecksum(value: string | null) { return value ? value.slice(0, 12) : 'N/A' }
 
 function ReliabilityOverlay({ training, recent }: { training: ReliabilitySnapshot; recent: ReliabilitySnapshot }) {
-  const width = 360
-  const height = 260
-  const pad = 32
+  const width = 420
+  const height = 300
+  const pad = 46
   const xScale = (v: number) => pad + v * (width - 2 * pad)
   const yScale = (v: number) => height - pad - v * (height - 2 * pad)
 
@@ -529,8 +571,14 @@ function ReliabilityOverlay({ training, recent }: { training: ReliabilitySnapsho
   const recentTotal = recent.bins.reduce((acc, bin) => acc + bin.count, 0) || 1
 
   return (
-    <div className="flex flex-col gap-4">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md text-[var(--ink-muted)]">
+    <figure className="flex flex-col gap-4" aria-labelledby="quality-calibration-title">
+      <div className="flex flex-wrap items-start gap-3">
+        <div><p id="quality-calibration-title" className="text-xs font-bold text-[var(--ink-strong)]">Predicted probability vs. observed win rate</p><p className="mt-1 text-[10px] text-[var(--ink-muted)]">Dots on the diagonal are calibrated; bubble area reflects sample volume.</p></div>
+        <div className="ml-auto flex gap-3 text-[10px] font-semibold text-[var(--ink-muted)]"><span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500/70" />Training</span><span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full bg-amber-600/70" />Recent</span></div>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-xl text-[var(--ink-muted)]" role="img" aria-label="Training and recent calibration reliability diagram">
+        <title>Calibration reliability diagram</title><desc>Horizontal axis is mean model probability. Vertical axis is observed win rate. Blue is training evidence and amber is recent settled evidence.</desc>
+        {[0, .25, .5, .75, 1].map((tick) => <g key={tick}><line x1={xScale(tick)} y1={pad} x2={xScale(tick)} y2={height - pad} stroke="rgba(100,116,139,.12)" /><line x1={pad} y1={yScale(tick)} x2={width - pad} y2={yScale(tick)} stroke="rgba(100,116,139,.12)" /><text x={xScale(tick)} y={height - pad + 16} textAnchor="middle" className="fill-current text-[9px]">{Math.round(tick * 100)}%</text><text x={pad - 8} y={yScale(tick) + 3} textAnchor="end" className="fill-current text-[9px]">{Math.round(tick * 100)}%</text></g>)}
         <line x1={pad} y1={height - pad} x2={width - pad} y2={pad} stroke="currentColor" strokeDasharray="4 4" strokeWidth={1} />
         <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
         <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
@@ -557,10 +605,10 @@ function ReliabilityOverlay({ training, recent }: { training: ReliabilitySnapsho
           />
         ))}
         <text x={width / 2} y={height - 6} textAnchor="middle" className="fill-current text-[10px] uppercase tracking-[0.24em]">
-          Mean predicted p
+          Mean predicted win probability
         </text>
         <text x={10} y={height / 2} transform={`rotate(-90 10 ${height / 2})`} textAnchor="middle" className="fill-current text-[10px] uppercase tracking-[0.24em]">
-          Observed rate
+          Observed win rate
         </text>
       </svg>
 
@@ -570,7 +618,8 @@ function ReliabilityOverlay({ training, recent }: { training: ReliabilitySnapsho
         <Stat label="Training ECE" value={formatProb(training.ece)} />
         <Stat label="Recent ECE" value={formatProb(recent.ece)} />
       </div>
-    </div>
+      <figcaption className="text-[10px] leading-4 text-[var(--ink-muted)]">Interpret only bins with meaningful counts. Calibration error (ECE) summarizes the count-weighted distance from the diagonal.</figcaption>
+    </figure>
   )
 }
 
@@ -610,69 +659,81 @@ function DriftKpiTiles({ snapshot }: { snapshot: MlQualityResponse }) {
 
 function ProbabilityHistogram({ bins }: { bins: HistogramBin[] }) {
   const max = Math.max(1, ...bins.map((bin) => bin.count))
+  const total = bins.reduce((sum, bin) => sum + bin.count, 0)
   return (
-    <ul className="flex flex-col gap-2">
+    <figure aria-labelledby="probability-distribution-title">
+      <div className="mb-3 flex items-end justify-between gap-3"><div><p id="probability-distribution-title" className="text-xs font-bold text-[var(--ink-strong)]">Model probability distribution</p><p className="mt-1 text-[10px] text-[var(--ink-muted)]">X: predicted win-probability band · bar length: settled calls in band</p></div><span className="font-mono text-xs font-bold">n={total}</span></div>
+      <div className="mb-1 grid grid-cols-[64px_1fr_42px] gap-3 text-[9px] font-bold uppercase tracking-[0.12em] text-[var(--ink-muted)]"><span>Probability</span><span className="text-center">Settled call count · 0 to {max}</span><span className="text-right">n</span></div>
+      <ul className="flex flex-col gap-2">
       {bins.map((bin) => {
         const ratio = bin.count / max
         const width = `${ratio * 100}%`
         return (
-          <li key={`${bin.lowerBound}-${bin.upperBound}`} className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.74)] p-3">
-            <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
-              <span>{(bin.lowerBound * 100).toFixed(0)}–{(bin.upperBound * 100).toFixed(0)}%</span>
-              <span>{bin.count}</span>
-            </div>
-            <div className="relative mt-2 h-3 rounded-full bg-[rgba(15,23,42,0.06)]">
-              <div className="absolute inset-y-0 left-0 rounded-full" style={{ width, backgroundColor: 'rgba(37, 99, 235, 0.55)' }} />
-            </div>
+          <li key={`${bin.lowerBound}-${bin.upperBound}`} className="grid grid-cols-[64px_1fr_42px] items-center gap-3 rounded-[16px] border border-[var(--line)] bg-[rgba(255,255,255,0.74)] px-3 py-2.5">
+            <span className="text-xs text-[var(--ink-muted)]">{(bin.lowerBound * 100).toFixed(0)}–{(bin.upperBound * 100).toFixed(0)}%</span>
+            <div className="relative h-3 rounded-full bg-[rgba(15,23,42,0.06)]" title={`${bin.count} settled calls`}><div className="absolute inset-y-0 left-0 rounded-full bg-blue-500/60" style={{ width }} /></div>
+            <span className="text-right font-mono text-xs font-bold">{bin.count}</span>
           </li>
         )
       })}
-    </ul>
+      </ul>
+      <figcaption className="mt-3 text-[10px] leading-4 text-[var(--ink-muted)]">A healthy distribution is judged together with calibration—not by preferring high confidence on its own.</figcaption>
+    </figure>
   )
 }
 
 function DailyVolume({ series }: { series: DailyCount[] }) {
-  const width = 360
-  const height = 180
-  const pad = 28
+  const width = 420
+  const height = 230
+  const padX = 48
+  const padY = 34
   const max = Math.max(1, ...series.map((s) => s.predictions))
-  const xStep = series.length > 1 ? (width - 2 * pad) / (series.length - 1) : 0
+  const xStep = series.length > 1 ? (width - 2 * padX) / (series.length - 1) : 0
   const path = series
     .map((point, idx) => {
-      const x = pad + xStep * idx
-      const y = height - pad - (point.predictions / max) * (height - 2 * pad)
+      const x = padX + xStep * idx
+      const y = height - padY - (point.predictions / max) * (height - 2 * padY)
       return `${idx === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
     })
     .join(' ')
 
   return (
-    <div className="flex flex-col gap-3">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md text-[var(--ink-muted)]">
-        <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
-        <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
+    <figure className="flex flex-col gap-3" aria-labelledby="daily-volume-title">
+      <div><p id="daily-volume-title" className="text-xs font-bold text-[var(--ink-strong)]">Trusted settled decisions by day</p><p className="mt-1 text-[10px] text-[var(--ink-muted)]">Daily throughput reveals outages, coverage loss, and changes in evidence velocity.</p></div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-xl text-[var(--ink-muted)]" role="img" aria-label="Daily settled decision volume time series">
+        <title>Daily model-evaluation volume</title><desc>Horizontal axis is calendar date. Vertical axis is trusted settled decisions.</desc>
+        {[0, .25, .5, .75, 1].map((ratio) => { const y = padY + ratio * (height - 2 * padY); const value = Math.round(max * (1 - ratio)); return <g key={ratio}><line x1={padX} y1={y} x2={width - padX} y2={y} stroke="rgba(100,116,139,.14)" /><text x={padX - 8} y={y + 3} textAnchor="end" className="fill-current text-[9px]">{value}</text></g> })}
+        <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} stroke="currentColor" strokeWidth={1} />
+        <line x1={padX} y1={padY} x2={padX} y2={height - padY} stroke="currentColor" strokeWidth={1} />
         {series.length > 1 ? (
           <path d={path} fill="none" stroke="rgb(37, 99, 235)" strokeWidth={2} />
         ) : null}
         {series.map((point, idx) => {
-          const x = pad + xStep * idx
-          const y = height - pad - (point.predictions / max) * (height - 2 * pad)
+          const x = padX + xStep * idx
+          const y = height - padY - (point.predictions / max) * (height - 2 * padY)
           return (
             <g key={point.date}>
-              <circle cx={x} cy={y} r={3} fill="rgba(37, 99, 235, 0.65)" />
+              <circle cx={x} cy={y} r={3.5} fill="rgba(37, 99, 235, 0.75)" />
               <title>{`${point.date} · ${point.predictions}`}</title>
             </g>
           )
         })}
-        <text x={width / 2} y={height - 6} textAnchor="middle" className="fill-current text-[10px] uppercase tracking-[0.24em]">
-          Day
-        </text>
+        {series.length ? <><text x={padX} y={height - 17} className="fill-current text-[9px]">{shortDay(series[0]!.date)}</text><text x={width - padX} y={height - 17} textAnchor="end" className="fill-current text-[9px]">{shortDay(series.at(-1)!.date)}</text></> : null}
+        <text x={width / 2} y={height - 3} textAnchor="middle" className="fill-current text-[9px] uppercase tracking-[0.18em]">Calendar date</text>
+        <text x="10" y={height / 2} transform={`rotate(-90 10 ${height / 2})`} textAnchor="middle" className="fill-current text-[9px] uppercase tracking-[0.16em]">Trusted decisions</text>
       </svg>
       <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
         <span className="inline-flex items-center gap-2"><BarChart3 className="size-3.5" />Max {max}</span>
         <span className="inline-flex items-center gap-2"><Activity className="size-3.5" />Total {series.reduce((acc, s) => acc + s.predictions, 0)}</span>
       </div>
-    </div>
+      <figcaption className="text-[10px] text-[var(--ink-muted)]">Zero volume is operationally meaningful; it is not silently omitted.</figcaption>
+    </figure>
   )
+}
+
+function shortDay(value: string) {
+  const date = new Date(`${value}T12:00:00`)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

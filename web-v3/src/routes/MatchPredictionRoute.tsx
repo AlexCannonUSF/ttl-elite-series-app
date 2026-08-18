@@ -367,7 +367,9 @@ function ReliabilityCurve({ bins }: { bins: ReliabilityBin[] }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md text-[var(--ink-muted)]">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md text-[var(--ink-muted)]" role="img" aria-label="Model calibration reliability curve">
+        <title>Model calibration reliability curve</title><desc>Horizontal axis is mean predicted win probability. Vertical axis is observed win rate. The dashed diagonal is perfect calibration.</desc>
+        {[0, .25, .5, .75, 1].map((tick) => <g key={tick}><line x1={xScale(tick)} y1={pad} x2={xScale(tick)} y2={height - pad} stroke="rgba(100,116,139,.12)" /><line x1={pad} y1={yScale(tick)} x2={width - pad} y2={yScale(tick)} stroke="rgba(100,116,139,.12)" /><text x={xScale(tick)} y={height - pad + 14} textAnchor="middle" className="fill-current text-[8px]">{Math.round(tick * 100)}%</text><text x={pad - 6} y={yScale(tick) + 3} textAnchor="end" className="fill-current text-[8px]">{Math.round(tick * 100)}%</text></g>)}
         <line x1={pad} y1={height - pad} x2={width - pad} y2={pad} stroke="currentColor" strokeDasharray="4 4" strokeWidth={1} />
         <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
         <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="currentColor" strokeWidth={1} />
@@ -384,7 +386,7 @@ function ReliabilityCurve({ bins }: { bins: ReliabilityBin[] }) {
           )
         })}
         <text x={width / 2} y={height - 6} textAnchor="middle" className="fill-current text-[10px] uppercase tracking-[0.24em]">
-          Mean predicted p
+          Mean predicted win probability
         </text>
         <text
           x={10}
@@ -393,7 +395,7 @@ function ReliabilityCurve({ bins }: { bins: ReliabilityBin[] }) {
           textAnchor="middle"
           className="fill-current text-[10px] uppercase tracking-[0.24em]"
         >
-          Observed rate
+          Observed win rate
         </text>
       </svg>
       <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
