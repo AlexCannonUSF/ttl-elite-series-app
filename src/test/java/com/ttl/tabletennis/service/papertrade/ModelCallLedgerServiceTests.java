@@ -149,8 +149,29 @@ class ModelCallLedgerServiceTests {
         assertEquals(1L, frozen.getPredictedWinnerPlayerId());
         assertEquals(0.62, frozen.getModelProbability());
         assertEquals(PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE, frozen.getCaptureType());
-        assertEquals("PREMATCH_PASS", frozen.getDecisionReason());
+        assertEquals("PLACED", frozen.getDecisionStatus());
+        assertEquals("PLACED_PRIMARY", frozen.getDecisionReason());
         assertTrue(frozen.isHasPaperPick());
+        verify(callRepository).save(frozen);
+    }
+
+    @Test
+    void liveGateRefreshesWithoutOverwritingFrozenPregamePrediction() {
+        PaperTradeModelCall frozen = call(0.62, 1L, PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE);
+        frozen.setDecisionStatus("SKIPPED");
+        frozen.setDecisionReason("EVENT_NOT_UPCOMING");
+        when(callRepository.findBySessionIdAndEventKey(7L, "event-1")).thenReturn(Optional.of(frozen));
+
+        LiveOddsRecommendationDto live = row(true, false, 0.28, 0.72, "Beta Two");
+        service.recordCall(7L, "CONSERVATIVE", "ENSEMBLE", live,
+                "event-1", "SKIPPED", "MODEL_EDGE_BELOW_THRESHOLD");
+
+        assertEquals(1L, frozen.getPredictedWinnerPlayerId());
+        assertEquals(0.62, frozen.getModelProbability());
+        assertEquals(PaperTradeModelCall.CAPTURE_PREMATCH_CLOSE, frozen.getCaptureType());
+        assertEquals("SKIPPED", frozen.getDecisionStatus());
+        assertEquals("MODEL_EDGE_BELOW_THRESHOLD", frozen.getDecisionReason());
+        assertFalse(frozen.isHasPaperPick());
         verify(callRepository).save(frozen);
     }
 

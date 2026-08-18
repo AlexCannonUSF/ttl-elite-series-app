@@ -105,9 +105,11 @@ public class ModelCallLedgerService {
     }
 
     /**
-     * Upsert one canonical call for the event. Prematch snapshots may refresh
-     * until play begins; live snapshots never overwrite a prematch call, and a
-     * live-only event freezes the first snapshot observed.
+     * Upsert one canonical call for the event. Prematch predictor snapshots may
+     * refresh until play begins; live snapshots never overwrite a prematch call,
+     * and a live-only event freezes the first predictor snapshot observed. The
+     * operational paper-trade decision is intentionally allowed to advance while
+     * the event is live so the ledger reflects the gate currently being evaluated.
      */
     @Transactional
     public void recordCall(Long sessionId,
@@ -221,11 +223,20 @@ public class ModelCallLedgerService {
             call.setDecisionReason(safeText(decisionReason, "UNKNOWN"));
             applyPredictorSnapshot(call, row, decisionSample);
         } else if (!storedPrematch && row.live()) {
-            // First-live reads are deliberately frozen; only bet-placement
-            // metadata below may change after the initial observation.
+            // First-live predictor reads are deliberately frozen. Operational
+            // decision metadata is refreshed below without changing the call.
         }
 
-        if ("PLACED".equalsIgnoreCase(decisionStatus)) {
+        boolean placedNow = "PLACED".equalsIgnoreCase(decisionStatus);
+        if (row.live() && !alreadyFinished && (!call.isHasPaperPick() || placedNow)) {
+            // A frozen pregame call may initially say EVENT_NOT_UPCOMING. Once
+            // the event is positively live, keep its original prediction for
+            // unbiased grading but expose the real live gate (or placement) to
+            // users and operators. Never downgrade an already placed call.
+            call.setDecisionStatus(safeText(decisionStatus, "SKIPPED"));
+            call.setDecisionReason(safeText(decisionReason, "UNKNOWN"));
+        }
+        if (placedNow) {
             call.setHasPaperPick(true);
         }
         if (call.getTopTrigger() == null && decisionSample != null) {

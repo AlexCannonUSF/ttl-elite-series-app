@@ -100,11 +100,16 @@ Do not promote R4 until all of the following are true:
 ## Operational corrections and safeguards
 
 - Live events are timing-eligible; finished phases and stale prematch rows are not.
+- The frozen probability snapshot and the operational decision state are now separate: a pregame probability remains immutable for honest grading, while a live event advances from `EVENT_NOT_UPCOMING` to its actual live gate or `PLACED` state.
 - Live still has its own explicit enablement and risk gates.
 - A live row cannot open a second position for the same player pair while one is already open, even if the feed changes the event key during promotion.
 - Distinct future rematches for the same players remain valid.
 - Every call, including non-paper calls, remains available for directional accuracy, Brier, calibration, benchmark, trigger, and factor analysis after trusted settlement.
 - All graph surfaces now state the measure, axes, units, sample context, and simulation status rather than relying on unlabeled decorative lines.
+
+### Post-fix forward boundary
+
+Session 92, `R4 Market-Anchored Forward Week 2026-08-18`, is the clean post-fix candidate run linked to the R4 experiment. It began at a $1,000 simulated bankroll with zero bets and zero decisions. Its first synchronized pass recorded 16/16 complete opportunities across Champion R3, Logistic Shadow, R4, the all-call ledger, and the Hard Rock benchmark. The two events that were live on that pass exposed their real gate (`EDGE_BELOW_THRESHOLD`); no live call retained `EVENT_NOT_UPCOMING`.
 
 ## Known limitations
 
