@@ -1,0 +1,517 @@
+{
+  "categorical": [
+    "match.event_code",
+    "match.round",
+    "match.table_number",
+    "live.server"
+  ],
+  "feature_count": 84,
+  "features": [
+    {
+      "max_age_ms": 0,
+      "name": "match.event_code",
+      "source": "match",
+      "unit": "id"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.round",
+      "source": "match",
+      "unit": "id"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.best_of",
+      "source": "match",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.is_televised",
+      "source": "match",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.is_major_event",
+      "source": "match",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.table_number",
+      "source": "match",
+      "unit": "id"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.day_of_week",
+      "source": "match",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "match.minutes_to_start",
+      "source": "scheduler",
+      "unit": "minutes"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "match.is_backup_table",
+      "source": "match",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.top.mu",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.bot.mu",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.top.phi",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.bot.phi",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.delta_mu",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.glicko.delta_phi_sum",
+      "source": "glicko2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ts2.top.mu",
+      "source": "trueskill2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ts2.bot.mu",
+      "source": "trueskill2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ts2.top.sigma",
+      "source": "trueskill2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ts2.bot.sigma",
+      "source": "trueskill2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ts2.skill_gap",
+      "source": "trueskill2",
+      "unit": "rating"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.wenglin.delta",
+      "source": "openskill",
+      "unit": "prob"
+    },
+    {
+      "max_age_ms": 86400000,
+      "name": "rater.ensemble.delta",
+      "source": "ensemble",
+      "unit": "prob"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.5.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.10.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.top.25.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.5.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.10.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.win_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.dominance",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.straight_set_rate",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.median_margin",
+      "source": "feature-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.gap_to_prev_match_ms",
+      "source": "feature-builder",
+      "unit": "millis"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "form.bot.25.completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "h2h.count",
+      "source": "h2h-builder",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "h2h.win_rate_top",
+      "source": "h2h-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "h2h.recency_decay_wins_top",
+      "source": "h2h-builder",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "h2h.median_margin_top",
+      "source": "h2h-builder",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 900000,
+      "name": "h2h.same_event_h2h_count",
+      "source": "h2h-builder",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.same_day_prior_matches_top",
+      "source": "schedule",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.same_day_prior_matches_bot",
+      "source": "schedule",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.rest_gap_minutes_top",
+      "source": "schedule",
+      "unit": "minutes"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.rest_gap_minutes_bot",
+      "source": "schedule",
+      "unit": "minutes"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.travel_tz_delta_top",
+      "source": "schedule",
+      "unit": "hours"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "ctx.venue_familiarity_top",
+      "source": "schedule",
+      "unit": "rate"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.games_top",
+      "source": "stream-cv",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.games_bot",
+      "source": "stream-cv",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.points_top",
+      "source": "stream-cv",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.points_bot",
+      "source": "stream-cv",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.server",
+      "source": "stream-cv",
+      "unit": "id"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.is_deuce",
+      "source": "stream-cv",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.point_differential",
+      "source": "stream-cv",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.current_lead_top",
+      "source": "stream-cv",
+      "unit": "points"
+    },
+    {
+      "max_age_ms": 30000,
+      "name": "live.time_since_last_point_s",
+      "source": "stream-cv",
+      "unit": "seconds"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "dq.feed_ticks_1m.top",
+      "source": "feed-health",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "dq.feed_ticks_1m.bot",
+      "source": "feed-health",
+      "unit": "int"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "dq.mirror_disagreement_flag",
+      "source": "score-truth",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "dq.stream_cv_present",
+      "source": "stream-cv",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 60000,
+      "name": "dq.player_canonicalised",
+      "source": "identity",
+      "unit": "bool"
+    },
+    {
+      "max_age_ms": 0,
+      "name": "dq.feature_completeness",
+      "source": "feature-builder",
+      "unit": "rate"
+    }
+  ],
+  "schema_hash": "52663c149cdb0d2b2f577162dd5fe013685b1c111f863ef1e5f977594eb524b3",
+  "version": "v3.0.0-variant-a"
+}

@@ -7,6 +7,11 @@ public record MatchupAnalysisDto(PlayerDto player1,
                                  HeadToHeadStatsDto headToHead,
                                  FormDto player1Form,
                                  FormDto player2Form,
+                                 FormDto player1Last50,
+                                 FormDto player2Last50,
+                                 RecentHeadToHeadDto recentHeadToHead,
+                                 RatingDto player1Ratings,
+                                 RatingDto player2Ratings,
                                  ProbabilityDto player1Probability,
                                  ProbabilityDto player2Probability,
                                  List<FeatureContributionDto> featureContributions,
@@ -25,6 +30,19 @@ public record MatchupAnalysisDto(PlayerDto player1,
                                  double confidenceLow,
                                  double confidenceHigh,
                                  int americanOdds) {
+    }
+
+    public record RecentHeadToHeadDto(int matches,
+                                      int player1Wins,
+                                      int player2Wins) {
+    }
+
+    public record RatingDto(double elo,
+                            double glicko,
+                            double glickoDeviation,
+                            double trueSkill2,
+                            double wengLin,
+                            double stability) {
     }
 
     public record FeatureContributionDto(String feature, double contribution) {

@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -73,6 +74,9 @@ public class OddsQuote {
     @Column(name = "scraped_at", nullable = false)
     private LocalDateTime scrapedAt;
 
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
+
     @PrePersist
     void prePersist() {
         if (scrapedAt == null) {
@@ -86,6 +90,9 @@ public class OddsQuote {
         }
         if (quoteTimestampMs <= 0L) {
             quoteTimestampMs = System.currentTimeMillis();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -227,5 +234,13 @@ public class OddsQuote {
 
     public void setScrapedAt(LocalDateTime scrapedAt) {
         this.scrapedAt = scrapedAt;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 }

@@ -33,19 +33,19 @@ public class StartupBrowserLauncher {
     @Value("${app.openBrowserOnStartup:true}")
     private boolean openBrowserOnStartup;
 
-    @Value("${app.openBrowserPath:/}")
+    @Value("${app.openBrowserPath:/v3/}")
     private String openBrowserPath;
 
     @Value("${app.openBrowserDelayMs:1200}")
     private long openBrowserDelayMs;
 
-    @Value("${app.webUiUrl:http://localhost:5173}")
+    @Value("${app.webUiUrl:http://127.0.0.1:5174/v3/}")
     private String webUiUrl;
 
     @Value("${app.autoStartWebUiDevServer:true}")
     private boolean autoStartWebUiDevServer;
 
-    @Value("${app.webUiDir:./web}")
+    @Value("${app.webUiDir:./web-v3}")
     private String webUiDir;
 
     @Value("${app.webUiStartTimeoutMs:20000}")
@@ -68,18 +68,6 @@ public class StartupBrowserLauncher {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
-        if (!openBrowserOnStartup) {
-            return;
-        }
-        if (GraphicsEnvironment.isHeadless()) {
-            log.info("Browser auto-open skipped: JVM is headless");
-            return;
-        }
-        if (!Desktop.isDesktopSupported()) {
-            log.info("Browser auto-open skipped: Desktop API not supported");
-            return;
-        }
-
         int port = resolveServerPort();
         String backendPath = openBrowserPath.startsWith("/") ? openBrowserPath : "/" + openBrowserPath;
         String backendUrl = "http://localhost:" + port + backendPath;
@@ -87,7 +75,16 @@ public class StartupBrowserLauncher {
 
         Thread opener = new Thread(() -> {
             String url = resolvePreferredUrl(backendUrl);
-            openInBrowser(url, delay);
+            announceRuntime(url, port);
+            if (!openBrowserOnStartup) {
+                log.info("Browser auto-open disabled; app remains available at {}", url);
+            } else if (GraphicsEnvironment.isHeadless()) {
+                log.info("Browser auto-open skipped: JVM is headless");
+            } else if (!Desktop.isDesktopSupported()) {
+                log.info("Browser auto-open skipped: Desktop API not supported");
+            } else {
+                openInBrowser(url, delay);
+            }
         }, "startup-browser-opener");
         opener.setDaemon(true);
         opener.start();
@@ -112,6 +109,15 @@ public class StartupBrowserLauncher {
         } catch (Exception e) {
             log.warn("Could not open browser for {}", url, e);
         }
+    }
+
+    private void announceRuntime(String appUrl, int backendPort) {
+        log.info("============================================================");
+        log.info("TTLELITE READY");
+        log.info("App:     {}", appUrl);
+        log.info("Backend: http://localhost:{}", backendPort);
+        log.info("Owner:   this IntelliJ Run session (Stop ends the app)");
+        log.info("============================================================");
     }
 
     private String resolvePreferredUrl(String backendUrl) {
@@ -149,7 +155,7 @@ public class StartupBrowserLauncher {
             return true;
         }
         String host = parseHost(webUiUrl, "127.0.0.1");
-        int port = parsePort(webUiUrl, 5173);
+        int port = parsePort(webUiUrl, 5174);
         String npmCommand = resolveNpmCommand();
 
         if (npmCommand == null) {
@@ -240,10 +246,16 @@ public class StartupBrowserLauncher {
 
     private boolean canExecuteNpm(String candidate) {
         try {
-            Process p = buildShellProcess(candidate + " --version")
+            // Do not probe npm through a login shell. IntelliJ inherits the user's
+            // executable environment, while a fresh zsh login can spend several
+            // seconds loading shell plugins and make the two-second probe report a
+            // false negative. Probe the executable itself so one-click startup is
+            // deterministic, including when PATH does not contain Homebrew yet.
+            Process p = new ProcessBuilder(candidate, "--version")
                     .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .start();
-            boolean done = p.waitFor(2, TimeUnit.SECONDS);
+            boolean done = p.waitFor(5, TimeUnit.SECONDS);
             if (!done) {
                 p.destroyForcibly();
                 return false;

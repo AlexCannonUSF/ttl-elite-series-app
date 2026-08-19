@@ -1,0 +1,36 @@
+# TTLElite Series 3.0 — Prediction policy (Phase 06)
+# Reloaded at runtime by StakingPolicyCatalog; every reload is audited
+# to settlement_policy_audit with policy_name = "staking-v3".
+
+schema_version: 1
+
+prediction:
+  minimumEdge:
+    default: 0.018
+    # Ladder per Prediction Engine Spec §9.3 — consumed once the Phase 06
+    # follow-up adds odds-bucket-aware thresholds.
+    ladder:
+      "1.50-1.79": 0.020
+      "1.80-2.20": 0.015
+      "2.21-2.80": 0.020
+      ">2.80":     0.040
+
+  shrink:
+    raterDisagreement:        0.30
+    uncertaintyAmbiguous:     0.50
+    uncertaintyAnomalous:     1.00
+    featureCompletenessBelow:
+      threshold: 0.80
+      factor:    0.30
+
+  staking:
+    fractionalKelly:        0.25
+    kellyCapUnits:          1.5
+    perMatchCapUnits:       2.0
+    perPlayerDailyCapUnits: 1.5
+    maxOpenExposureUnits:   5.0
+    minStakeUnits:          0.1
+    sessionDrawdownStop:
+      lookbackBets: 50
+      triggerRoi:   -0.08
+      factor:       0.50

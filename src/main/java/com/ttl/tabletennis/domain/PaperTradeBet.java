@@ -8,6 +8,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 import java.time.LocalDateTime;
 
@@ -18,6 +19,8 @@ import java.time.LocalDateTime;
         @Index(name = "idx_paper_bet_session_settled", columnList = "session_id, settled_at"),
         @Index(name = "idx_paper_bet_matchup", columnList = "player1_id, player2_id"),
         @Index(name = "idx_paper_bet_dedupe", columnList = "session_id, dedupe_key")
+}, uniqueConstraints = {
+        @UniqueConstraint(name = "uk_paper_bet_session_dedupe", columnNames = {"session_id", "dedupe_key"})
 })
 public class PaperTradeBet {
 
@@ -26,6 +29,7 @@ public class PaperTradeBet {
     public static final String STATUS_LOST = "LOST";
     public static final String STATUS_PUSHED = "PUSHED";
     public static final String STATUS_VOIDED = "VOIDED";
+    public static final String STATUS_PENDING_EVIDENCE = "PENDING_EVIDENCE";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -64,8 +68,32 @@ public class PaperTradeBet {
     @Column(name = "external_event_id", length = 96)
     private String externalEventId;
 
+    @Column(name = "identity_locked", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean identityLocked;
+
+    @Column(name = "identity_locked_at")
+    private LocalDateTime identityLockedAt;
+
+    @Column(name = "locked_start_time_iso", length = 64)
+    private String lockedStartTimeIso;
+
+    @Column(name = "locked_external_event_id", length = 96)
+    private String lockedExternalEventId;
+
+    @Column(name = "locked_source_feed_event_id", length = 128)
+    private String lockedSourceFeedEventId;
+
+    @Column(name = "identity_drift_count", nullable = false, columnDefinition = "integer default 0 not null")
+    private int identityDriftCount;
+
+    @Column(name = "last_identity_drift_at")
+    private LocalDateTime lastIdentityDriftAt;
+
     @Column(name = "live_at_placement", nullable = false)
     private boolean liveAtPlacement;
+
+    @Column(name = "placement_phase", length = 48)
+    private String placementPhase;
 
     @Column(name = "player1_id")
     private Long player1Id;
@@ -127,6 +155,9 @@ public class PaperTradeBet {
     @Column(name = "top_trigger_contribution")
     private Double topTriggerContribution;
 
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
     @Column(name = "grade", length = 8)
     private String grade;
 
@@ -172,11 +203,92 @@ public class PaperTradeBet {
     @Column(name = "settlement_source", length = 48)
     private String settlementSource;
 
+    @Column(name = "settlement_confidence")
+    private Double settlementConfidence;
+
+    @Column(name = "settlement_evidence_id")
+    private Long settlementEvidenceId;
+
+    @Column(name = "settlement_evidence_fingerprint", length = 64)
+    private String settlementEvidenceFingerprint;
+
+    @Column(name = "settlement_evidence_source_count")
+    private Integer settlementEvidenceSourceCount;
+
+    @Column(name = "settlement_coverage_state", length = 16)
+    private String settlementCoverageState;
+
+    @Column(name = "settlement_ambiguity_score")
+    private Double settlementAmbiguityScore;
+
+    @Column(name = "settlement_observed_at")
+    private LocalDateTime settlementObservedAt;
+
+    @Column(name = "score_evidence_quality", length = 24)
+    private String scoreEvidenceQuality;
+
+    @Column(name = "score_evidence_finality", length = 32)
+    private String scoreEvidenceFinality;
+
+    @Column(name = "score_evidence_confidence")
+    private Double scoreEvidenceConfidence;
+
+    @Column(name = "score_evidence_observation_count")
+    private Integer scoreEvidenceObservationCount;
+
+    @Column(name = "score_evidence_source_count")
+    private Integer scoreEvidenceSourceCount;
+
+    @Column(name = "score_evidence_agreeing_sources")
+    private Integer scoreEvidenceAgreeingSources;
+
+    @Column(name = "score_evidence_completion_signals")
+    private Integer scoreEvidenceCompletionSignals;
+
+    @Column(name = "score_evidence_inferred_winner_id")
+    private Long scoreEvidenceInferredWinnerId;
+
+    @Column(name = "score_evidence_latest_score", length = 64)
+    private String scoreEvidenceLatestScore;
+
+    @Column(name = "score_evidence_latest_phase", length = 32)
+    private String scoreEvidenceLatestPhase;
+
+    @Column(name = "score_evidence_contradictory", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean scoreEvidenceContradictory;
+
+    @Column(name = "closing_decimal_odds")
+    private Double closingDecimalOdds;
+
+    @Column(name = "closing_observed_at")
+    private LocalDateTime closingObservedAt;
+
+    @Column(name = "closing_source", length = 16)
+    private String closingSource;
+
+    @Column(name = "closing_market_state", length = 24)
+    private String closingMarketState;
+
     @Column(name = "last_observed_at")
     private LocalDateTime lastObservedAt;
 
     @Column(name = "missing_board_count", nullable = false, columnDefinition = "integer default 0 not null")
     private int missingBoardCount;
+
+    @Column(name = "pending_evidence_until")
+    private LocalDateTime pendingEvidenceUntil;
+
+    @Column(name = "pending_evidence_next_poll_at")
+    private LocalDateTime pendingEvidenceNextPollAt;
+
+    @Column(name = "pending_evidence_reason", length = 96)
+    private String pendingEvidenceReason;
+
+    @Column(name = "pending_evidence_note", length = 256)
+    private String pendingEvidenceNote;
+
+    @Column(name = "pending_evidence_updated_at")
+    private LocalDateTime pendingEvidenceUpdatedAt;
 
     @Column(name = "placed_at", nullable = false)
     private LocalDateTime placedAt;
@@ -224,6 +336,9 @@ public class PaperTradeBet {
         }
         if (missingBoardCount < 0) {
             missingBoardCount = 0;
+        }
+        if (identityDriftCount < 0) {
+            identityDriftCount = 0;
         }
     }
 
@@ -319,12 +434,76 @@ public class PaperTradeBet {
         this.externalEventId = externalEventId;
     }
 
+    public boolean isIdentityLocked() {
+        return identityLocked;
+    }
+
+    public void setIdentityLocked(boolean identityLocked) {
+        this.identityLocked = identityLocked;
+    }
+
+    public LocalDateTime getIdentityLockedAt() {
+        return identityLockedAt;
+    }
+
+    public void setIdentityLockedAt(LocalDateTime identityLockedAt) {
+        this.identityLockedAt = identityLockedAt;
+    }
+
+    public String getLockedStartTimeIso() {
+        return lockedStartTimeIso;
+    }
+
+    public void setLockedStartTimeIso(String lockedStartTimeIso) {
+        this.lockedStartTimeIso = lockedStartTimeIso;
+    }
+
+    public String getLockedExternalEventId() {
+        return lockedExternalEventId;
+    }
+
+    public void setLockedExternalEventId(String lockedExternalEventId) {
+        this.lockedExternalEventId = lockedExternalEventId;
+    }
+
+    public String getLockedSourceFeedEventId() {
+        return lockedSourceFeedEventId;
+    }
+
+    public void setLockedSourceFeedEventId(String lockedSourceFeedEventId) {
+        this.lockedSourceFeedEventId = lockedSourceFeedEventId;
+    }
+
+    public int getIdentityDriftCount() {
+        return identityDriftCount;
+    }
+
+    public void setIdentityDriftCount(int identityDriftCount) {
+        this.identityDriftCount = identityDriftCount;
+    }
+
+    public LocalDateTime getLastIdentityDriftAt() {
+        return lastIdentityDriftAt;
+    }
+
+    public void setLastIdentityDriftAt(LocalDateTime lastIdentityDriftAt) {
+        this.lastIdentityDriftAt = lastIdentityDriftAt;
+    }
+
     public boolean isLiveAtPlacement() {
         return liveAtPlacement;
     }
 
     public void setLiveAtPlacement(boolean liveAtPlacement) {
         this.liveAtPlacement = liveAtPlacement;
+    }
+
+    public String getPlacementPhase() {
+        return placementPhase;
+    }
+
+    public void setPlacementPhase(String placementPhase) {
+        this.placementPhase = placementPhase;
     }
 
     public Long getPlayer1Id() {
@@ -487,6 +666,14 @@ public class PaperTradeBet {
         this.topTriggerContribution = topTriggerContribution;
     }
 
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
+    }
+
     public String getGrade() {
         return grade;
     }
@@ -607,6 +794,182 @@ public class PaperTradeBet {
         this.settlementSource = settlementSource;
     }
 
+    public Double getSettlementConfidence() {
+        return settlementConfidence;
+    }
+
+    public void setSettlementConfidence(Double settlementConfidence) {
+        this.settlementConfidence = settlementConfidence;
+    }
+
+    public Long getSettlementEvidenceId() {
+        return settlementEvidenceId;
+    }
+
+    public void setSettlementEvidenceId(Long settlementEvidenceId) {
+        this.settlementEvidenceId = settlementEvidenceId;
+    }
+
+    public String getSettlementEvidenceFingerprint() {
+        return settlementEvidenceFingerprint;
+    }
+
+    public void setSettlementEvidenceFingerprint(String settlementEvidenceFingerprint) {
+        this.settlementEvidenceFingerprint = settlementEvidenceFingerprint;
+    }
+
+    public Integer getSettlementEvidenceSourceCount() {
+        return settlementEvidenceSourceCount;
+    }
+
+    public void setSettlementEvidenceSourceCount(Integer settlementEvidenceSourceCount) {
+        this.settlementEvidenceSourceCount = settlementEvidenceSourceCount;
+    }
+
+    public String getSettlementCoverageState() {
+        return settlementCoverageState;
+    }
+
+    public void setSettlementCoverageState(String settlementCoverageState) {
+        this.settlementCoverageState = settlementCoverageState;
+    }
+
+    public Double getSettlementAmbiguityScore() {
+        return settlementAmbiguityScore;
+    }
+
+    public void setSettlementAmbiguityScore(Double settlementAmbiguityScore) {
+        this.settlementAmbiguityScore = settlementAmbiguityScore;
+    }
+
+    public LocalDateTime getSettlementObservedAt() {
+        return settlementObservedAt;
+    }
+
+    public void setSettlementObservedAt(LocalDateTime settlementObservedAt) {
+        this.settlementObservedAt = settlementObservedAt;
+    }
+
+    public String getScoreEvidenceQuality() {
+        return scoreEvidenceQuality;
+    }
+
+    public void setScoreEvidenceQuality(String scoreEvidenceQuality) {
+        this.scoreEvidenceQuality = scoreEvidenceQuality;
+    }
+
+    public String getScoreEvidenceFinality() {
+        return scoreEvidenceFinality;
+    }
+
+    public void setScoreEvidenceFinality(String scoreEvidenceFinality) {
+        this.scoreEvidenceFinality = scoreEvidenceFinality;
+    }
+
+    public Double getScoreEvidenceConfidence() {
+        return scoreEvidenceConfidence;
+    }
+
+    public void setScoreEvidenceConfidence(Double scoreEvidenceConfidence) {
+        this.scoreEvidenceConfidence = scoreEvidenceConfidence;
+    }
+
+    public Integer getScoreEvidenceObservationCount() {
+        return scoreEvidenceObservationCount;
+    }
+
+    public void setScoreEvidenceObservationCount(Integer scoreEvidenceObservationCount) {
+        this.scoreEvidenceObservationCount = scoreEvidenceObservationCount;
+    }
+
+    public Integer getScoreEvidenceSourceCount() {
+        return scoreEvidenceSourceCount;
+    }
+
+    public void setScoreEvidenceSourceCount(Integer scoreEvidenceSourceCount) {
+        this.scoreEvidenceSourceCount = scoreEvidenceSourceCount;
+    }
+
+    public Integer getScoreEvidenceAgreeingSources() {
+        return scoreEvidenceAgreeingSources;
+    }
+
+    public void setScoreEvidenceAgreeingSources(Integer scoreEvidenceAgreeingSources) {
+        this.scoreEvidenceAgreeingSources = scoreEvidenceAgreeingSources;
+    }
+
+    public Integer getScoreEvidenceCompletionSignals() {
+        return scoreEvidenceCompletionSignals;
+    }
+
+    public void setScoreEvidenceCompletionSignals(Integer scoreEvidenceCompletionSignals) {
+        this.scoreEvidenceCompletionSignals = scoreEvidenceCompletionSignals;
+    }
+
+    public Long getScoreEvidenceInferredWinnerId() {
+        return scoreEvidenceInferredWinnerId;
+    }
+
+    public void setScoreEvidenceInferredWinnerId(Long scoreEvidenceInferredWinnerId) {
+        this.scoreEvidenceInferredWinnerId = scoreEvidenceInferredWinnerId;
+    }
+
+    public String getScoreEvidenceLatestScore() {
+        return scoreEvidenceLatestScore;
+    }
+
+    public void setScoreEvidenceLatestScore(String scoreEvidenceLatestScore) {
+        this.scoreEvidenceLatestScore = scoreEvidenceLatestScore;
+    }
+
+    public String getScoreEvidenceLatestPhase() {
+        return scoreEvidenceLatestPhase;
+    }
+
+    public void setScoreEvidenceLatestPhase(String scoreEvidenceLatestPhase) {
+        this.scoreEvidenceLatestPhase = scoreEvidenceLatestPhase;
+    }
+
+    public boolean isScoreEvidenceContradictory() {
+        return scoreEvidenceContradictory;
+    }
+
+    public void setScoreEvidenceContradictory(boolean scoreEvidenceContradictory) {
+        this.scoreEvidenceContradictory = scoreEvidenceContradictory;
+    }
+
+    public Double getClosingDecimalOdds() {
+        return closingDecimalOdds;
+    }
+
+    public void setClosingDecimalOdds(Double closingDecimalOdds) {
+        this.closingDecimalOdds = closingDecimalOdds;
+    }
+
+    public LocalDateTime getClosingObservedAt() {
+        return closingObservedAt;
+    }
+
+    public void setClosingObservedAt(LocalDateTime closingObservedAt) {
+        this.closingObservedAt = closingObservedAt;
+    }
+
+    public String getClosingSource() {
+        return closingSource;
+    }
+
+    public void setClosingSource(String closingSource) {
+        this.closingSource = closingSource;
+    }
+
+    public String getClosingMarketState() {
+        return closingMarketState;
+    }
+
+    public void setClosingMarketState(String closingMarketState) {
+        this.closingMarketState = closingMarketState;
+    }
+
     public LocalDateTime getLastObservedAt() {
         return lastObservedAt;
     }
@@ -621,6 +984,46 @@ public class PaperTradeBet {
 
     public void setMissingBoardCount(int missingBoardCount) {
         this.missingBoardCount = missingBoardCount;
+    }
+
+    public LocalDateTime getPendingEvidenceUntil() {
+        return pendingEvidenceUntil;
+    }
+
+    public void setPendingEvidenceUntil(LocalDateTime pendingEvidenceUntil) {
+        this.pendingEvidenceUntil = pendingEvidenceUntil;
+    }
+
+    public LocalDateTime getPendingEvidenceNextPollAt() {
+        return pendingEvidenceNextPollAt;
+    }
+
+    public void setPendingEvidenceNextPollAt(LocalDateTime pendingEvidenceNextPollAt) {
+        this.pendingEvidenceNextPollAt = pendingEvidenceNextPollAt;
+    }
+
+    public String getPendingEvidenceReason() {
+        return pendingEvidenceReason;
+    }
+
+    public void setPendingEvidenceReason(String pendingEvidenceReason) {
+        this.pendingEvidenceReason = pendingEvidenceReason;
+    }
+
+    public String getPendingEvidenceNote() {
+        return pendingEvidenceNote;
+    }
+
+    public void setPendingEvidenceNote(String pendingEvidenceNote) {
+        this.pendingEvidenceNote = pendingEvidenceNote;
+    }
+
+    public LocalDateTime getPendingEvidenceUpdatedAt() {
+        return pendingEvidenceUpdatedAt;
+    }
+
+    public void setPendingEvidenceUpdatedAt(LocalDateTime pendingEvidenceUpdatedAt) {
+        this.pendingEvidenceUpdatedAt = pendingEvidenceUpdatedAt;
     }
 
     public LocalDateTime getPlacedAt() {

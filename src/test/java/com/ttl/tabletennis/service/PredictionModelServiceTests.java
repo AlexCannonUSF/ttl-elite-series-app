@@ -4,8 +4,10 @@ import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.PaperTradeBet;
 import com.ttl.tabletennis.domain.PaperTradeLearningSample;
 import com.ttl.tabletennis.domain.Player;
+import com.ttl.tabletennis.domain.OddsSnapshot;
 import com.ttl.tabletennis.dto.ModelTrainingReportDto;
 import com.ttl.tabletennis.repository.MatchRepository;
+import com.ttl.tabletennis.repository.OddsSnapshotRepository;
 import com.ttl.tabletennis.repository.PaperTradeLearningSampleRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.util.MatchResultParser;
@@ -18,7 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.lang.reflect.Method;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -41,6 +46,9 @@ class PredictionModelServiceTests {
 
     @Autowired
     private PaperTradeLearningSampleRepository learningSampleRepository;
+
+    @Autowired
+    private OddsSnapshotRepository oddsSnapshotRepository;
 
     @Test
     void trainModelsAndPredictByFamilyAndVersion() {
@@ -111,6 +119,19 @@ class PredictionModelServiceTests {
         assertTrue(byFamily.player1Probability() >= 0.0 && byFamily.player1Probability() <= 1.0);
         assertTrue(byFamily.player1Probability() >= 0.10 && byFamily.player1Probability() <= 0.90);
 
+        PredictionModelService.PredictionSnapshot swapped = predictionModelService.predict(
+                beta.getId(), alpha.getId(), LocalDate.now(), "LOGISTIC");
+        assertEquals(1.0, byFamily.player1Probability() + swapped.player1Probability(), 0.000001);
+        assertEquals(byFamily.player1Probability(), swapped.player2Probability(), 0.000001);
+        Map<String, Double> swappedContributions = new HashMap<>();
+        swapped.featureContributions().forEach(item -> swappedContributions.put(item.feature(), item.contribution()));
+        byFamily.featureContributions().forEach(item -> {
+            if (swappedContributions.containsKey(item.feature())) {
+                assertEquals(-item.contribution(), swappedContributions.get(item.feature()), 0.0002,
+                        "feature contribution must reverse sign when player order is swapped: " + item.feature());
+            }
+        });
+
         PredictionModelService.PredictionSnapshot byVersion = predictionModelService.predict(
                 alpha.getId(), beta.getId(), LocalDate.now(), report.championVersion());
         assertEquals(report.championVersion(), byVersion.modelVersion());
@@ -128,12 +149,14 @@ class PredictionModelServiceTests {
 
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto player1 =
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto(
-                        0.60, 0.58, 1540.0, 1580.0, 1590.0, 75.0, 0.05, 10.0, 10.0, 10.0,
+                        0.60, 0.58, 1540.0, 1580.0, 1590.0, 75.0, 0.05,
+                        26.5, 2.0, 0.6, 0.35, 10.0, 10.0, 10.0,
                         0.72, 0.70, 0.68, 0.86
                 );
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto player2 =
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.PlayerFeatureDto(
-                        0.40, 0.42, 1490.0, 1510.0, 1505.0, 82.0, 0.06, 10.0, 10.0, 10.0,
+                        0.40, 0.42, 1490.0, 1510.0, 1505.0, 82.0, 0.06,
+                        24.6, 2.3, -0.2, 0.42, 10.0, 10.0, 10.0,
                         0.70, 0.68, 0.66, 0.83
                 );
         com.ttl.tabletennis.dto.MatchupFeatureVectorDto.ReliabilitySummaryDto reliabilitySummary =
@@ -161,6 +184,10 @@ class PredictionModelServiceTests {
                 player2,
                 0.64,
                 0.66,
+                0.59,
+                0.57,
+                0.6185,
+                0.1185,
                 reliabilitySummary,
                 thinSignificanceSummary,
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.RatingIntervalDto(1440.0, 1740.0),
@@ -178,6 +205,10 @@ class PredictionModelServiceTests {
                 player2,
                 0.64,
                 0.66,
+                0.59,
+                0.57,
+                0.6185,
+                0.1185,
                 reliabilitySummary,
                 deepSignificanceSummary,
                 new com.ttl.tabletennis.dto.MatchupFeatureVectorDto.RatingIntervalDto(1440.0, 1740.0),
@@ -208,9 +239,16 @@ class PredictionModelServiceTests {
         @SuppressWarnings("unchecked")
         List<Object> samples = (List<Object>) buildSamples.invoke(target, base, base.plusDays(25));
 
-        assertTrue(samples.size() >= 3);
+        assertTrue(samples.size() >= 6);
+        assertEquals(0, samples.size() % 2, "every source outcome must have an AB/BA training pair");
         Method matchDate = samples.get(0).getClass().getDeclaredMethod("matchDate");
         matchDate.setAccessible(true);
+        Method baseFeatures = samples.get(0).getClass().getDeclaredMethod("baseFeatures");
+        Method label = samples.get(0).getClass().getDeclaredMethod("label");
+        Method identity = samples.get(0).getClass().getDeclaredMethod("identity");
+        baseFeatures.setAccessible(true);
+        label.setAccessible(true);
+        identity.setAccessible(true);
 
         LocalDate first = assertInstanceOf(LocalDate.class, matchDate.invoke(samples.get(0)));
         LocalDate second = assertInstanceOf(LocalDate.class, matchDate.invoke(samples.get(1)));
@@ -218,6 +256,59 @@ class PredictionModelServiceTests {
 
         assertTrue(!first.isAfter(second) && !second.isAfter(third),
                 "training samples should be sorted chronologically before walk-forward validation");
+
+        for (int i = 0; i < samples.size(); i += 2) {
+            double[] forward = assertInstanceOf(double[].class, baseFeatures.invoke(samples.get(i)));
+            double[] reverse = assertInstanceOf(double[].class, baseFeatures.invoke(samples.get(i + 1)));
+            assertEquals(forward.length, reverse.length);
+            for (int j = 0; j < forward.length; j++) {
+                assertEquals(-forward[j], reverse[j], 0.0000000001);
+            }
+            assertEquals(1 - (int) label.invoke(samples.get(i)), (int) label.invoke(samples.get(i + 1)));
+            assertTrue(identity.invoke(samples.get(i)).toString().endsWith("|AB"));
+            assertTrue(identity.invoke(samples.get(i + 1)).toString().endsWith("|BA"));
+        }
+    }
+
+    @Test
+    void historicalMarketJoinUsesOnlyTheLatestPreStartNoVigSnapshot() throws Exception {
+        PredictionModelService target = AopTestUtils.getTargetObject(predictionModelService);
+        Player alpha = playerRepository.save(new Player("Market", "Alpha"));
+        Player beta = playerRepository.save(new Player("Market", "Beta"));
+        LocalDate matchDate = LocalDate.now().minusDays(10);
+        saveCompletedMatch("market-asof-1", alpha, beta, "3:1", matchDate);
+
+        String matchKey = "market alpha|market beta|" + matchDate + "T12:00:00Z";
+        LocalDateTime preStart = LocalDateTime.of(matchDate, LocalTime.of(11, 55));
+        LocalDateTime postStart = LocalDateTime.of(matchDate, LocalTime.of(12, 5));
+        saveMarketSnapshot("pre", matchKey, "P1", 0.61, preStart);
+        saveMarketSnapshot("pre", matchKey, "P2", 0.39, preStart);
+        saveMarketSnapshot("post", matchKey, "P1", 0.80, postStart);
+        saveMarketSnapshot("post", matchKey, "P2", 0.20, postStart);
+
+        Method buildSamples = PredictionModelService.class.getDeclaredMethod("buildSamples", LocalDate.class, LocalDate.class);
+        buildSamples.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Object> samples = (List<Object>) buildSamples.invoke(target, matchDate, matchDate);
+        Object forward = samples.stream()
+                .filter(sample -> {
+                    try {
+                        Method identity = sample.getClass().getDeclaredMethod("identity");
+                        identity.setAccessible(true);
+                        return identity.invoke(sample).toString().endsWith("|AB");
+                    } catch (ReflectiveOperationException e) {
+                        throw new AssertionError(e);
+                    }
+                })
+                .findFirst()
+                .orElseThrow();
+        Method marketProbability = forward.getClass().getDeclaredMethod("marketProbability");
+        Method marketObservedAt = forward.getClass().getDeclaredMethod("marketObservedAt");
+        marketProbability.setAccessible(true);
+        marketObservedAt.setAccessible(true);
+
+        assertEquals(0.61, (double) marketProbability.invoke(forward), 0.0000001);
+        assertEquals(preStart, marketObservedAt.invoke(forward));
     }
 
     private void saveCompletedMatch(String externalId,
@@ -232,6 +323,26 @@ class PredictionModelServiceTests {
         match.setPlayer2(player2);
         MatchResultParser.applyToMatch(match, result);
         matchRepository.save(match);
+    }
+
+    private void saveMarketSnapshot(String idSuffix,
+                                    String matchKey,
+                                    String side,
+                                    double noVigProbability,
+                                    LocalDateTime observedAt) {
+        OddsSnapshot snapshot = new OddsSnapshot();
+        snapshot.setTrackedEventId(String.format("%064d", oddsSnapshotRepository.count() + 1));
+        snapshot.setBookerEventId("book-" + idSuffix);
+        snapshot.setMatchKey(matchKey);
+        snapshot.setSide(side);
+        snapshot.setPriceDecimal(1.0 / noVigProbability);
+        snapshot.setImpliedProb(noVigProbability);
+        snapshot.setNoVigProbability(noVigProbability);
+        snapshot.setMarketOverround(0.0);
+        snapshot.setMarketState("OPEN");
+        snapshot.setSourceId("HR_MKT");
+        snapshot.setObservedAt(observedAt);
+        oddsSnapshotRepository.save(snapshot);
     }
 
     private void saveLearningSample(Long betId,
@@ -259,8 +370,12 @@ class PredictionModelServiceTests {
         sample.setProfitLoss(profitLoss);
         sample.setConfidenceWidth(0.18);
         sample.setLastObservedPhase(phase);
+        sample.setPlacementPhase(phase);
         sample.setPlacedAt(settledAt.minusMinutes(25));
+        sample.setEventOccurredAt(settledAt.minusMinutes(25));
         sample.setSettledAt(settledAt);
+        sample.setSettlementConfidence(1.0);
+        sample.setCalibrationEligible(true);
         learningSampleRepository.save(sample);
     }
 }

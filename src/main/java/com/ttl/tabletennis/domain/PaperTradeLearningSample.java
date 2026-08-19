@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -69,6 +70,48 @@ public class PaperTradeLearningSample {
     @Column(name = "last_observed_phase", length = 64)
     private String lastObservedPhase;
 
+    @Column(name = "placement_phase", length = 64)
+    private String placementPhase;
+
+    /**
+     * Match/placement clock used for recency weighting. Settlement time is
+     * deliberately not used because a late official result must not turn an
+     * old prediction into a brand-new observation.
+     */
+    @Column(name = "event_occurred_at")
+    private LocalDateTime eventOccurredAt;
+
+    @Column(name = "settlement_source", length = 48)
+    private String settlementSource;
+
+    @Column(name = "settlement_reason", length = 120)
+    private String settlementReason;
+
+    @Column(name = "settlement_confidence", nullable = false, columnDefinition = "double precision default 0 not null")
+    private double settlementConfidence;
+
+    @Column(name = "calibration_eligible", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean calibrationEligible;
+
+    /**
+     * Canonical Phase 4 gate. A row may be retained for settlement telemetry
+     * while this flag prevents it from affecting any learning consumer.
+     */
+    @Column(name = "learning_eligible", nullable = false, columnDefinition = "boolean default false not null")
+    private boolean learningEligible;
+
+    @Column(name = "learning_exclusion_reason", length = 64)
+    private String learningExclusionReason;
+
+    @Column(name = "price_regime", length = 24)
+    private String priceRegime;
+
+    @Column(name = "side_orientation", length = 4)
+    private String sideOrientation;
+
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
     @Column(name = "placed_at")
     private LocalDateTime placedAt;
 
@@ -77,6 +120,34 @@ public class PaperTradeLearningSample {
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
+
+    /**
+     * Closing-line capture — Phase 06 / finish-checklist §5.
+     *
+     * <p>{@code closingDecimalOdds} is the market price for the bet's
+     * side at the moment the market closed (or was suspended) for this
+     * tracked event. {@code closingObservedAt} is the timestamp of the
+     * snapshot we picked. Both are nullable because (a) we backfilled
+     * the historical samples after settlement, so older rows may not
+     * have a closing snapshot in {@code odds_snapshot}, and (b) the
+     * source feed may not have observed a CLOSED state for some events.
+     * Missing closing prices remain explicitly uncovered. They must never be
+     * replaced with PnL because profitability is not closing-line value.
+     */
+    @Column(name = "closing_decimal_odds")
+    private Double closingDecimalOdds;
+
+    @Column(name = "closing_observed_at")
+    private LocalDateTime closingObservedAt;
+
+    @Column(name = "closing_source", length = 16)
+    private String closingSource;
+
+    @Column(name = "closing_market_state", length = 24)
+    private String closingMarketState;
 
     @PrePersist
     void prePersist() {
@@ -97,6 +168,9 @@ public class PaperTradeLearningSample {
         }
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -224,6 +298,97 @@ public class PaperTradeLearningSample {
         this.lastObservedPhase = lastObservedPhase;
     }
 
+    public String getPlacementPhase() {
+        return placementPhase;
+    }
+
+    public void setPlacementPhase(String placementPhase) {
+        this.placementPhase = placementPhase;
+    }
+
+    public LocalDateTime getEventOccurredAt() {
+        return eventOccurredAt;
+    }
+
+    public void setEventOccurredAt(LocalDateTime eventOccurredAt) {
+        this.eventOccurredAt = eventOccurredAt;
+    }
+
+    public String getSettlementSource() {
+        return settlementSource;
+    }
+
+    public void setSettlementSource(String settlementSource) {
+        this.settlementSource = settlementSource;
+    }
+
+    public String getSettlementReason() {
+        return settlementReason;
+    }
+
+    public void setSettlementReason(String settlementReason) {
+        this.settlementReason = settlementReason;
+    }
+
+    public double getSettlementConfidence() {
+        return settlementConfidence;
+    }
+
+    public void setSettlementConfidence(double settlementConfidence) {
+        this.settlementConfidence = settlementConfidence;
+    }
+
+    public boolean isCalibrationEligible() {
+        return calibrationEligible;
+    }
+
+    public void setCalibrationEligible(boolean calibrationEligible) {
+        this.calibrationEligible = calibrationEligible;
+        this.learningEligible = calibrationEligible;
+    }
+
+    public boolean isLearningEligible() {
+        return learningEligible;
+    }
+
+    public void setLearningEligible(boolean learningEligible) {
+        this.learningEligible = learningEligible;
+        // Keep the legacy column synchronized during the compatibility window.
+        this.calibrationEligible = learningEligible;
+    }
+
+    public String getLearningExclusionReason() {
+        return learningExclusionReason;
+    }
+
+    public void setLearningExclusionReason(String learningExclusionReason) {
+        this.learningExclusionReason = learningExclusionReason;
+    }
+
+    public String getPriceRegime() {
+        return priceRegime;
+    }
+
+    public void setPriceRegime(String priceRegime) {
+        this.priceRegime = priceRegime;
+    }
+
+    public String getSideOrientation() {
+        return sideOrientation;
+    }
+
+    public void setSideOrientation(String sideOrientation) {
+        this.sideOrientation = sideOrientation;
+    }
+
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
+    }
+
     public LocalDateTime getPlacedAt() {
         return placedAt;
     }
@@ -246,5 +411,45 @@ public class PaperTradeLearningSample {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
+    }
+
+    public Double getClosingDecimalOdds() {
+        return closingDecimalOdds;
+    }
+
+    public void setClosingDecimalOdds(Double closingDecimalOdds) {
+        this.closingDecimalOdds = closingDecimalOdds;
+    }
+
+    public LocalDateTime getClosingObservedAt() {
+        return closingObservedAt;
+    }
+
+    public void setClosingObservedAt(LocalDateTime closingObservedAt) {
+        this.closingObservedAt = closingObservedAt;
+    }
+
+    public String getClosingSource() {
+        return closingSource;
+    }
+
+    public void setClosingSource(String closingSource) {
+        this.closingSource = closingSource;
+    }
+
+    public String getClosingMarketState() {
+        return closingMarketState;
+    }
+
+    public void setClosingMarketState(String closingMarketState) {
+        this.closingMarketState = closingMarketState;
     }
 }

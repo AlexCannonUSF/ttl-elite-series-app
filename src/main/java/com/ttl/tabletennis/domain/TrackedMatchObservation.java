@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -15,7 +16,8 @@ import java.time.LocalDateTime;
 @Table(name = "tracked_match_observation", indexes = {
         @Index(name = "idx_tracked_obs_event_time", columnList = "event_key, observed_at"),
         @Index(name = "idx_tracked_obs_bet_time", columnList = "bet_id, observed_at"),
-        @Index(name = "idx_tracked_obs_session_time", columnList = "session_id, observed_at")
+        @Index(name = "idx_tracked_obs_session_time", columnList = "session_id, observed_at"),
+        @Index(name = "idx_tracked_obs_session_event_time", columnList = "session_id, event_key, observed_at, id")
 })
 public class TrackedMatchObservation {
 
@@ -98,8 +100,29 @@ public class TrackedMatchObservation {
     @Column(name = "score_detail", length = 180)
     private String scoreDetail;
 
+    @Column(name = "provisional_winner_player_id")
+    private Long provisionalWinnerPlayerId;
+
+    @Column(name = "provisional_outcome_method", length = 48)
+    private String provisionalOutcomeMethod;
+
+    @Column(name = "provisional_outcome_confidence")
+    private Double provisionalOutcomeConfidence;
+
+    @Column(name = "resolved_winner_player_id")
+    private Long resolvedWinnerPlayerId;
+
+    @Column(name = "provisional_correct")
+    private Boolean provisionalCorrect;
+
+    @Column(name = "provisional_resolved_at")
+    private LocalDateTime provisionalResolvedAt;
+
     @Column(name = "observed_at", nullable = false)
     private LocalDateTime observedAt;
+
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
 
     @PrePersist
     void prePersist() {
@@ -114,6 +137,9 @@ public class TrackedMatchObservation {
         }
         if (observedAt == null) {
             observedAt = LocalDateTime.now();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -321,11 +347,67 @@ public class TrackedMatchObservation {
         this.scoreDetail = scoreDetail;
     }
 
+    public Long getProvisionalWinnerPlayerId() {
+        return provisionalWinnerPlayerId;
+    }
+
+    public void setProvisionalWinnerPlayerId(Long provisionalWinnerPlayerId) {
+        this.provisionalWinnerPlayerId = provisionalWinnerPlayerId;
+    }
+
+    public String getProvisionalOutcomeMethod() {
+        return provisionalOutcomeMethod;
+    }
+
+    public void setProvisionalOutcomeMethod(String provisionalOutcomeMethod) {
+        this.provisionalOutcomeMethod = provisionalOutcomeMethod;
+    }
+
+    public Double getProvisionalOutcomeConfidence() {
+        return provisionalOutcomeConfidence;
+    }
+
+    public void setProvisionalOutcomeConfidence(Double provisionalOutcomeConfidence) {
+        this.provisionalOutcomeConfidence = provisionalOutcomeConfidence;
+    }
+
+    public Long getResolvedWinnerPlayerId() {
+        return resolvedWinnerPlayerId;
+    }
+
+    public void setResolvedWinnerPlayerId(Long resolvedWinnerPlayerId) {
+        this.resolvedWinnerPlayerId = resolvedWinnerPlayerId;
+    }
+
+    public Boolean getProvisionalCorrect() {
+        return provisionalCorrect;
+    }
+
+    public void setProvisionalCorrect(Boolean provisionalCorrect) {
+        this.provisionalCorrect = provisionalCorrect;
+    }
+
+    public LocalDateTime getProvisionalResolvedAt() {
+        return provisionalResolvedAt;
+    }
+
+    public void setProvisionalResolvedAt(LocalDateTime provisionalResolvedAt) {
+        this.provisionalResolvedAt = provisionalResolvedAt;
+    }
+
     public LocalDateTime getObservedAt() {
         return observedAt;
     }
 
     public void setObservedAt(LocalDateTime observedAt) {
         this.observedAt = observedAt;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 }

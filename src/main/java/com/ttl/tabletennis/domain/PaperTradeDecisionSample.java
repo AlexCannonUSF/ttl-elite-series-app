@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -72,6 +73,21 @@ public class PaperTradeDecisionSample {
     @Column(name = "top_trigger", length = 180)
     private String topTrigger;
 
+    @Column(name = "feature_contributions", length = 2400)
+    private String featureContributions;
+
+    @Column(name = "overall_reliability")
+    private Double overallReliability;
+
+    @Column(name = "rating_agreement")
+    private Double ratingAgreement;
+
+    @Column(name = "trigger_reliability")
+    private Double triggerReliability;
+
+    @Column(name = "baseline_stability")
+    private Double baselineStability;
+
     @Column(name = "recommended", nullable = false)
     private boolean recommended;
 
@@ -111,8 +127,14 @@ public class PaperTradeDecisionSample {
     @Column(name = "decision_reason", nullable = false, length = 120)
     private String decisionReason;
 
+    @Column(name = "gate_results", length = 1200)
+    private String gateResults;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
 
     @PrePersist
     void prePersist() {
@@ -130,6 +152,9 @@ public class PaperTradeDecisionSample {
         }
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
+        }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
         }
     }
 
@@ -265,6 +290,46 @@ public class PaperTradeDecisionSample {
         this.topTrigger = topTrigger;
     }
 
+    public String getFeatureContributions() {
+        return featureContributions;
+    }
+
+    public void setFeatureContributions(String featureContributions) {
+        this.featureContributions = featureContributions;
+    }
+
+    public Double getOverallReliability() {
+        return overallReliability;
+    }
+
+    public void setOverallReliability(Double overallReliability) {
+        this.overallReliability = overallReliability;
+    }
+
+    public Double getRatingAgreement() {
+        return ratingAgreement;
+    }
+
+    public void setRatingAgreement(Double ratingAgreement) {
+        this.ratingAgreement = ratingAgreement;
+    }
+
+    public Double getTriggerReliability() {
+        return triggerReliability;
+    }
+
+    public void setTriggerReliability(Double triggerReliability) {
+        this.triggerReliability = triggerReliability;
+    }
+
+    public Double getBaselineStability() {
+        return baselineStability;
+    }
+
+    public void setBaselineStability(Double baselineStability) {
+        this.baselineStability = baselineStability;
+    }
+
     public boolean isRecommended() {
         return recommended;
     }
@@ -369,11 +434,27 @@ public class PaperTradeDecisionSample {
         this.decisionReason = decisionReason;
     }
 
+    public String getGateResults() {
+        return gateResults;
+    }
+
+    public void setGateResults(String gateResults) {
+        this.gateResults = gateResults;
+    }
+
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 }

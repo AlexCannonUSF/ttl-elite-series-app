@@ -1,0 +1,13 @@
+{
+  "templateId": "ttcup.table1.v2",
+  "frameWidth": 1280,
+  "frameHeight": 720,
+  "roi": {"x": 36, "y": 28, "w": 284, "h": 104},
+  "colorProfile": "bright-on-dark",
+  "digitFields": [
+    {"name": "topGames", "rel": [0, 0, 44, 104]},
+    {"name": "topPoints", "rel": [48, 0, 88, 104]},
+    {"name": "botGames", "rel": [144, 0, 44, 104]},
+    {"name": "botPoints", "rel": [192, 0, 88, 104]}
+  ]
+}

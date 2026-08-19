@@ -26,6 +26,7 @@ import type {
   ScrapeMetricsDto,
   ScrapeRunRecordDto,
   ScrapeStatusDto,
+  SettlementReviewPageDto,
   StatisticsBenchmarkDto,
   TrackedMatchObservationDto,
   ValueOpportunityDto,
@@ -153,6 +154,12 @@ export const apiClient = {
       .data,
   getLiveStudioIntegrity: async () =>
     (await api.get<LiveStudioIntegrityDto>('/api/live-studio/integrity')).data,
+  getSettlementReview: async (page = 0, size = 20, suspiciousOnly = false) =>
+    (
+      await api.get<SettlementReviewPageDto>('/api/score-truth/settlement-review', {
+        params: { page, size, suspiciousOnly },
+      })
+    ).data,
   getLiveStudioMatchTimeline: async (eventKey: string) =>
     (
       await api.get<TrackedMatchObservationDto[]>(
@@ -165,7 +172,7 @@ export const apiClient = {
         params: { strategy, modelVersion, limit },
       })
     ).data,
-  resetLiveStudio: async (startingBankroll?: number, label?: string, clearHistory = true) =>
+  resetLiveStudio: async (startingBankroll?: number, label?: string, clearHistory = false) =>
     (
       await api.post<PaperTradingSessionDto>('/api/live-studio/reset', null, {
         params: { startingBankroll, label, clearHistory },

@@ -2,7 +2,9 @@ package com.ttl.tabletennis.service;
 
 import com.ttl.tabletennis.domain.Match;
 import com.ttl.tabletennis.domain.PaperTradeBet;
+import com.ttl.tabletennis.domain.PaperTradeBetShadow;
 import com.ttl.tabletennis.domain.PaperTradeSession;
+import com.ttl.tabletennis.domain.PaperTradeSessionShadow;
 import com.ttl.tabletennis.domain.Player;
 import com.ttl.tabletennis.domain.TrackedMatchObservation;
 import com.ttl.tabletennis.dto.LiveOddsRecommendationDto;
@@ -14,8 +16,10 @@ import com.ttl.tabletennis.dto.PaperTradingSyncResultDto;
 import com.ttl.tabletennis.dto.TrackedMatchObservationDto;
 import com.ttl.tabletennis.repository.MatchRepository;
 import com.ttl.tabletennis.repository.PaperTradeBetRepository;
+import com.ttl.tabletennis.repository.PaperTradeBetShadowRepository;
 import com.ttl.tabletennis.repository.PaperTradeLearningSampleRepository;
 import com.ttl.tabletennis.repository.PaperTradeSessionRepository;
+import com.ttl.tabletennis.repository.PaperTradeSessionShadowRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.repository.TrackedMatchObservationRepository;
 import com.ttl.tabletennis.scrape.TtSeriesScraper;
@@ -35,6 +39,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -45,11 +50,282 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
+@SpringBootTest(properties = "ttl.paper.selectionMode=BEST_VALUE")
 @Transactional
 class PaperTradingServiceTests {
+
+    @Test
+    void noVigMarketProbabilityRemovesTwoSidedOverround() {
+        LiveOddsRecommendationDto row = marketRow(11L, 22L, 0.60, 0.50);
+
+        assertEquals(0.60 / 1.10, PaperTradingService.noVigMarketProbability(row, 11L), 0.000001);
+        assertEquals(0.50 / 1.10, PaperTradingService.noVigMarketProbability(row, 22L), 0.000001);
+        assertNull(PaperTradingService.noVigMarketProbability(row, 33L));
+    }
+
+    @Test
+    void noVigMarketProbabilityRejectsIncompleteMarket() {
+        LiveOddsRecommendationDto row = marketRow(11L, 22L, 0.60, 0.0);
+
+        assertNull(PaperTradingService.noVigMarketProbability(row, 11L));
+    }
+
+    @Test
+    void accuracyAuditMayOverrideOnlyEdgeAndNegativeKellyRejections() {
+        assertTrue(PaperTradingService.isAccuracyAuditStakingOnlyRejection(List.of(
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD,
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_NEGATIVE_KELLY
+        )));
+        assertFalse(PaperTradingService.isAccuracyAuditStakingOnlyRejection(List.of(
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD,
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_MAX_OPEN_EXPOSURE
+        )));
+    }
+
+    @Test
+    void accuracyAuditSelectsTheModelWinnerWhenTheValueSideIsTheOpponent() {
+        Player alpha = playerRepository.save(new Player("Audit", "Alpha"));
+        Player beta = playerRepository.save(new Player("Audit", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Audit Alpha vs Audit Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.64,
+                2.40,
+                -156,
+                140,
+                0.61,
+                0.42,
+                0.54,
+                0.46,
+                -0.07,
+                0.04,
+                -117,
+                117,
+                beta.getName(),
+                0.04,
+                117,
+                0.48,
+                0.62,
+                false,
+                "WATCH",
+                "The separate value engine prefers Beta, while Alpha remains the model winner.",
+                "Rater Ensemble Delta",
+                0.09,
+                0.90,
+                0.80,
+                0.85,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousMode = ReflectionTestUtils.getField(paperTradingService, "paperSelectionMode");
+        Object previousProbabilityFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinModelProbability");
+        Object previousMarketFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyAuditMinNoVigMarketProbability");
+        Object previousRatingFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        Object previousSignalFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinSignalQuality");
+        Object previousAbsoluteGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "paperSelectionMode", "MODEL_MARKET_AGREEMENT_ACCURACY_AUDIT");
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinModelProbability", 0.52);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyAuditMinNoVigMarketProbability", 0.50);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.50);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinSignalQuality", 0.62);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.25);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(1, result.betsPlaced());
+            List<PaperTradeBet> bets = paperTradeBetRepository.findAll();
+            assertEquals(1, bets.size());
+            assertEquals(alpha.getId(), bets.get(0).getSidePlayerId());
+            assertEquals(-156, bets.get(0).getAmericanOdds());
+
+            // A later synchronization must not create a second $1 observation for
+            // the same event after the first position has already settled. This is
+            // event-level deduplication, independent of which side the value engine
+            // happens to display on a later market snapshot.
+            PaperTradeBet settled = bets.get(0);
+            settled.setStatus(PaperTradeBet.STATUS_WON);
+            settled.setDedupeKey(matchupKey(alpha, beta, startIso) + "|" + normalizeToken(alpha.getName()));
+            paperTradeBetRepository.saveAndFlush(settled);
+
+            PaperTradingSyncResultDto duplicateSync = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+            assertEquals(0, duplicateSync.betsPlaced());
+            assertEquals(1, paperTradeBetRepository.count());
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "paperSelectionMode", previousMode);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinModelProbability", previousProbabilityFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyAuditMinNoVigMarketProbability", previousMarketFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousRatingFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinSignalQuality", previousSignalFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousAbsoluteGap);
+        }
+    }
+
+    @Test
+    void accuracyGuardQuarantinesLargeNoVigMarketDisagreement() {
+        Player alpha = playerRepository.save(new Player("NoVig", "Alpha"));
+        Player beta = playerRepository.save(new Player("NoVig", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "NoVig Alpha vs NoVig Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.72,
+                2.08,
+                -139,
+                108,
+                0.60,
+                0.52,
+                0.68,
+                0.32,
+                0.10,
+                -0.16,
+                -213,
+                213,
+                alpha.getName(),
+                0.10,
+                -213,
+                0.58,
+                0.76,
+                true,
+                "A",
+                "Strong model call that contradicts the vig-free market",
+                "Glicko Rating Delta",
+                0.31,
+                0.90,
+                0.80,
+                0.90,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousEnabled = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardEnabled");
+        Object previousGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        Object previousAgreement = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", true);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.10);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.65);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(0, result.betsPlaced());
+            assertEquals(1, result.betsSkipped());
+            assertTrue(result.session().decisionTelemetry().topSkipReasons().stream()
+                    .anyMatch(reason -> "NO_VIG_MARKET_DISAGREEMENT_QUARANTINE".equals(reason.reason())));
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", previousEnabled);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousAgreement);
+        }
+    }
+
+    @Test
+    void positiveNoVigGapAboveFourPointsRemainsResearchOnly() {
+        Player alpha = playerRepository.save(new Player("Directional", "Alpha"));
+        Player beta = playerRepository.save(new Player("Directional", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(125);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Directional Alpha vs Directional Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.72,
+                2.08,
+                -139,
+                108,
+                0.58,
+                0.48,
+                0.60,
+                0.40,
+                0.02,
+                -0.08,
+                -150,
+                150,
+                alpha.getName(),
+                0.02,
+                -150,
+                0.54,
+                0.68,
+                true,
+                "A",
+                "Positive model/no-vig gap must remain research-only",
+                "Glicko Rating Delta",
+                0.25,
+                0.90,
+                0.80,
+                0.90,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousEnabled = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardEnabled");
+        Object previousAbsoluteGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        Object previousPositiveGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap");
+        Object previousAgreement = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", true);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.10);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap", 0.04);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.65);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(0, result.betsPlaced());
+            assertEquals(1, result.betsSkipped());
+            assertTrue(result.session().decisionTelemetry().topSkipReasons().stream()
+                    .anyMatch(reason -> "POSITIVE_NO_VIG_GAP_RESEARCH_ONLY".equals(reason.reason())));
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardEnabled", previousEnabled);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousAbsoluteGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxPositiveNoVigModelMarketGap", previousPositiveGap);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousAgreement);
+        }
+    }
 
     @Autowired
     private PaperTradingService paperTradingService;
@@ -67,6 +343,12 @@ class PaperTradingServiceTests {
     private PaperTradeSessionRepository paperTradeSessionRepository;
 
     @Autowired
+    private PaperTradeSessionShadowRepository paperTradeSessionShadowRepository;
+
+    @Autowired
+    private PaperTradeBetShadowRepository paperTradeBetShadowRepository;
+
+    @Autowired
     private PaperTradeLearningSampleRepository paperTradeLearningSampleRepository;
 
     @Autowired
@@ -77,6 +359,25 @@ class PaperTradingServiceTests {
 
     @MockBean
     private TtSeriesScraper ttSeriesScraper;
+
+    @Test
+    void overlappingSyncIsCoalescedWithoutTouchingTheLiveEngine() {
+        AtomicBoolean guard = (AtomicBoolean) ReflectionTestUtils.getField(paperTradingService, "syncInProgress");
+        assertNotNull(guard);
+        guard.set(true);
+        try {
+            PaperTradingSyncResultDto result =
+                    paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals("ALREADY_RUNNING", result.status());
+            assertEquals(0, result.rowsScanned());
+            assertNotNull(result.session());
+            assertTrue(result.message().contains("already in progress"));
+            verifyNoInteractions(oddsValueEngineService);
+        } finally {
+            guard.set(false);
+        }
+    }
 
     @Test
     void syncPlacesAndSettlesSingleLegBet() {
@@ -156,10 +457,81 @@ class PaperTradingServiceTests {
         List<PaperTradeBet> allBets = paperTradeBetRepository.findAll();
         assertEquals(1, allBets.size());
         assertEquals(PaperTradeBet.STATUS_WON, allBets.get(0).getStatus());
+
+        List<PaperTradeSessionShadow> shadowSessions = paperTradeSessionShadowRepository.findAll();
+        assertEquals(1, shadowSessions.size());
+        assertEquals(second.session().sessionId(), shadowSessions.get(0).getSourceSessionId());
+        assertFalse(shadowSessions.get(0).getCorrelationId().isBlank());
+
+        List<PaperTradeBetShadow> shadowBets = paperTradeBetShadowRepository.findAll();
+        assertEquals(1, shadowBets.size());
+        assertEquals(allBets.get(0).getId(), shadowBets.get(0).getSourceBetId());
+        assertEquals(PaperTradeBet.STATUS_WON, shadowBets.get(0).getStatus());
+        assertFalse(shadowBets.get(0).getCorrelationId().isBlank());
     }
 
     @Test
-    void resetSessionClearHistoryRemovesTrackedObservations() {
+    void explorationPickUsesMinimumStakeAndKeepsAuditMetadataWithinColumnLimit() {
+        Player alpha = playerRepository.save(new Player("Explore", "Alpha"));
+        Player beta = playerRepository.save(new Player("Explore", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        String longRationale = "Detailed model evidence. ".repeat(40);
+
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Explore Alpha vs Explore Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.10,
+                1.78,
+                110,
+                -128,
+                0.46,
+                0.54,
+                0.58,
+                0.42,
+                0.12,
+                -0.12,
+                -138,
+                138,
+                alpha.getName(),
+                0.12,
+                -138,
+                0.52,
+                0.64,
+                false,
+                "WATCH",
+                longRationale,
+                "Recent Form Delta",
+                0.31,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(1, result.betsPlaced());
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals(5.0, bet.getStake(), 0.0001);
+        assertTrue(bet.getRationale().length() <= 512);
+        assertTrue(bet.getRationale().contains("fallbackPick=true"));
+        assertTrue(bet.getRationale().contains("selectionScore="));
+    }
+
+    @Test
+    void resetSessionArchivesTrackedObservationsOutsideTheNewActiveRun() {
         PaperTradingSessionDto first = paperTradingService.resetSession(1000.0, "Reset A", true);
         assertNotNull(first.sessionId());
 
@@ -185,6 +557,8 @@ class PaperTradingServiceTests {
         assertEquals(0, after.trackedObservations());
         assertEquals(0, after.scoreFeedObservations());
         assertEquals(0, after.trackedAfterCloseObservations());
+        assertEquals(2, paperTradeSessionShadowRepository.count());
+        assertEquals(0, paperTradeBetShadowRepository.count());
     }
 
     @Test
@@ -204,6 +578,108 @@ class PaperTradingServiceTests {
 
         PaperTradingSessionDto afterClose = paperTradingService.getSessionSnapshot();
         assertEquals(newer.getId(), afterClose.sessionId());
+    }
+
+    @Test
+    void visibleUnpickedMatchBuildsTimelineWithoutDuplicateUnchangedRows() {
+        Player alpha = playerRepository.save(new Player("Watch", "Alpha"));
+        Player beta = playerRepository.save(new Player("Watch", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(10);
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto upcoming = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=watch-1",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Watch Alpha vs Watch Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.80,
+                2.00,
+                -125,
+                100,
+                0.5556,
+                0.50,
+                0.54,
+                0.46,
+                -0.0156,
+                -0.04,
+                -117,
+                117,
+                alpha.getName(),
+                -0.0156,
+                -117,
+                0.35,
+                0.70,
+                false,
+                "WATCH",
+                "Below executable-edge threshold",
+                "Recent Form Delta",
+                0.10,
+                eventKey,
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+        LiveOddsRecommendationDto live = new LiveOddsRecommendationDto(
+                upcoming.source(),
+                upcoming.strategy(),
+                upcoming.modelVersion(),
+                upcoming.eventName(),
+                upcoming.competitionName(),
+                true,
+                upcoming.startTimeIso(),
+                "0-0 (3-2)",
+                "LIVE_EARLY",
+                upcoming.player1Id(),
+                upcoming.player1Name(),
+                upcoming.player2Id(),
+                upcoming.player2Name(),
+                upcoming.decimalOddsPlayer1(),
+                upcoming.decimalOddsPlayer2(),
+                upcoming.americanOddsPlayer1(),
+                upcoming.americanOddsPlayer2(),
+                upcoming.impliedProbabilityPlayer1(),
+                upcoming.impliedProbabilityPlayer2(),
+                upcoming.modelProbabilityPlayer1(),
+                upcoming.modelProbabilityPlayer2(),
+                upcoming.edgePlayer1(),
+                upcoming.edgePlayer2(),
+                upcoming.modelFairAmericanOddsPlayer1(),
+                upcoming.modelFairAmericanOddsPlayer2(),
+                upcoming.suggestedSide(),
+                upcoming.suggestedEdge(),
+                upcoming.suggestedFairAmericanOdds(),
+                upcoming.confidenceLow(),
+                upcoming.confidenceHigh(),
+                false,
+                "WATCH",
+                upcoming.rationale(),
+                upcoming.topTrigger(),
+                upcoming.topTriggerContribution(),
+                eventKey,
+                upcoming.suggestedDedupeKey()
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(upcoming), List.of(upcoming), List.of(live));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        List<TrackedMatchObservationDto> timeline = paperTradingService.getMatchTimeline(eventKey);
+        assertEquals(2, timeline.size());
+        assertNull(timeline.get(0).betId());
+        assertEquals("UPCOMING", timeline.get(0).matchPhase());
+        assertEquals("0-0 (3-2)", timeline.get(1).liveScore());
+        assertEquals("LIVE_EARLY", timeline.get(1).matchPhase());
     }
 
     @Test
@@ -423,6 +899,56 @@ class PaperTradingServiceTests {
     }
 
     @Test
+    void terminalScoreStreamObservationIsRecordedForSkippedMatchWithoutPaperBet() {
+        Player alpha = playerRepository.save(new Player("Observe", "Alpha"));
+        Player beta = playerRepository.save(new Player("Observe", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(30);
+        String externalEventId = "event-observe-final-1";
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto skipped = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=" + externalEventId,
+                "CONSERVATIVE", "ENSEMBLE", "Observe Alpha vs Observe Beta", "TTL Elite Series",
+                false, startIso, null, "UPCOMING",
+                alpha.getId(), alpha.getName(), beta.getId(), beta.getName(),
+                1.70, 2.12, -143, 112, 0.59, 0.41,
+                0.51, 0.49, -0.08, 0.08, -104, 104,
+                beta.getName(), 0.001, 104, 0.30, 0.70,
+                false, "WATCH", "Model has a lean but the wager is not approved", "Baseline",
+                0.04, eventKey, dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+        LiveScoreSnapshotDto terminal = new LiveScoreSnapshotDto(
+                "HARD_ROCK_SCORE_STREAM:FLORIDA_ONLINE|event=" + externalEventId,
+                "HARD_ROCK_SCORE_STREAM", 0.99, 0L,
+                "Observe Alpha vs Observe Beta", "TTL Elite Series", false, startIso,
+                "1-3", "FINISHED", externalEventId, false, true, true,
+                "BETRADAR_UF", "sr:match:observe-final-1", "8-11, 11-9, 7-11, 9-11",
+                alpha.getId(), alpha.getName(), beta.getId(), beta.getName(), eventKey
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(skipped), List.of());
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of(terminal));
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(0, first.betsPlaced());
+        assertEquals(0, second.betsSettled());
+        assertTrue(paperTradeBetRepository.findAll().isEmpty());
+        TrackedMatchObservation latest = trackedMatchObservationRepository
+                .findTopByEventKeyOrderByObservedAtDescIdDesc(eventKey)
+                .orElseThrow();
+        assertEquals("1-3", latest.getLiveScore());
+        assertEquals("FINISHED", latest.getMatchPhase());
+        assertEquals("SCORE_FEED", latest.getSourceKind());
+        assertTrue(latest.isResulted());
+        assertTrue(latest.isMatchCompleted());
+        assertEquals(externalEventId, latest.getExternalEventId());
+    }
+
+    @Test
     void syncSkipsThinSignalPlusMoneyDespiteModestPositiveEdge() {
         Player alpha = playerRepository.save(new Player("Thin", "Signal"));
         Player beta = playerRepository.save(new Player("Thin", "Opponent"));
@@ -478,7 +1004,10 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void syncSkipsPastOrLiveRowsWhenUpcomingOnlyEnabled() {
+    void syncAllowsLiveRowsButRejectsStalePrematchRowsWhenUpcomingOnlyEnabled() {
+        ReflectionTestUtils.setField(paperTradingService, "onlyUpcoming", true);
+        ReflectionTestUtils.setField(paperTradingService, "allowLive", true);
+
         Player alpha = playerRepository.save(new Player("Clock", "Alpha"));
         Player beta = playerRepository.save(new Player("Clock", "Beta"));
 
@@ -522,6 +1051,9 @@ class PaperTradingServiceTests {
                 dedupeKey(alpha, beta, LocalDate.now().plusDays(1).toString(), alpha.getName())
         );
 
+        String pastStartIso = LocalDateTime.now()
+                .minusDays(2)
+                .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
         LiveOddsRecommendationDto pastRow = new LiveOddsRecommendationDto(
                 "TEST_BOOK",
                 "CONSERVATIVE",
@@ -529,7 +1061,7 @@ class PaperTradingServiceTests {
                 "Clock Alpha vs Clock Beta Past",
                 "TTL Elite Series",
                 false,
-                LocalDate.now().minusDays(2).toString(),
+                pastStartIso,
                 null,
                 "UPCOMING",
                 alpha.getId(),
@@ -558,18 +1090,21 @@ class PaperTradingServiceTests {
                 "Would qualify except past start",
                 "Head-to-Head Decay",
                 0.21,
-                matchupKey(alpha, beta, LocalDate.now().minusDays(2).toString()),
-                dedupeKey(alpha, beta, LocalDate.now().minusDays(2).toString(), alpha.getName())
+                matchupKey(alpha, beta, pastStartIso),
+                dedupeKey(alpha, beta, pastStartIso, alpha.getName())
         );
 
         when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
                 .thenReturn(List.of(liveRow, pastRow));
 
+        assertTrue(paperTradingService.isEventTimingEligible(liveRow));
+        assertFalse(paperTradingService.isEventTimingEligible(pastRow));
+
         PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
         assertEquals(2, result.rowsScanned());
-        assertEquals(0, result.betsPlaced());
-        assertEquals(2, result.betsSkipped());
-        assertEquals(0, result.session().openBets());
+        assertEquals(1, result.betsPlaced());
+        assertEquals(1, result.betsSkipped());
+        assertEquals(1, result.session().openBets());
     }
 
     @Test
@@ -952,9 +1487,18 @@ class PaperTradingServiceTests {
         assertEquals(1, second.betsSettled());
         assertEquals(1, second.session().openBets());
 
+        PaperTradeBet remainingOpenBet = paperTradeBetRepository.findAll().stream()
+                .filter(bet -> PaperTradeBet.STATUS_OPEN.equals(bet.getStatus()))
+                .findFirst()
+                .orElseThrow();
+        remainingOpenBet.setLastSourceFeedEventId("sr:match:second-event");
+        paperTradeBetRepository.save(remainingOpenBet);
+
         Match secondCompleted = new Match();
         secondCompleted.setExternalId("series-2");
-        secondCompleted.setDate(LocalDate.now().plusDays(1));
+        secondCompleted.setSourceFeedCode("BETRADAR_UF");
+        secondCompleted.setSourceFeedEventId("sr:match:second-event");
+        secondCompleted.setDate(LocalDate.now());
         secondCompleted.setPlayer1(alpha);
         secondCompleted.setPlayer2(beta);
         MatchResultParser.applyToMatch(secondCompleted, "3:0");
@@ -967,7 +1511,7 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void resetWithClearHistoryRemovesOldPicks() {
+    void resetArchivesOldPicksButStartsTheNewRunAtZero() {
         Player alpha = playerRepository.save(new Player("Reset", "Alpha"));
         Player beta = playerRepository.save(new Player("Reset", "Beta"));
         String startIso = LocalDate.now().plusDays(1).toString();
@@ -1023,8 +1567,8 @@ class PaperTradingServiceTests {
         assertEquals(0, reset.openBets());
         assertTrue(reset.recentBets().isEmpty());
         assertTrue(reset.openBetsList().isEmpty());
-        assertEquals(1, paperTradeSessionRepository.count());
-        assertEquals(0, paperTradeBetRepository.count());
+        assertEquals(2, paperTradeSessionRepository.count());
+        assertEquals(1, paperTradeBetRepository.count());
     }
 
     @Test
@@ -2308,7 +2852,7 @@ class PaperTradingServiceTests {
     }
 
     @Test
-    void nearFinishFallbackSettlesWhenFinalSetLeaderDisappearsOffBoard() {
+    void nearFinishFallbackDoesNotSettleFromIncompleteFinalSetLead() {
         Player alpha = playerRepository.save(new Player("FinalSet", "Alpha"));
         Player beta = playerRepository.save(new Player("FinalSet", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(60);
@@ -2414,19 +2958,277 @@ class PaperTradingServiceTests {
                 .thenReturn(List.of());
         PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
 
-        assertEquals(1, settled.betsSettled());
-        assertEquals(0, settled.session().openBets());
+        assertEquals(0, settled.betsSettled());
+        assertEquals(1, settled.session().openBets());
         PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
-        assertEquals(PaperTradeBet.STATUS_WON, finalBet.getStatus());
-        assertTrue(
-                "SETTLED_FROM_NEAR_FINISH_LAST_SCORE".equals(finalBet.getSettlementReason())
-                        || "SETTLED_FROM_LAST_SCORE_HEURISTIC".equals(finalBet.getSettlementReason())
-        );
-        assertEquals("HEURISTIC_FALLBACK", finalBet.getSettlementSource());
+        assertEquals(PaperTradeBet.STATUS_OPEN, finalBet.getStatus());
+        assertNull(finalBet.getSettlementReason());
+        assertNull(finalBet.getSettlementSource());
     }
 
     @Test
-    void staleOnBoardScoreSettlesWhenLineIsClosedAndScoreStopsUpdating() {
+    void officialH2hLedgerSettlesWhenSingleSameDayWinnerExists() {
+        Player alpha = playerRepository.save(new Player("Ledger", "Alpha"));
+        Player beta = playerRepository.save(new Player("Ledger", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(60);
+
+        LiveOddsRecommendationDto prematch = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Ledger Alpha vs Ledger Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.08,
+                1.76,
+                108,
+                -132,
+                0.48,
+                0.52,
+                0.39,
+                0.61,
+                -0.09,
+                0.09,
+                132,
+                -132,
+                beta.getName(),
+                0.09,
+                -132,
+                0.55,
+                0.72,
+                true,
+                "A",
+                "Official ledger confirmation test",
+                "Head-to-Head Decay",
+                0.26,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+
+        LiveOddsRecommendationDto lateLive = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Ledger Alpha vs Ledger Beta",
+                "TTL Elite Series",
+                true,
+                startIso,
+                "2-2 (8-10)",
+                "LIVE_LATE",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.9,
+                1.44,
+                190,
+                -227,
+                0.34,
+                0.66,
+                0.24,
+                0.76,
+                -0.10,
+                0.10,
+                294,
+                -294,
+                beta.getName(),
+                0.10,
+                -294,
+                0.46,
+                0.77,
+                true,
+                "B",
+                "Late live incomplete score",
+                "Recent Form Delta",
+                0.18,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(lateLive));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet open = paperTradeBetRepository.findAll().stream()
+                .filter(b -> PaperTradeBet.STATUS_OPEN.equals(b.getStatus()))
+                .findFirst()
+                .orElseThrow();
+        open.setStartTimeIso(LocalDate.now().atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        open.setLastObservedAt(LocalDateTime.now().minusMinutes(35));
+        open.setMissingBoardCount(4);
+        paperTradeBetRepository.save(open);
+
+        when(ttSeriesScraper.lookupOfficialMatchesForPair(eq(alpha.getName()), eq(beta.getName()), eq(24)))
+                .thenReturn(List.of(new TtSeriesScraper.OfficialLedgerMatch(
+                        "official-h2h",
+                        "https://www.tt-series.com/h2h/?player_a=Ledger%20Alpha&player_b=Ledger%20Beta",
+                        alpha.getName(),
+                        beta.getName(),
+                        "2:3",
+                        LocalDate.now(),
+                        beta.getName()
+                )));
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+
+        PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(1, settled.betsSettled());
+        PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_WON, finalBet.getStatus());
+        assertEquals("SETTLED_FROM_OFFICIAL_H2H_LEDGER", finalBet.getSettlementReason());
+        assertEquals("OFFICIAL_RESULT", finalBet.getSettlementSource());
+        verify(ttSeriesScraper).lookupOfficialMatchesForPair(eq(alpha.getName()), eq(beta.getName()), eq(24));
+    }
+
+    @Test
+    void officialLedgerSkipsConflictingSameDayWinners() {
+        Player alpha = playerRepository.save(new Player("Ambiguous", "Alpha"));
+        Player beta = playerRepository.save(new Player("Ambiguous", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(60);
+
+        LiveOddsRecommendationDto prematch = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Ambiguous Alpha vs Ambiguous Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.05,
+                1.80,
+                105,
+                -125,
+                0.49,
+                0.51,
+                0.40,
+                0.60,
+                -0.09,
+                0.09,
+                125,
+                -125,
+                beta.getName(),
+                0.09,
+                -125,
+                0.54,
+                0.70,
+                true,
+                "A",
+                "Ambiguous official ledger test",
+                "Head-to-Head Decay",
+                0.24,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+
+        LiveOddsRecommendationDto lateLive = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Ambiguous Alpha vs Ambiguous Beta",
+                "TTL Elite Series",
+                true,
+                startIso,
+                "2-2 (10-8)",
+                "LIVE_LATE",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                2.75,
+                1.48,
+                175,
+                -208,
+                0.36,
+                0.64,
+                0.26,
+                0.74,
+                -0.10,
+                0.10,
+                275,
+                -275,
+                beta.getName(),
+                0.10,
+                -275,
+                0.45,
+                0.78,
+                true,
+                "B",
+                "Conflicting official ledgers",
+                "Recent Form Delta",
+                0.19,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(lateLive));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet open = paperTradeBetRepository.findAll().stream()
+                .filter(b -> PaperTradeBet.STATUS_OPEN.equals(b.getStatus()))
+                .findFirst()
+                .orElseThrow();
+        open.setStartTimeIso(LocalDate.now().atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        open.setLastObservedAt(LocalDateTime.now().minusMinutes(35));
+        open.setMissingBoardCount(4);
+        paperTradeBetRepository.save(open);
+
+        when(ttSeriesScraper.lookupOfficialMatchesForPair(eq(alpha.getName()), eq(beta.getName()), eq(24)))
+                .thenReturn(List.of(
+                        new TtSeriesScraper.OfficialLedgerMatch(
+                                "official-h2h",
+                                "https://www.tt-series.com/h2h/?player_a=Ambiguous%20Alpha&player_b=Ambiguous%20Beta",
+                                alpha.getName(),
+                                beta.getName(),
+                                "3:2",
+                                LocalDate.now(),
+                                alpha.getName()
+                        ),
+                        new TtSeriesScraper.OfficialLedgerMatch(
+                                "official-player-left",
+                                "https://www.tt-series.com/player/?player=Ambiguous%20Alpha",
+                                alpha.getName(),
+                                beta.getName(),
+                                "2:3",
+                                LocalDate.now(),
+                                beta.getName()
+                        )
+                ));
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+
+        PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(0, settled.betsSettled());
+        PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_OPEN, finalBet.getStatus());
+        assertNull(finalBet.getSettlementReason());
+    }
+
+    @Test
+    void staleOnBoardScoreDoesNotSettleFromIncompleteLateLead() {
         Player alpha = playerRepository.save(new Player("Locked", "Alpha"));
         Player beta = playerRepository.save(new Player("Locked", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(60);
@@ -2531,16 +3333,16 @@ class PaperTradingServiceTests {
 
         PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
 
-        assertEquals(1, settled.betsSettled());
-        assertEquals(0, settled.session().openBets());
+        assertEquals(0, settled.betsSettled());
+        assertEquals(1, settled.session().openBets());
         PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
-        assertEquals(PaperTradeBet.STATUS_WON, finalBet.getStatus());
-        assertEquals("SETTLED_FROM_STALE_ONBOARD_SCORE", finalBet.getSettlementReason());
-        assertEquals("HEURISTIC_FALLBACK", finalBet.getSettlementSource());
+        assertEquals(PaperTradeBet.STATUS_OPEN, finalBet.getStatus());
+        assertNull(finalBet.getSettlementReason());
+        assertNull(finalBet.getSettlementSource());
     }
 
     @Test
-    void staleOnBoardScoreSettlesEvenWhenFeedPhaseFallsBackToUpcoming() {
+    void staleOnBoardScoreDoesNotSettleWhenFeedPhaseFallsBackToUpcoming() {
         Player alpha = playerRepository.save(new Player("LockedUpcoming", "Alpha"));
         Player beta = playerRepository.save(new Player("LockedUpcoming", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(60);
@@ -2644,16 +3446,16 @@ class PaperTradingServiceTests {
 
         PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
 
-        assertEquals(1, settled.betsSettled());
-        assertEquals(0, settled.session().openBets());
+        assertEquals(0, settled.betsSettled());
+        assertEquals(1, settled.session().openBets());
         PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
-        assertEquals(PaperTradeBet.STATUS_WON, finalBet.getStatus());
-        assertEquals("SETTLED_FROM_STALE_ONBOARD_SCORE", finalBet.getSettlementReason());
-        assertEquals("HEURISTIC_FALLBACK", finalBet.getSettlementSource());
+        assertEquals(PaperTradeBet.STATUS_OPEN, finalBet.getStatus());
+        assertNull(finalBet.getSettlementReason());
+        assertNull(finalBet.getSettlementSource());
     }
 
     @Test
-    void staleOnBoardScoreSettlesWhenScoreDisappearsAfterLineLock() {
+    void staleOnBoardScoreDoesNotSettleWhenScoreDisappearsAfterLineLock() {
         Player alpha = playerRepository.save(new Player("LineLock", "Alpha"));
         Player beta = playerRepository.save(new Player("LineLock", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(55);
@@ -2756,11 +3558,11 @@ class PaperTradingServiceTests {
 
         PaperTradingSyncResultDto settled = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
 
-        assertEquals(1, settled.betsSettled());
+        assertEquals(0, settled.betsSettled());
         PaperTradeBet finalBet = paperTradeBetRepository.findAll().get(0);
-        assertEquals(PaperTradeBet.STATUS_WON, finalBet.getStatus());
-        assertEquals("SETTLED_FROM_STALE_ONBOARD_SCORE", finalBet.getSettlementReason());
-        assertEquals("HEURISTIC_FALLBACK", finalBet.getSettlementSource());
+        assertEquals(PaperTradeBet.STATUS_OPEN, finalBet.getStatus());
+        assertNull(finalBet.getSettlementReason());
+        assertNull(finalBet.getSettlementSource());
     }
 
     @Test
@@ -3051,8 +3853,113 @@ class PaperTradingServiceTests {
         assertTrue(fifth.session().currentBankroll() >= fifth.session().startingBankroll() - 0.01);
     }
 
+    /**
+     * #130 end-to-end: a bet whose live feed dies at a DECISIVE state ("2-0"
+     * sets) is settled WON from confidence rather than voided. This is the
+     * common Session-65 failure mode — Hard Rock drops the event before the
+     * terminal "3-X" and tt-series hasn't posted the block result yet. Per
+     * the chosen policy we call the decisive last-state instead of refunding.
+     */
     @Test
-    void resetWithClearHistoryPreservesLearningSamplesForFutureAdaptiveUse() {
+    void confidenceSettlesDecisiveLastStateInsteadOfVoiding() {
+        Player alpha = playerRepository.save(new Player("Conf", "Winner"));
+        Player beta = playerRepository.save(new Player("Conf", "Loser"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-conf-1", "sr:match:conf-1",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-conf-1",
+                "Prematch placement");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+        assertEquals(1, paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30).betsPlaced());
+
+        // Live observation: alpha leads 2-0 in sets (decisive, not yet final).
+        LiveOddsRecommendationDto live2to0 = recommendationWithIdentity(
+                alpha, beta, startIso, true, "2-0", "LIVE_LATE",
+                "evt-conf-1", "sr:match:conf-1",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-conf-1",
+                "Decisive 2-0 set lead");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(live2to0));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals("2-0", bet.getLastObservedScore());
+
+        // Feed dies; match goes stale (presumed finished). Backdate start past
+        // the void threshold and last-observation past the confidence stale gate.
+        bet.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        bet.setLastObservedAt(LocalDateTime.now().minusMinutes(40));
+        bet.setMissingBoardCount(12);
+        paperTradeBetRepository.save(bet);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto sweep = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet settled = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_WON, settled.getStatus(),
+                "decisive 2-0 last state must settle WON, not void");
+        assertEquals(0, sweep.betsVoided(), "must NOT void a decisive state");
+        assertTrue(settled.getSettlementReason() != null
+                        && settled.getSettlementReason().contains("CONFIDENCE"),
+                "settlement reason should record the confidence path");
+    }
+
+    /**
+     * #130 end-to-end: an AMBIGUOUS live state ("2-2 (9-8)") that has gone
+     * dark is HELD (not voided) while under the hard cap, giving the
+     * official-results recovery time to settle it W/L. Confirms we no longer
+     * void settleable-but-pending bets at the short timeout.
+     */
+    @Test
+    void ambiguousLiveStateHeldNotVoidedUnderHardCap() {
+        Player alpha = playerRepository.save(new Player("Amb", "Alpha"));
+        Player beta = playerRepository.save(new Player("Amb", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-amb-1", "sr:match:amb-1",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-amb-1",
+                "Prematch placement");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true))).thenReturn(List.of());
+        assertEquals(1, paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30).betsPlaced());
+
+        LiveOddsRecommendationDto liveTied = recommendationWithIdentity(
+                alpha, beta, startIso, true, "2-2 (9-8)", "LIVE_LATE",
+                "evt-amb-1", "sr:match:amb-1",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-amb-1",
+                "Ambiguous game-5 deuce");
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(liveTied));
+        paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        assertEquals("2-2 (9-8)", bet.getLastObservedScore());
+
+        // Dark + past normal void threshold (200 min) but UNDER the 6h hard cap.
+        bet.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        bet.setLastObservedAt(LocalDateTime.now().minusMinutes(40));
+        bet.setMissingBoardCount(12);
+        paperTradeBetRepository.save(bet);
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto sweep = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(0, sweep.betsVoided(), "ambiguous bet must HOLD for official results, not void at 200 min");
+        assertEquals(1, sweep.session().openBets(), "bet stays open awaiting official result");
+        assertEquals(PaperTradeBet.STATUS_OPEN, paperTradeBetRepository.findAll().get(0).getStatus());
+    }
+
+    @Test
+    void resetArchivesBetsAndPreservesLearningSamplesForFutureAdaptiveUse() {
         Player alpha = playerRepository.save(new Player("Learn", "Alpha"));
         Player beta = playerRepository.save(new Player("Learn", "Beta"));
         String startIso = isoDateTimeMinutesFromNow(90);
@@ -3120,7 +4027,7 @@ class PaperTradingServiceTests {
         var reset = paperTradingService.resetSession(1000.0, "Fresh Session", true);
         assertEquals(0, reset.totalBets());
         assertEquals(0, reset.openBets());
-        assertEquals(0, paperTradeBetRepository.count());
+        assertEquals(1, paperTradeBetRepository.count());
         assertEquals(1, paperTradeLearningSampleRepository.count());
         assertTrue(reset.adaptiveMetrics().sampleSize() >= 1);
     }
@@ -3272,7 +4179,14 @@ class PaperTradingServiceTests {
                 .filter(b -> PaperTradeBet.STATUS_OPEN.equals(b.getStatus()))
                 .findFirst()
                 .orElseThrow();
-        open.setStartTimeIso(LocalDateTime.now().minusMinutes(200).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        // #123 — Backdate to 170 min (was 200 min). With the new phase-aware
+        // void timeout (LIVE_LATE → scoreGrace 90, was 240), the effective
+        // threshold for a LIVE_LATE bet with score context is max(180, 60+90)
+        // = 180 min. The original 200-min backdate would now correctly trigger
+        // a void — exactly the behaviour #123 was built to enable. 170 min
+        // keeps the bet inside the live-context grace window so the assertion
+        // (live context protects from default timeout) still holds.
+        open.setStartTimeIso(LocalDateTime.now().minusMinutes(170).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
         open.setLastObservedScore("2-2 (3-3)");
         open.setLastObservedPhase("LIVE_LATE");
         open.setLastObservedAt(LocalDateTime.now().minusMinutes(20));
@@ -3841,7 +4755,7 @@ class PaperTradingServiceTests {
 
         LiveStudioIntegrityDto integrity = paperTradingService.getLiveStudioIntegrity();
         assertEquals(1, integrity.targetedCompletionSettlements());
-        assertEquals(1, integrity.scoreBackedSettlements());
+        assertEquals(0, integrity.scoreBackedSettlements());
         assertEquals(1, integrity.trackedAfterCloseObservations());
         assertEquals(1, integrity.scoreFeedObservations());
     }
@@ -4297,7 +5211,7 @@ class PaperTradingServiceTests {
         assertEquals("1-1 (0-0)", trackedBet.getLastObservedScore());
 
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(400));
         trackedMatchObservationRepository.save(observation);
@@ -4445,7 +5359,7 @@ class PaperTradingServiceTests {
         PaperTradeBet trackedBet = paperTradeBetRepository.findAll().get(0);
         assertTrue(trackedBet.isTrackedAfterClose());
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(240));
         trackedMatchObservationRepository.save(observation);
@@ -4702,6 +5616,204 @@ class PaperTradingServiceTests {
         assertEquals(PaperTradeBet.STATUS_WON, settled.getStatus());
         assertEquals("SETTLED_FROM_DECISIVE_LIVE_SCORE", settled.getSettlementReason());
         assertEquals("DECISIVE_LIVE_SCORE", settled.getSettlementSource());
+    }
+
+    @Test
+    void identityLockBlocksConflictingRepeatMatchRebind() {
+        Player alpha = playerRepository.save(new Player("Identity", "Alpha"));
+        Player beta = playerRepository.save(new Player("Identity", "Beta"));
+        String targetStartIso = isoDateTimeMinutesFromNow(80);
+        String laterStartIso = isoDateTimeMinutesFromNow(320);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha,
+                beta,
+                targetStartIso,
+                false,
+                null,
+                "UPCOMING",
+                "evt-identity-lock-1",
+                "sr:match:identity-lock-1",
+                "GQL_MARKET",
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-identity-lock-1",
+                "Identity lock setup"
+        );
+
+        LiveOddsRecommendationDto conflictingLaterMatch = recommendationWithIdentity(
+                alpha,
+                beta,
+                laterStartIso,
+                true,
+                "0-2 (2-8)",
+                "LIVE_MID",
+                "evt-identity-lock-2",
+                "sr:match:identity-lock-2",
+                "GQL_SCOREBOARD",
+                "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-identity-lock-2",
+                "Conflicting later match"
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch), List.of(conflictingLaterMatch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+        backdateAllOpenBetStartTimes(180);
+
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(0, second.betsSettled());
+        assertEquals(1, second.session().openBets());
+
+        PaperTradeBet open = paperTradeBetRepository.findAll().get(0);
+        assertTrue(open.isIdentityLocked());
+        assertEquals("evt-identity-lock-1", open.getLockedExternalEventId());
+        assertEquals("sr:match:identity-lock-1", open.getLockedSourceFeedEventId());
+        assertEquals("sr:match:identity-lock-1", open.getLastSourceFeedEventId());
+        assertNull(open.getLastObservedScore());
+        assertTrue(open.getIdentityDriftCount() >= 1);
+        assertEquals(PaperTradeBet.STATUS_OPEN, open.getStatus());
+    }
+
+    /**
+     * #114 end-to-end proof: the exact production failure mode from Session 65.
+     *
+     * <p>A bet is locked prematch under one feed identity (HardRock outer
+     * event id {@code evt-AAA} + BETRADAR_UF inner id {@code sr:match:AAA}).
+     * The match then completes and the terminal "3-1" set score arrives
+     * under a DIFFERENT feed identity ({@code evt-BBB} / {@code sr:match:BBB})
+     * — the cross-feed drift Hard Rock produces when its inner matchState
+     * block re-keys mid-match. Same two players, same start time.
+     *
+     * <p>Before #114, {@code rowMatchesLockedIdentity} rejected the "3-1"
+     * observation as identity drift (both ids disagree), the bet never saw
+     * a terminal score, and it sat OPEN until the void timeout — settlement
+     * starvation. After #114 the player-pair + start-time fallback accepts
+     * the observation, {@code lastObservedScore} becomes "3-1", and the bet
+     * settles WON on the next sweep.
+     */
+    @Test
+    void crossFeedTerminalScoreSettlesBetAfterIdentityDriftFix() {
+        Player alpha = playerRepository.save(new Player("CrossFeed", "Winner"));
+        Player beta = playerRepository.save(new Player("CrossFeed", "Loser"));
+        String startIso = isoDateTimeMinutesFromNow(90);
+
+        // Prematch placement locks identity to feed-ID-A.
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha, beta, startIso, false, null, "UPCOMING",
+                "evt-AAA", "sr:match:AAA",
+                "GQL_MARKET", "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-AAA",
+                "Prematch placement locks feed-ID-A");
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+
+        PaperTradeBet locked = paperTradeBetRepository.findAll().get(0);
+        assertTrue(locked.isIdentityLocked());
+        assertEquals("sr:match:AAA", locked.getLockedSourceFeedEventId());
+
+        // Terminal "3-1" arrives under feed-ID-B — different external + feed
+        // ids, identical players + start time (the cross-feed drift case).
+        LiveOddsRecommendationDto terminalCrossFeed = recommendationWithIdentity(
+                alpha, beta, startIso, true, "3-1", "LIVE_LATE",
+                "evt-BBB", "sr:match:BBB",
+                "GQL_SCOREBOARD", "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-BBB",
+                "Terminal score under drifted feed-ID-B");
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(terminalCrossFeed));
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        PaperTradeBet afterObs = paperTradeBetRepository.findAll().get(0);
+        // The crux: #114's fallback accepted the cross-feed observation.
+        assertEquals("3-1", afterObs.getLastObservedScore(),
+                "#114 fallback must let the cross-feed terminal score through (was rejected as drift pre-fix)");
+        assertEquals(0, afterObs.getIdentityDriftCount(),
+                "cross-feed terminal score is NOT drift — same players + time");
+
+        // Event disappears; sweep settles from the last observed "3-1".
+        backdateAllOpenBetStartTimes(180);
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of());
+        PaperTradingSyncResultDto third = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+        assertEquals(1, third.betsSettled(), "bet must settle now that it has a terminal score");
+        PaperTradeBet settled = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_WON, settled.getStatus(),
+                "alpha won 3-1 and the bet was on alpha");
+    }
+
+    @Test
+    void identityLockPrefersExactFeedMatchOverLoosePairCandidate() {
+        Player alpha = playerRepository.save(new Player("Identity", "PreferredAlpha"));
+        Player beta = playerRepository.save(new Player("Identity", "PreferredBeta"));
+        String targetStartIso = isoDateTimeMinutesFromNow(90);
+        String wrongStartIso = isoDateTimeMinutesFromNow(330);
+
+        LiveOddsRecommendationDto prematch = recommendationWithIdentity(
+                alpha,
+                beta,
+                targetStartIso,
+                false,
+                null,
+                "UPCOMING",
+                "evt-identity-pref-1",
+                "sr:match:identity-pref-1",
+                "GQL_MARKET",
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-identity-pref-1",
+                "Identity preferred setup"
+        );
+
+        LiveOddsRecommendationDto conflictingRow = recommendationWithIdentity(
+                alpha,
+                beta,
+                wrongStartIso,
+                true,
+                "2-2 (8-4)",
+                "LIVE_LATE",
+                "evt-identity-pref-2",
+                "sr:match:identity-pref-2",
+                "GQL_SCOREBOARD",
+                "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-identity-pref-2",
+                "Wrong later pairing"
+        );
+
+        LiveOddsRecommendationDto exactIdentityRow = recommendationWithIdentity(
+                alpha,
+                beta,
+                targetStartIso,
+                true,
+                "1-0 (5-2)",
+                "LIVE_EARLY",
+                "evt-identity-pref-1",
+                "sr:match:identity-pref-1",
+                "GQL_TRACKED_EVENT",
+                "HARD_ROCK_GQL_SCORE:FLORIDA_ONLINE|event=evt-identity-pref-1",
+                "Exact locked identity row"
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch), List.of(conflictingRow, exactIdentityRow));
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(0, second.betsSettled());
+
+        PaperTradeBet open = paperTradeBetRepository.findAll().get(0);
+        assertTrue(open.isIdentityLocked());
+        assertEquals("sr:match:identity-pref-1", open.getLockedSourceFeedEventId());
+        assertEquals("1-0 (5-2)", open.getLastObservedScore());
+        assertEquals("LIVE_EARLY", open.getLastObservedPhase());
+        assertEquals(0, open.getIdentityDriftCount());
     }
 
     @Test
@@ -5208,7 +6320,7 @@ class PaperTradingServiceTests {
 
         PaperTradeBet trackedBet = paperTradeBetRepository.findAll().get(0);
         TrackedMatchObservation observation = trackedMatchObservationRepository
-                .findTopByBetIdOrderByObservedAtDesc(trackedBet.getId())
+                .findTopByBetIdOrderByObservedAtDescIdDesc(trackedBet.getId())
                 .orElseThrow();
         observation.setObservedAt(LocalDateTime.now().minusMinutes(240));
         trackedMatchObservationRepository.save(observation);
@@ -5350,6 +6462,185 @@ class PaperTradingServiceTests {
         assertNull(settled.getResultMatchId());
     }
 
+    @Test
+    void ambiguousSameDayOfficialResultsDoNotAutoSettle() {
+        Player alpha = playerRepository.save(new Player("Ambiguous", "Alpha"));
+        Player beta = playerRepository.save(new Player("Ambiguous", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto prematch = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-ambiguous-official-1",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Ambiguous Alpha vs Ambiguous Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.92,
+                1.94,
+                -108,
+                -106,
+                0.5,
+                0.5,
+                0.61,
+                0.39,
+                0.10,
+                -0.10,
+                -156,
+                156,
+                alpha.getName(),
+                0.10,
+                -156,
+                0.54,
+                0.68,
+                true,
+                "A",
+                "Ambiguous official result setup",
+                "Head-to-Head Decayed",
+                0.24,
+                eventKey,
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch), List.of());
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+        when(oddsValueEngineService.liveScoreSnapshotsForEventIds(argThat(ids -> ids != null && !ids.isEmpty()), anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+        backdateAllOpenBetStartTimes(240);
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        bet.setLastObservedScore("0-2 (6-10)");
+        bet.setLastObservedPhase("LIVE_MID");
+        paperTradeBetRepository.save(bet);
+
+        Match firstOfficial = new Match();
+        firstOfficial.setExternalId("ambiguous-official-a");
+        firstOfficial.setDate(LocalDate.now());
+        firstOfficial.setPlayer1(alpha);
+        firstOfficial.setPlayer2(beta);
+        MatchResultParser.applyToMatch(firstOfficial, "3:1");
+        matchRepository.save(firstOfficial);
+
+        Match secondOfficial = new Match();
+        secondOfficial.setExternalId("ambiguous-official-b");
+        secondOfficial.setDate(LocalDate.now());
+        secondOfficial.setPlayer1(alpha);
+        secondOfficial.setPlayer2(beta);
+        MatchResultParser.applyToMatch(secondOfficial, "1:3");
+        matchRepository.save(secondOfficial);
+
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(0, second.betsSettled());
+        assertEquals(1, second.session().openBets());
+
+        PaperTradeBet unresolved = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_OPEN, unresolved.getStatus());
+        assertNull(unresolved.getResultMatchId());
+        assertNull(unresolved.getSettlementReason());
+        assertNull(unresolved.getSettlementSource());
+    }
+
+    @Test
+    void conflictingLaterDateOfficialResultDoesNotAutoSettleAgainstStrongLiveLeader() {
+        Player alpha = playerRepository.save(new Player("Later", "Alpha"));
+        Player beta = playerRepository.save(new Player("Later", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        String eventKey = matchupKey(alpha, beta, startIso);
+
+        LiveOddsRecommendationDto prematch = new LiveOddsRecommendationDto(
+                "HARD_ROCK_GQL:FLORIDA_ONLINE|event=evt-later-official-1",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Later Alpha vs Later Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.95,
+                1.91,
+                -105,
+                -110,
+                0.5,
+                0.5,
+                0.60,
+                0.40,
+                0.11,
+                -0.11,
+                -150,
+                150,
+                alpha.getName(),
+                0.11,
+                -150,
+                0.55,
+                0.69,
+                true,
+                "A",
+                "Later official contradiction setup",
+                "Head-to-Head Decayed",
+                0.24,
+                eventKey,
+                dedupeKey(alpha, beta, startIso, alpha.getName())
+        );
+
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(prematch), List.of());
+        when(oddsValueEngineService.liveScoreSnapshots(anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+        when(oddsValueEngineService.liveScoreSnapshotsForEventIds(argThat(ids -> ids != null && !ids.isEmpty()), anyInt(), eq(true)))
+                .thenReturn(List.of(), List.of());
+
+        PaperTradingSyncResultDto first = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(1, first.betsPlaced());
+
+        PaperTradeBet bet = paperTradeBetRepository.findAll().get(0);
+        String priorDayStartIso = LocalDateTime.now()
+                .minusDays(1)
+                .withHour(20)
+                .withMinute(0)
+                .withSecond(0)
+                .withNano(0)
+                .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        bet.setStartTimeIso(priorDayStartIso);
+        bet.setLastObservedScore("0-2 (6-10)");
+        bet.setLastObservedPhase("LIVE_MID");
+        paperTradeBetRepository.save(bet);
+
+        Match conflictingLaterDay = new Match();
+        conflictingLaterDay.setExternalId("later-day-official-conflict");
+        conflictingLaterDay.setDate(LocalDate.now());
+        conflictingLaterDay.setPlayer1(alpha);
+        conflictingLaterDay.setPlayer2(beta);
+        MatchResultParser.applyToMatch(conflictingLaterDay, "3:1");
+        matchRepository.save(conflictingLaterDay);
+
+        PaperTradingSyncResultDto second = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+        assertEquals(0, second.betsSettled());
+        assertEquals(1, second.session().openBets());
+
+        PaperTradeBet unresolved = paperTradeBetRepository.findAll().get(0);
+        assertEquals(PaperTradeBet.STATUS_OPEN, unresolved.getStatus());
+        assertNull(unresolved.getResultMatchId());
+        assertNull(unresolved.getSettlementReason());
+        assertNull(unresolved.getSettlementSource());
+    }
+
     private void backdateAllOpenBetStartTimes(long minutesAgo) {
         String backdatedStartIso = LocalDateTime.now()
                 .minusMinutes(Math.max(1, minutesAgo))
@@ -5372,6 +6663,51 @@ class PaperTradingServiceTests {
                 .withSecond(0)
                 .withNano(0)
                 .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+    }
+
+    private static LiveOddsRecommendationDto marketRow(Long player1Id,
+                                                       Long player2Id,
+                                                       double player1Implied,
+                                                       double player2Implied) {
+        return new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Market Alpha vs Market Beta",
+                "TTL Elite Series",
+                false,
+                LocalDate.now().plusDays(1).toString(),
+                null,
+                "UPCOMING",
+                player1Id,
+                "Market Alpha",
+                player2Id,
+                "Market Beta",
+                1.67,
+                2.00,
+                -149,
+                100,
+                player1Implied,
+                player2Implied,
+                0.64,
+                0.36,
+                0.04,
+                -0.14,
+                -178,
+                178,
+                "Market Alpha",
+                0.04,
+                -178,
+                0.55,
+                0.73,
+                true,
+                "A",
+                "Two-sided market fixture",
+                "Glicko Rating Delta",
+                0.20,
+                "market-alpha|market-beta|fixture",
+                "market-alpha|market-beta|fixture|market-alpha"
+        );
     }
 
     private static String matchupKey(Player p1, Player p2, String startIso) {
@@ -5454,6 +6790,71 @@ class PaperTradingServiceTests {
                 0.32,
                 matchupKey(player1, player2, startIso),
                 dedupeKey(player1, player2, startIso, player1.getName())
+        );
+    }
+
+    private LiveOddsRecommendationDto recommendationWithIdentity(Player player1,
+                                                                 Player player2,
+                                                                 String startIso,
+                                                                 boolean live,
+                                                                 String liveScore,
+                                                                 String matchPhase,
+                                                                 String externalEventId,
+                                                                 String sourceFeedEventId,
+                                                                 String sourceType,
+                                                                 String source,
+                                                                 String rationale) {
+        return new LiveOddsRecommendationDto(
+                source,
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                player1.getName() + " vs " + player2.getName(),
+                "TTL Elite Series",
+                live,
+                startIso,
+                liveScore,
+                matchPhase,
+                player1.getId(),
+                player1.getName(),
+                player2.getId(),
+                player2.getName(),
+                1.94,
+                1.94,
+                -106,
+                -106,
+                0.50,
+                0.50,
+                0.60,
+                0.40,
+                0.10,
+                -0.10,
+                -150,
+                150,
+                player1.getName(),
+                0.10,
+                -150,
+                0.54,
+                0.67,
+                true,
+                "A",
+                rationale,
+                "Head-to-Head Decayed",
+                0.19,
+                null,
+                null,
+                null,
+                null,
+                matchupKey(player1, player2, startIso),
+                dedupeKey(player1, player2, startIso, player1.getName()),
+                sourceType,
+                0.95,
+                externalEventId,
+                true,
+                false,
+                false,
+                "BETRADAR_UF",
+                sourceFeedEventId,
+                null
         );
     }
 

@@ -1,0 +1,32 @@
+groups:
+  - name: ttl-phase-04-vlm
+    rules:
+      - alert: StreamVLMCostSpike
+        expr: sum(rate(stream_vlm_cost_usd_total[1h])) > 2.5
+        for: 15m
+        labels:
+          severity: warning
+          phase: "3.0-p04"
+        annotations:
+          summary: "Stream-CV VLM hourly cost is above $2.50/h"
+          description: "stream_vlm_cost_usd_total rate over the last hour exceeded $2.50/h for 15m. CostGovernor should already be capping volume; investigate the worker or model driving the spike before the daily hard cap trips."
+
+      - alert: StreamVLMExhausted
+        expr: stream_vlm_daily_calls{model="all"} >= 4000
+        for: 1m
+        labels:
+          severity: critical
+          phase: "3.0-p04"
+        annotations:
+          summary: "Stream-CV VLM daily hard cap reached"
+          description: "CostGovernor has tripped the daily hard cap (4000 calls/day). Affected workers fall back to OCR-only until the next UTC day rollover."
+
+      - alert: StreamVLMGovernorBlockingHigh
+        expr: sum(rate(stream_vlm_governor_blocks_total[15m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          phase: "3.0-p04"
+        annotations:
+          summary: "Stream-CV CostGovernor is blocking >0.5 calls/s"
+          description: "More than 0.5 governor blocks per second over a 15-minute window. Likely a runaway worker hitting the per-worker hourly cap; inspect stream_vlm_governor_blocks_total by reason."

@@ -1,0 +1,16 @@
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS code_revision;
+ALTER TABLE paper_trade_decision_sample DROP COLUMN IF EXISTS gate_results;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS gate_results;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS model_market_no_vig_gap;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS confidence_high;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS confidence_low;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS raw_model_probability;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS policy_id;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS calibration_id;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS feature_schema_checksum;
+ALTER TABLE paper_trade_model_call DROP COLUMN IF EXISTS artifact_checksum;
+ALTER TABLE paper_trade_session DROP COLUMN IF EXISTS calibration_id;
+ALTER TABLE paper_trade_session DROP COLUMN IF EXISTS frozen_run_summary_checksum;
+ALTER TABLE paper_trade_session DROP COLUMN IF EXISTS frozen_run_summary;
+ALTER TABLE paper_trade_session DROP COLUMN IF EXISTS feature_schema_checksum;
+ALTER TABLE paper_trade_session DROP COLUMN IF EXISTS effective_artifact_checksum;

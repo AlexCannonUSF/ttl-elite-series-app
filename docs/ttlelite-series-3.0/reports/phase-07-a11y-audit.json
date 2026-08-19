@@ -1,0 +1,67 @@
+{
+  "baseUrl": "http://127.0.0.1:5174",
+  "generatedAt": "2026-05-19T15:33:52.897Z",
+  "reducedMotion": false,
+  "results": [
+    {
+      "name": "Home",
+      "path": "/v3/",
+      "url": "http://127.0.0.1:5174/v3/",
+      "violations": []
+    },
+    {
+      "name": "Home Command Palette",
+      "path": "/v3/",
+      "url": "http://127.0.0.1:5174/v3/",
+      "violations": []
+    },
+    {
+      "name": "Live Board",
+      "path": "/v3/live-board",
+      "url": "http://127.0.0.1:5174/v3/live-board",
+      "violations": []
+    },
+    {
+      "name": "Ops Console",
+      "path": "/v3/ops",
+      "url": "http://127.0.0.1:5174/v3/ops",
+      "violations": []
+    },
+    {
+      "name": "Ops Feeds",
+      "path": "/v3/ops/feeds",
+      "url": "http://127.0.0.1:5174/v3/ops/feeds",
+      "violations": []
+    },
+    {
+      "name": "Stream Workers",
+      "path": "/v3/ops/feeds/streams",
+      "url": "http://127.0.0.1:5174/v3/ops/feeds/streams",
+      "violations": []
+    },
+    {
+      "name": "Ops Ingest",
+      "path": "/v3/ops/ingest",
+      "url": "http://127.0.0.1:5174/v3/ops/ingest",
+      "violations": []
+    },
+    {
+      "name": "Settlement Diffs",
+      "path": "/v3/ops/diffs",
+      "url": "http://127.0.0.1:5174/v3/ops/diffs",
+      "violations": []
+    },
+    {
+      "name": "Review Queue",
+      "path": "/v3/review",
+      "url": "http://127.0.0.1:5174/v3/review",
+      "violations": []
+    },
+    {
+      "name": "ML Quality",
+      "path": "/v3/ml/quality",
+      "url": "http://127.0.0.1:5174/v3/ml/quality",
+      "violations": []
+    }
+  ]
+}

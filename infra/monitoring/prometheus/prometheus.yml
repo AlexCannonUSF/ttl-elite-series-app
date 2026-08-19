@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: ttl-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          service: ttl-backend
+          stack: ttl-2x-3x-bridge
+
+  - job_name: ttl-predict-py
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ttl-predict-py:8090
+        labels:
+          service: ttl-predict-py
+          stack: ttl-2x-3x-bridge

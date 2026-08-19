@@ -9,6 +9,7 @@ import com.ttl.tabletennis.repository.ScrapeErrorRepository;
 import com.ttl.tabletennis.repository.ScrapeRunRepository;
 import com.ttl.tabletennis.service.PlayerIdentityService;
 import com.ttl.tabletennis.util.MatchResultParser;
+import com.ttl.tabletennis.util.CorrelationContext;
 import com.ttl.tabletennis.util.NameUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -16,22 +17,30 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,8 +55,10 @@ public class TtSeriesScraper {
     private final PlayerIdentityService playerIdentityService;
     private final ScrapeRunRepository scrapeRunRepository;
     private final ScrapeErrorRepository scrapeErrorRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     private final AtomicBoolean scrapeRunning = new AtomicBoolean(false);
+    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicInteger lastSavedMatches = new AtomicInteger(0);
     private final AtomicReference<LocalDateTime> lastStartedAt = new AtomicReference<>();
     private final AtomicReference<LocalDateTime> lastFinishedAt = new AtomicReference<>();
@@ -121,14 +132,25 @@ public class TtSeriesScraper {
 
     private final DateTimeFormatter dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
+    @Autowired
     public TtSeriesScraper(MatchRepository matchRepository,
                            PlayerIdentityService playerIdentityService,
                            ScrapeRunRepository scrapeRunRepository,
-                           ScrapeErrorRepository scrapeErrorRepository) {
+                           ScrapeErrorRepository scrapeErrorRepository,
+                           ApplicationEventPublisher eventPublisher) {
         this.matchRepository = matchRepository;
         this.playerIdentityService = playerIdentityService;
         this.scrapeRunRepository = scrapeRunRepository;
         this.scrapeErrorRepository = scrapeErrorRepository;
+        this.eventPublisher = eventPublisher;
+    }
+
+    /** Back-compat constructor for tests that pre-date the event publisher. */
+    public TtSeriesScraper(MatchRepository matchRepository,
+                           PlayerIdentityService playerIdentityService,
+                           ScrapeRunRepository scrapeRunRepository,
+                           ScrapeErrorRepository scrapeErrorRepository) {
+        this(matchRepository, playerIdentityService, scrapeRunRepository, scrapeErrorRepository, null);
     }
 
     public void run() {
@@ -155,6 +177,13 @@ public class TtSeriesScraper {
     }
 
     public int scrapeAndSaveMatchDetails(List<String> postUrls) throws IOException {
+        if (activeRun.get() == null) {
+            return executeMutationRun("BULK_URLS", () -> scrapeAndSaveMatchDetailsInternal(postUrls));
+        }
+        return scrapeAndSaveMatchDetailsInternal(postUrls);
+    }
+
+    private int scrapeAndSaveMatchDetailsInternal(List<String> postUrls) throws IOException {
         if (postUrls == null || postUrls.isEmpty()) return 0;
 
         int savedTotal = 0;
@@ -192,6 +221,253 @@ public class TtSeriesScraper {
             return 0;
         }
         return scrapeAndSaveMatchDetails(postUrls);
+    }
+
+    // ── Periodic official-results refresh ─────────────────────────────────
+    //
+    // The legacy settlement fallthrough closes bets by matching open bets
+    // against rows in `completed_matches`, which is populated by this
+    // scraper. Before this method existed, that table only got refreshed
+    // when (a) the user manually triggered a scrape or (b) a bet was in
+    // `trackedAfterClose` state. In practice that meant settlement could
+    // lag the actual match completion by hours — bets that finished off
+    // the live odds feed would sit OPEN until either the 240-min void
+    // timeout fired or someone happened to refresh the scraper.
+    //
+    // This @Scheduled method keeps the table warm with a single-page
+    // refresh every 15 min by default. It's gated by its own flag so the
+    // existing `scrape.auto` setting (which controls the heavy page-range
+    // crawl) is unaffected. An in-flight guard prevents pile-ups if the
+    // refresh ever runs slow.
+    private final AtomicBoolean officialResultsRefreshInFlight = new AtomicBoolean(false);
+    private final AtomicReference<LocalDateTime> officialResultsRefreshStartedAt = new AtomicReference<>();
+
+    @Value("${ttl.scrape.officialResultsRefresh.enabled:true}")
+    private boolean officialResultsRefreshScheduleEnabled;
+
+    @Value("${ttl.scrape.officialResultsRefresh.pages:1}")
+    private int officialResultsRefreshSchedulePages;
+
+    // Watchdog config (#112). Defaults: check every 5 min, force-stop scrapes
+    // stuck longer than 20 min, force-clear refresh flag stuck longer than 10 min.
+    @Value("${ttl.scrape.watchdog.enabled:true}")
+    private boolean scrapeWatchdogEnabled;
+
+    @Value("${ttl.scrape.watchdog.fixedDelayMs:300000}")
+    private long scrapeWatchdogFixedDelayMs;
+
+    @Value("${ttl.scrape.watchdog.thresholdMs:1200000}")
+    private long scrapeWatchdogThresholdMs;
+
+    @Value("${ttl.scrape.watchdog.refreshThresholdMs:600000}")
+    private long scrapeWatchdogRefreshThresholdMs;
+
+    @Scheduled(
+            initialDelayString = "${ttl.scrape.officialResultsRefresh.initialDelayMs:60000}",
+            fixedDelayString = "${ttl.scrape.officialResultsRefresh.fixedDelayMs:900000}")
+    public void scheduledOfficialResultsRefresh() {
+        if (!officialResultsRefreshScheduleEnabled) {
+            return;
+        }
+        if (!officialResultsRefreshInFlight.compareAndSet(false, true)) {
+            log.debug("[scrape-scheduler] previous official-results refresh still in flight; skipping");
+            return;
+        }
+        long startedAtNanos = System.nanoTime();
+        officialResultsRefreshStartedAt.set(LocalDateTime.now());
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            int pages = Math.max(1, Math.min(officialResultsRefreshSchedulePages, 3));
+            int saved = refreshRecentOfficialResults(pages);
+            log.info("[scrape-scheduler] official-results refresh saved={} pages={} elapsedMs={}",
+                    saved, pages, java.time.Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis());
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("[scrape-scheduler] official-results refresh interrupted");
+        } catch (Exception ex) {
+            // Best-effort: never let scheduler exceptions kill the next tick.
+            log.warn("[scrape-scheduler] official-results refresh failed: {}", ex.toString());
+        } finally {
+            officialResultsRefreshInFlight.set(false);
+            officialResultsRefreshStartedAt.set(null);
+        }
+    }
+
+    /**
+     * Watchdog for {@link #scrapeRunning} and {@link #officialResultsRefreshInFlight}.
+     *
+     * Discovered live (#112): on 2026-05-24 a PAGE_RANGE scrape hung mid-flight,
+     * leaving {@code scrapeRunning=true} for 37 minutes. Because the only existing
+     * watchdog ({@link ScrapeRunOrphanCleanup}) runs solely on
+     * {@code ApplicationReadyEvent}, no automatic recovery kicked in — every
+     * subsequent scrape attempt was rejected as "Scrape already running" and the
+     * live scoreboard went stale. Settlement starved as a result.
+     *
+     * This @Scheduled tick runs every {@code ttl.scrape.watchdog.fixedDelayMs}
+     * (default 5 min). If a scrape has been running longer than
+     * {@code ttl.scrape.watchdog.thresholdMs} (default 20 min), it first issues
+     * a cooperative {@link #requestStop()} — the in-flight Jsoup page will
+     * complete (it has a 20s timeout) and {@code markFinish()} clears the flag.
+     * If the flag is STILL set after one more full check cycle (i.e. the run
+     * has been stuck for {@code threshold + fixedDelay}, default 25 min), the
+     * watchdog force-resets {@code scrapeRunning} to {@code false}, drops the
+     * orphaned {@link ActiveRun}, and records a {@code WATCHDOG_FORCE_RESET}
+     * error so the operator sees what happened.
+     *
+     * Same treatment for {@code officialResultsRefreshInFlight} with a shorter
+     * threshold ({@code ttl.scrape.watchdog.refreshThresholdMs}, default 10 min)
+     * because that path only does single-page fetches and should never take
+     * more than ~30s in steady state.
+     */
+    @Scheduled(
+            initialDelayString = "${ttl.scrape.watchdog.initialDelayMs:120000}",
+            fixedDelayString = "${ttl.scrape.watchdog.fixedDelayMs:300000}")
+    public void scrapeStuckRunWatchdog() {
+        if (!scrapeWatchdogEnabled) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        checkStuckScrape(now);
+        checkStuckOfficialResultsRefresh(now);
+    }
+
+    private void checkStuckScrape(LocalDateTime now) {
+        if (!scrapeRunning.get()) {
+            return;
+        }
+        LocalDateTime startedAt = lastStartedAt.get();
+        if (startedAt == null) {
+            return;
+        }
+        long elapsedMs = java.time.Duration.between(startedAt, now).toMillis();
+        if (elapsedMs < scrapeWatchdogThresholdMs) {
+            return;
+        }
+        log.warn("[scrape-watchdog] scrape stuck for {}ms (mode={}, threshold={}ms) — requesting stop",
+                elapsedMs, lastMode.get(), scrapeWatchdogThresholdMs);
+        requestStop();
+
+        // If we're past the grace period (one full check cycle past the
+        // threshold), force-reset. The Jsoup fetch should have timed out at
+        // 20s and cooperative stop should have flushed by now.
+        if (elapsedMs >= scrapeWatchdogThresholdMs + scrapeWatchdogFixedDelayMs) {
+            forceResetScrapeRunning(elapsedMs, "WATCHDOG_TIMEOUT");
+        }
+    }
+
+    private void checkStuckOfficialResultsRefresh(LocalDateTime now) {
+        if (!officialResultsRefreshInFlight.get()) {
+            return;
+        }
+        LocalDateTime startedAt = officialResultsRefreshStartedAt.get();
+        if (startedAt == null) {
+            return;
+        }
+        long elapsedMs = java.time.Duration.between(startedAt, now).toMillis();
+        if (elapsedMs < scrapeWatchdogRefreshThresholdMs) {
+            return;
+        }
+        log.warn("[scrape-watchdog] official-results refresh stuck for {}ms (threshold={}ms) — force-clearing flag",
+                elapsedMs, scrapeWatchdogRefreshThresholdMs);
+        officialResultsRefreshInFlight.set(false);
+        officialResultsRefreshStartedAt.set(null);
+    }
+
+    private void forceResetScrapeRunning(long elapsedMs, String reason) {
+        boolean wasRunning = scrapeRunning.getAndSet(false);
+        if (!wasRunning) {
+            return;
+        }
+        log.error("[scrape-watchdog] force-resetting scrapeRunning after {}ms stuck (reason={})",
+                elapsedMs, reason);
+        ActiveRun stuck = activeRun.getAndSet(null);
+        lastFinishedAt.set(LocalDateTime.now());
+        String detail = reason + " after " + (elapsedMs / 1000L) + "s";
+        lastError.set(detail);
+        if (stuck != null) {
+            try {
+                addErrorRecord(new ScrapeErrorRecord(
+                        stuck.runId, LocalDateTime.now(), stuck.mode, detail,
+                        null, "watchdog", null));
+            } catch (Exception ex) {
+                log.warn("[scrape-watchdog] failed to persist force-reset error record: {}", ex.toString());
+            }
+        }
+        stopRequested.set(false);
+    }
+
+    /**
+     * Operator escape hatch (#112). Lets the user clear stuck flags without a
+     * JVM restart when even the cooperative stop fails to unstick the scrape.
+     * Returns a struct describing what was reset so the operator knows whether
+     * the call was a no-op (nothing stuck) or did real work.
+     */
+    public ScrapeForceResetResult forceResetForOperator() {
+        LocalDateTime now = LocalDateTime.now();
+        boolean wasRunning = scrapeRunning.get();
+        boolean wasRefreshInFlight = officialResultsRefreshInFlight.get();
+        long stuckScrapeMs = 0L;
+        long stuckRefreshMs = 0L;
+        if (wasRunning) {
+            LocalDateTime startedAt = lastStartedAt.get();
+            stuckScrapeMs = startedAt == null ? -1L
+                    : java.time.Duration.between(startedAt, now).toMillis();
+            forceResetScrapeRunning(stuckScrapeMs, "OPERATOR_FORCE_RESET");
+        }
+        if (wasRefreshInFlight) {
+            LocalDateTime startedAt = officialResultsRefreshStartedAt.get();
+            stuckRefreshMs = startedAt == null ? -1L
+                    : java.time.Duration.between(startedAt, now).toMillis();
+            officialResultsRefreshInFlight.set(false);
+            officialResultsRefreshStartedAt.set(null);
+        }
+        return new ScrapeForceResetResult(wasRunning, stuckScrapeMs, wasRefreshInFlight, stuckRefreshMs);
+    }
+
+    public record ScrapeForceResetResult(boolean scrapeRunningWasStuck,
+                                          long scrapeRunningStuckMs,
+                                          boolean officialRefreshWasStuck,
+                                          long officialRefreshStuckMs) {
+    }
+
+    public List<OfficialLedgerMatch> lookupOfficialMatchesForPair(String player1Name,
+                                                                  String player2Name,
+                                                                  int limit) {
+        if (!StringUtils.hasText(player1Name) || !StringUtils.hasText(player2Name)) {
+            return List.of();
+        }
+
+        String leftQuery = toTtSeriesQueryName(player1Name);
+        String rightQuery = toTtSeriesQueryName(player2Name);
+        if (!StringUtils.hasText(leftQuery) || !StringUtils.hasText(rightQuery)) {
+            return List.of();
+        }
+
+        int take = Math.max(1, Math.min(limit, 40));
+        List<OfficialLedgerMatch> merged = new ArrayList<>();
+        merged.addAll(fetchOfficialLedgerMatches(buildH2hUrl(leftQuery, rightQuery), "official-h2h"));
+        merged.addAll(fetchOfficialLedgerMatches(buildPlayerUrl(leftQuery), "official-player-left"));
+        merged.addAll(fetchOfficialLedgerMatches(buildPlayerUrl(rightQuery), "official-player-right"));
+        if (merged.isEmpty()) {
+            return List.of();
+        }
+
+        String leftLookup = NameUtils.normalizeForLookup(player1Name);
+        String rightLookup = NameUtils.normalizeForLookup(player2Name);
+
+        return merged.stream()
+                .filter(match -> isSamePairLookup(
+                        NameUtils.normalizeForLookup(match.player1Raw()),
+                        NameUtils.normalizeForLookup(match.player2Raw()),
+                        leftLookup,
+                        rightLookup
+                ))
+                .sorted(Comparator
+                        .comparing(OfficialLedgerMatch::date, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing((OfficialLedgerMatch match) -> sourcePriority(match.sourceType()))
+                        .thenComparing(OfficialLedgerMatch::sourceUrl))
+                .distinct()
+                .limit(take)
+                .toList();
     }
 
     @Async("ttlScraperExecutor")
@@ -233,6 +509,12 @@ public class TtSeriesScraper {
         log.info("[scrape] begin pages {}..{} ({} pages). Expected ~= {} matches", fromPage, toPage, pages, staticExpected);
 
         for (int page = fromPage; page <= toPage; page++) {
+            if (stopRequested.get()) {
+                log.info("[scrape] stop requested; bailing after page {} ({} matches saved so far)",
+                        page - 1, currentSavedMatchCount());
+                tracker.finish("STOPPED");
+                return;
+            }
             String listUrl = buildListPageUrl(page);
             Document listDoc = fetch(listUrl, "page-range page=" + page);
 
@@ -252,6 +534,11 @@ public class TtSeriesScraper {
 
             int linkIdx = 0;
             for (String postUrl : postUrls) {
+                if (stopRequested.get()) {
+                    log.info("[scrape] stop requested mid-page {}; finishing in-flight post then bailing", page);
+                    tracker.finish("STOPPED");
+                    return;
+                }
                 linkIdx++;
                 String postId = externalIdFromUrl(postUrl);
                 String ctx = String.format("page %d/%d | post %d/%d | id=%s", (page - fromPage + 1), pages, linkIdx, foundLinks, postId);
@@ -262,6 +549,28 @@ public class TtSeriesScraper {
 
         tracker.finish("ALL PAGES DONE");
         log.info("[scrape] completed page range {}..{}", fromPage, toPage);
+    }
+
+    /**
+     * Cooperative stop: marks the in-flight scrape run for a clean bail-out
+     * at the next page boundary. The currently-running page finishes so no
+     * partial saves; subsequent pages are skipped. Returns true when a
+     * scrape was actually running and the flag was set.
+     */
+    public boolean requestStop() {
+        if (!scrapeRunning.get()) {
+            return false;
+        }
+        boolean firstRequest = !stopRequested.getAndSet(true);
+        if (firstRequest) {
+            log.info("[scrape] stop requested by operator; will bail at next page boundary");
+        }
+        return true;
+    }
+
+    private int currentSavedMatchCount() {
+        ActiveRun run = activeRun.get();
+        return run == null ? lastSavedMatches.get() : run.savedMatches.get();
     }
 
     public void scrapeSinglePost(String id) throws IOException {
@@ -332,11 +641,12 @@ public class TtSeriesScraper {
 
             if (changed) {
                 matchRepository.save(current);
+                recordMatchMutation(false, p1, p2);
                 log.debug("[scrape] updated match {}", externalId);
             } else {
                 log.debug("[scrape] skip {}, already in DB", externalId);
             }
-            return false;
+            return changed;
         }
 
         Match match = new Match();
@@ -347,13 +657,29 @@ public class TtSeriesScraper {
         MatchResultParser.applyToMatch(match, sanitizedResult);
 
         matchRepository.save(match);
-        lastSavedMatches.incrementAndGet();
-        ActiveRun run = activeRun.get();
-        if (run != null) {
-            run.savedMatches.incrementAndGet();
-        }
+        recordMatchMutation(true, p1, p2);
         log.debug("[scrape] saved match {} -> {} vs {}", externalId, row.player1Raw, row.player2Raw);
         return true;
+    }
+
+    private void recordMatchMutation(boolean created, Player player1, Player player2) {
+        lastSavedMatches.incrementAndGet();
+        ActiveRun run = activeRun.get();
+        if (run == null) {
+            return;
+        }
+        run.savedMatches.incrementAndGet();
+        if (created) {
+            run.newMatches.incrementAndGet();
+        } else {
+            run.updatedMatches.incrementAndGet();
+        }
+        if (player1 != null && player1.getId() != null) {
+            run.affectedPlayerIds.add(player1.getId());
+        }
+        if (player2 != null && player2.getId() != null) {
+            run.affectedPlayerIds.add(player2.getId());
+        }
     }
 
     private String sanitizeResultForPersistence(String rawResult, String postId, String externalId) {
@@ -435,8 +761,17 @@ public class TtSeriesScraper {
 
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
+                // tt-series.com sometimes serves a body with a stale
+                // `Content-Encoding: gzip` header but plain HTML bytes
+                // underneath. Jsoup honours the header, the GZIPInputStream
+                // chokes ("Not in GZIP format"), the request fails, and the
+                // scrape-error counter ticks up every cycle (~6/min observed).
+                // Asking the server for identity encoding sidesteps the
+                // bug entirely — the page is only ~30KB so the bandwidth
+                // cost is negligible.
                 return Jsoup.connect(url)
                         .userAgent("Mozilla/5.0 (compatible; TTLBot/1.0)")
+                        .header("Accept-Encoding", "identity")
                         .timeout((int) TimeUnit.SECONDS.toMillis(20))
                         .get();
             } catch (IOException e) {
@@ -654,6 +989,177 @@ public class TtSeriesScraper {
         return !(candidate.isBefore(minDate) || candidate.isAfter(maxDate));
     }
 
+    private List<OfficialLedgerMatch> fetchOfficialLedgerMatches(String url, String context) {
+        if (!StringUtils.hasText(url)) {
+            return List.of();
+        }
+        try {
+            Document doc = fetch(url, context);
+            return parseOfficialLedgerRows(doc, url, context);
+        } catch (Exception ex) {
+            log.warn("[scrape] official ledger fetch failed for {}: {}", url, ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<OfficialLedgerMatch> parseOfficialLedgerRows(Document doc, String url, String context) {
+        if (doc == null) {
+            return List.of();
+        }
+        List<OfficialLedgerMatch> out = new ArrayList<>();
+        for (Element table : doc.select("table")) {
+            Optional<OfficialLedgerColumns> resolvedColumns = resolveOfficialLedgerColumns(table);
+            if (resolvedColumns.isEmpty()) {
+                continue;
+            }
+            OfficialLedgerColumns columns = resolvedColumns.get();
+            Elements rows = table.select("tr");
+            for (int rowIndex = columns.firstDataRowIndex(); rowIndex < rows.size(); rowIndex++) {
+                Element tr = rows.get(rowIndex);
+                Elements cells = tr.select("td, th");
+                if (cells.isEmpty() || cells.size() <= columns.maxIndex()) {
+                    continue;
+                }
+                String player1Raw = text(cells, columns.player1Col());
+                String resultRaw = text(cells, columns.resultCol());
+                String player2Raw = text(cells, columns.player2Col());
+                String dateRaw = text(cells, columns.dateCol());
+                String winnerRaw = text(cells, columns.winnerCol());
+                if (!isLikelyPlayerCell(player1Raw) || !isLikelyPlayerCell(player2Raw)) {
+                    continue;
+                }
+                LocalDate parsedDate = safeParseDate(dateRaw, null);
+                if (!isReasonableDate(parsedDate)) {
+                    continue;
+                }
+                String normalizedResult = normalizeLedgerResult(resultRaw);
+                out.add(new OfficialLedgerMatch(
+                        context,
+                        url,
+                        player1Raw.trim(),
+                        player2Raw.trim(),
+                        normalizedResult,
+                        parsedDate,
+                        StringUtils.hasText(winnerRaw) ? winnerRaw.trim() : null
+                ));
+            }
+        }
+        return out;
+    }
+
+    private Optional<OfficialLedgerColumns> resolveOfficialLedgerColumns(Element table) {
+        if (table == null) {
+            return Optional.empty();
+        }
+        Elements rows = table.select("tr");
+        for (int rowIndex = 0; rowIndex < Math.min(rows.size(), 6); rowIndex++) {
+            Element row = rows.get(rowIndex);
+            Elements cells = row.select("th, td");
+            if (cells.size() < 5) {
+                continue;
+            }
+            int player1Col = -1;
+            int resultCol = -1;
+            int player2Col = -1;
+            int dateCol = -1;
+            int winnerCol = -1;
+            for (int col = 0; col < cells.size(); col++) {
+                String header = normalizeLedgerHeader(cells.get(col).text());
+                if (header.startsWith("player1")) {
+                    player1Col = col;
+                } else if (header.equals("score") || header.equals("result")) {
+                    resultCol = col;
+                } else if (header.startsWith("player2")) {
+                    player2Col = col;
+                } else if (header.equals("date")) {
+                    dateCol = col;
+                } else if (header.equals("winner")) {
+                    winnerCol = col;
+                }
+            }
+            if (player1Col >= 0 && resultCol >= 0 && player2Col >= 0 && dateCol >= 0 && winnerCol >= 0) {
+                return Optional.of(new OfficialLedgerColumns(player1Col, resultCol, player2Col, dateCol, winnerCol, rowIndex + 1));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private String normalizeLedgerHeader(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return "";
+        }
+        return raw.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u00a0', ' ')
+                .replaceAll("[^a-z0-9]+", "");
+    }
+
+    private String normalizeLedgerResult(String rawResult) {
+        if (!StringUtils.hasText(rawResult)) {
+            return "";
+        }
+        String trimmed = rawResult.trim();
+        if (MatchResultParser.isAcceptedResultFormat(trimmed)) {
+            return trimmed.replace('/', ':');
+        }
+        return "";
+    }
+
+    private String toTtSeriesQueryName(String rawName) {
+        if (!StringUtils.hasText(rawName)) {
+            return "";
+        }
+        String[] split = NameUtils.splitFirstLast(rawName);
+        String first = split[0] == null ? "" : NameUtils.cleanRawName(split[0]);
+        String last = split[1] == null ? "" : NameUtils.cleanRawName(split[1]);
+        String combined = (last + " " + first).trim();
+        if (combined.isBlank()) {
+            return NameUtils.cleanRawName(rawName);
+        }
+        return combined;
+    }
+
+    private String buildPlayerUrl(String queryName) {
+        return normalizedBaseUrl() + "/player/?player=" + encodeQueryValue(queryName);
+    }
+
+    private String buildH2hUrl(String playerAQueryName, String playerBQueryName) {
+        return normalizedBaseUrl() + "/h2h/?player_a=" + encodeQueryValue(playerAQueryName)
+                + "&player_b=" + encodeQueryValue(playerBQueryName);
+    }
+
+    private String normalizedBaseUrl() {
+        return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+    }
+
+    private String encodeQueryValue(String value) {
+        return URLEncoder.encode(value == null ? "" : value.trim(), StandardCharsets.UTF_8)
+                .replace("+", "%20");
+    }
+
+    private boolean isSamePairLookup(String leftA, String rightA, String leftB, String rightB) {
+        if (!StringUtils.hasText(leftA) || !StringUtils.hasText(rightA)
+                || !StringUtils.hasText(leftB) || !StringUtils.hasText(rightB)) {
+            return false;
+        }
+        return (leftA.equals(leftB) && rightA.equals(rightB))
+                || (leftA.equals(rightB) && rightA.equals(leftB));
+    }
+
+    private int sourcePriority(String sourceType) {
+        if (!StringUtils.hasText(sourceType)) {
+            return 10;
+        }
+        String normalized = sourceType.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("h2h")) {
+            return 0;
+        }
+        if (normalized.contains("player")) {
+            return 1;
+        }
+        return 5;
+    }
+
     private void politePause() {
         if (delayBetweenRequestsMs <= 0) return;
         try {
@@ -693,15 +1199,91 @@ public class TtSeriesScraper {
         }
     }
 
+    private record OfficialLedgerColumns(int player1Col,
+                                         int resultCol,
+                                         int player2Col,
+                                         int dateCol,
+                                         int winnerCol,
+                                         int firstDataRowIndex) {
+        int maxIndex() {
+            return Math.max(Math.max(player1Col, resultCol), Math.max(Math.max(player2Col, dateCol), winnerCol));
+        }
+    }
+
+    public record OfficialLedgerMatch(String sourceType,
+                                      String sourceUrl,
+                                      String player1Raw,
+                                      String player2Raw,
+                                      String result,
+                                      LocalDate date,
+                                      String winnerRaw) {
+    }
+
     public ScrapeStatus status() {
+        boolean running = scrapeRunning.get();
+        if (!running) {
+            List<ScrapeRun> recent = scrapeRunRepository.findRecent(null, null, PageRequest.of(0, 1));
+            if (!recent.isEmpty()) {
+                ScrapeRun last = recent.get(0);
+                String error = last.getErrorMessage();
+                return new ScrapeStatus(
+                        false,
+                        "IDLE",
+                        last.getMode(),
+                        last.getStatus(),
+                        last.getStartedAt(),
+                        last.getFinishedAt(),
+                        last.getMatchesAdded(),
+                        error,
+                        errorClass(error)
+                );
+            }
+        }
         return new ScrapeStatus(
-                scrapeRunning.get(),
+                running,
+                running ? "RUNNING" : "IDLE",
                 lastMode.get(),
+                running ? "RUNNING" : (lastError.get() == null ? "UNKNOWN" : "FAILED"),
                 lastStartedAt.get(),
                 lastFinishedAt.get(),
                 lastSavedMatches.get(),
-                lastError.get()
+                lastError.get(),
+                errorClass(lastError.get())
         );
+    }
+
+    private String errorClass(String error) {
+        if (!StringUtils.hasText(error)) return null;
+        String normalized = error.toLowerCase(Locale.ROOT);
+        if (normalized.contains("entitymanager")
+                || normalized.contains("transaction")
+                || normalized.contains("database")
+                || normalized.contains("jdbc")
+                || normalized.contains("sql")) {
+            return "DATABASE";
+        }
+        if (normalized.contains("timeout") || normalized.contains("timed out")) {
+            return "TIMEOUT";
+        }
+        if (normalized.contains("parse")
+                || normalized.contains("selector")
+                || normalized.contains("json")
+                || normalized.contains("malformed")) {
+            return "PARSE";
+        }
+        if (normalized.contains("identity")
+                || normalized.contains("unresolved player")
+                || normalized.contains("player alias")) {
+            return "IDENTITY";
+        }
+        if (normalized.contains("http")
+                || normalized.contains("connection")
+                || normalized.contains("upstream")
+                || normalized.contains("dns")
+                || normalized.contains("socket")) {
+            return "UPSTREAM";
+        }
+        return "OTHER";
     }
 
     public List<ScrapeRunRecord> recentRuns(String status, String mode, Integer limit) {
@@ -815,6 +1397,7 @@ public class TtSeriesScraper {
         if (!scrapeRunning.compareAndSet(false, true)) {
             return false;
         }
+        stopRequested.set(false);
         LocalDateTime now = LocalDateTime.now();
         int dbNext = scrapeRunRepository.findMaxRunNumber() + 1;
         int runId = runSequence.updateAndGet(current -> Math.max(current + 1, dbNext));
@@ -835,23 +1418,45 @@ public class TtSeriesScraper {
     }
 
     private void executeRun(String mode, CheckedRunnable runnable) {
-        if (!markStart(mode)) {
-            String message = "Scrape already running. Wait for the active run to finish.";
-            lastError.set(message);
-            ActiveRun run = activeRun.get();
-            int runId = run == null ? -1 : run.runId;
-            addErrorRecord(new ScrapeErrorRecord(runId, LocalDateTime.now(), mode, message, null, "executeRun", null));
-            log.warn("[scrape] {}", message);
-            return;
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            if (!markStart(mode)) {
+                String message = "Scrape already running. Wait for the active run to finish.";
+                lastError.set(message);
+                ActiveRun run = activeRun.get();
+                int runId = run == null ? -1 : run.runId;
+                addErrorRecord(new ScrapeErrorRecord(runId, LocalDateTime.now(), mode, message, null, "executeRun", null));
+                log.warn("[scrape] {}", message);
+                return;
+            }
+            try {
+                validateScraperConfig();
+                runnable.run();
+            } catch (Exception e) {
+                markError(e);
+                log.warn("[scrape] FAILED: {}", e.getMessage(), e);
+            } finally {
+                markFinish();
+            }
         }
-        try {
-            validateScraperConfig();
-            runnable.run();
-        } catch (Exception e) {
-            markError(e);
-            log.warn("[scrape] FAILED: {}", e.getMessage(), e);
-        } finally {
-            markFinish();
+    }
+
+    private int executeMutationRun(String mode, CheckedIntSupplier supplier) throws IOException {
+        try (CorrelationContext.Scope ignored = CorrelationContext.openIfAbsent(null)) {
+            if (!markStart(mode)) {
+                throw new IOException("Scrape already running. Wait for the active run to finish.");
+            }
+            try {
+                validateScraperConfig();
+                return supplier.getAsInt();
+            } catch (IOException ex) {
+                markError(ex);
+                throw ex;
+            } catch (Exception ex) {
+                markError(ex);
+                throw new IOException("Scrape failed: " + ex.getMessage(), ex);
+            } finally {
+                markFinish();
+            }
         }
     }
 
@@ -938,6 +1543,26 @@ public class TtSeriesScraper {
                 scrapeRunRepository.save(persisted);
             });
         }
+
+        // Publish every committed match mutation, even when a later request in
+        // the same batch failed. The saved rows are already durable and must be
+        // reflected in ratings/caches without waiting for another scrape run.
+        if (eventPublisher != null
+                && record.savedMatches() > 0) {
+            try {
+                eventPublisher.publishEvent(new ScrapeCompletedEvent(
+                        record.runId(),
+                        record.mode(),
+                        record.savedMatches(),
+                        run.newMatches.get(),
+                        run.updatedMatches.get(),
+                        run.affectedPlayerIds,
+                        record.finishedAt()
+                ));
+            } catch (RuntimeException ex) {
+                log.warn("[scrape] event publish failed: {}", ex.getMessage());
+            }
+        }
     }
 
     private void addErrorRecord(ScrapeErrorRecord record) {
@@ -991,11 +1616,14 @@ public class TtSeriesScraper {
     }
 
     public record ScrapeStatus(boolean running,
+                               String currentState,
                                String mode,
+                               String lastRunStatus,
                                LocalDateTime startedAt,
                                LocalDateTime finishedAt,
                                int savedMatches,
-                               String error) {
+                               String error,
+                               String errorClass) {
     }
 
     public record ScrapeRunRecord(int runId,
@@ -1039,12 +1667,20 @@ public class TtSeriesScraper {
         void run() throws Exception;
     }
 
+    @FunctionalInterface
+    private interface CheckedIntSupplier {
+        int getAsInt() throws Exception;
+    }
+
     private static final class ActiveRun {
         private final int runId;
         private final String mode;
         private final LocalDateTime startedAt;
         private final Long persistedRunId;
         private final AtomicInteger savedMatches = new AtomicInteger(0);
+        private final AtomicInteger newMatches = new AtomicInteger(0);
+        private final AtomicInteger updatedMatches = new AtomicInteger(0);
+        private final Set<Long> affectedPlayerIds = ConcurrentHashMap.newKeySet();
         private volatile String status = "RUNNING";
         private volatile String errorMessage;
 

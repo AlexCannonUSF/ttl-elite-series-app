@@ -1,0 +1,27 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    # Survive Docker Desktop restarts + OS reboots without operator action;
+    # `unless-stopped` lets `docker compose down` win when the operator
+    # genuinely wants the stack down.
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60"
+      - "1000"
+    ports:
+      - "6379:6379"
+    volumes:
+      - ttl-redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  ttl-redis-dev-data:

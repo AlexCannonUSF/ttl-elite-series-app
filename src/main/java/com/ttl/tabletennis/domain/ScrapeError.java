@@ -1,5 +1,6 @@
 package com.ttl.tabletennis.domain;
 
+import com.ttl.tabletennis.util.CorrelationContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -50,11 +51,70 @@ public class ScrapeError {
     @Column(name = "html_snippet", length = 4000)
     private String htmlSnippet;
 
+    @Column(name = "correlation_id", length = 64)
+    private String correlationId;
+
+    /**
+     * #121 — Coarse classification of the failure ({@code GZIP},
+     * {@code TIMEOUT}, {@code NETWORK}, {@code PARSE}, {@code OTHER}).
+     * Populated by {@link #prePersist()} from the {@link #message} when
+     * not explicitly set. Lets operators alert on specific failure
+     * patterns (e.g. "GZIP regressions in the last hour") instead of a
+     * flat counter that fires on every transient timeout.
+     */
+    @Column(name = "error_class", length = 32)
+    private String errorClass;
+
     @PrePersist
     void prePersist() {
         if (occurredAt == null) {
             occurredAt = LocalDateTime.now();
         }
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = CorrelationContext.currentOrCreate();
+        }
+        if (errorClass == null || errorClass.isBlank()) {
+            errorClass = classifyMessage(message);
+        }
+    }
+
+    /**
+     * Heuristic message → class mapping. Order matters — more specific
+     * matchers come first.
+     */
+    static String classifyMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "OTHER";
+        }
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("gzip") || lower.contains("deflate")) {
+            return "GZIP";
+        }
+        if (lower.contains("timed out") || lower.contains("timeout") || lower.contains("read time")) {
+            return "TIMEOUT";
+        }
+        if (lower.contains("watchdog")) {
+            return "WATCHDOG";
+        }
+        if (lower.contains("connection reset")
+                || lower.contains("connection refused")
+                || lower.contains("unknownhost")
+                || lower.contains("unable to resolve")
+                || lower.contains("no route to host")
+                || lower.contains("ssl")
+                || lower.contains("tls")) {
+            return "NETWORK";
+        }
+        if (lower.contains("parse") || lower.contains("malformed") || lower.contains("expected") || lower.contains("unexpected")) {
+            return "PARSE";
+        }
+        if (lower.contains("http 5") || lower.contains("status 5")) {
+            return "SERVER_5XX";
+        }
+        if (lower.contains("http 4") || lower.contains("status 4")) {
+            return "CLIENT_4XX";
+        }
+        return "OTHER";
     }
 
     public Long getId() {
@@ -123,5 +183,21 @@ public class ScrapeError {
 
     public void setHtmlSnippet(String htmlSnippet) {
         this.htmlSnippet = htmlSnippet;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
+    }
+
+    public String getErrorClass() {
+        return errorClass;
+    }
+
+    public void setErrorClass(String errorClass) {
+        this.errorClass = errorClass;
     }
 }

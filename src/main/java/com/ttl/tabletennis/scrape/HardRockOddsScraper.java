@@ -226,6 +226,18 @@ public class HardRockOddsScraper {
         return dedupeScoreboard(merged);
     }
 
+    public List<MatchOdds> discoverPublicTreeEvents() {
+        List<MatchOdds> scoreboardRows = fetchOfficialPublicTreeScoreboard();
+        if (!scoreboardRows.isEmpty()) {
+            return dedupeScoreboard(scoreboardRows);
+        }
+        List<MatchOdds> marketRows = fetchOfficialPublicTree();
+        if (!marketRows.isEmpty()) {
+            return dedupe(marketRows);
+        }
+        return List.of();
+    }
+
     public List<MatchOdds> fetchScoreboardByEventIds(Collection<String> externalEventIds) {
         List<String> requestedEventIds = normalizeExternalEventIds(externalEventIds);
         if (requestedEventIds.isEmpty() || !StringUtils.hasText(graphQlUrl)) {

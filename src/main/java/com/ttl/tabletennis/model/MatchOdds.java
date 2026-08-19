@@ -89,6 +89,7 @@ public class MatchOdds {
     public String getScoreDetail() { return scoreDetail; }
 
     public void setLiveScore(String liveScore) { this.liveScore = liveScore; }
+    public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
     public void setMatchPhase(String matchPhase) { this.matchPhase = matchPhase; }
     public void setExternalEventId(String externalEventId) { this.externalEventId = externalEventId; }
     public void setSourceType(String sourceType) { this.sourceType = sourceType; }

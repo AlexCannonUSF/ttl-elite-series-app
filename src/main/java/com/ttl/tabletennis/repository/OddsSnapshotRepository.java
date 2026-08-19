@@ -1,0 +1,89 @@
+package com.ttl.tabletennis.repository;
+
+import com.ttl.tabletennis.domain.OddsSnapshot;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+public interface OddsSnapshotRepository extends JpaRepository<OddsSnapshot, Long> {
+
+    @Query("""
+            select o from OddsSnapshot o
+            where o.trackedEventId = :identity
+               or o.bookerEventId = :identity
+               or o.matchKey = :identity
+            order by o.observedAt desc, o.id desc
+            """)
+    List<OddsSnapshot> findMarketHistory(@Param("identity") String identity, Pageable pageable);
+
+    boolean existsByTrackedEventIdAndSideAndObservedAtAndPriceDecimalAndSourceId(String trackedEventId,
+                                                                                String side,
+                                                                                LocalDateTime observedAt,
+                                                                                double priceDecimal,
+                                                                                String sourceId);
+
+    @Modifying
+    @Query("delete from OddsSnapshot o where o.observedAt < :cutoff")
+    void deleteByObservedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    @Query("""
+            select o from OddsSnapshot o
+            where upper(o.sourceId) = 'HR_MKT'
+              and o.noVigProbability is not null
+              and o.observedAt >= :from
+              and o.observedAt < :to
+            order by o.observedAt asc, o.id asc
+            """)
+    List<OddsSnapshot> findHistoricalNoVigSnapshots(@Param("from") LocalDateTime from,
+                                                    @Param("to") LocalDateTime to);
+
+    @Query("""
+            select o from OddsSnapshot o
+            where o.bookerEventId = :bookerEventId
+              and o.side = :side
+              and o.observedAt >= :placedAt
+              and o.observedAt <= :until
+            order by
+              case
+                when o.marketState = 'CLOSED' then 0
+                when o.marketState = 'SUSPENDED' then 1
+                else 2
+              end,
+              o.observedAt desc
+            """)
+    List<OddsSnapshot> findClosingCandidates(@Param("bookerEventId") String bookerEventId,
+                                             @Param("side") String side,
+                                             @Param("placedAt") LocalDateTime placedAt,
+                                             @Param("until") LocalDateTime until,
+                                             Pageable pageable);
+
+    @Query("""
+            select o from OddsSnapshot o
+            where o.bookerEventId = :bookerEventId
+              and o.side = :side
+              and o.observedAt >= :placedAt
+              and o.observedAt <= :until
+              and (
+                o.marketState in ('CLOSED', 'SUSPENDED')
+                or o.observedAt <= :settledAt
+              )
+            order by
+              case
+                when o.marketState = 'CLOSED' then 0
+                when o.marketState = 'SUSPENDED' then 1
+                else 2
+              end,
+              o.observedAt desc
+            """)
+    List<OddsSnapshot> findClosingCandidatesForSettlement(@Param("bookerEventId") String bookerEventId,
+                                                          @Param("side") String side,
+                                                          @Param("placedAt") LocalDateTime placedAt,
+                                                          @Param("settledAt") LocalDateTime settledAt,
+                                                          @Param("until") LocalDateTime until,
+                                                          Pageable pageable);
+}

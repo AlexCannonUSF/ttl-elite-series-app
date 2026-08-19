@@ -1,0 +1,203 @@
+{
+  "generatedAt": "2026-08-08T04:30:05.273Z",
+  "budgets": {
+    "initialJsGzKb": 450,
+    "lcpMs": 2000,
+    "ttiMs": 1500
+  },
+  "bundle": {
+    "indexHtmlBytes": 572,
+    "indexHtmlGzBytes": 357,
+    "initialJsGzBytes": 96775,
+    "initialCssGzBytes": 11228,
+    "jsAssets": [
+      {
+        "href": "/v3/assets/index-7m3kFwYC.js",
+        "file": "assets/index-7m3kFwYC.js",
+        "bytes": 300068,
+        "gzBytes": 96775
+      }
+    ],
+    "cssAssets": [
+      {
+        "href": "/v3/assets/index-By4nOVXE.css",
+        "file": "assets/index-By4nOVXE.css",
+        "bytes": 59625,
+        "gzBytes": 11228
+      }
+    ],
+    "allAssets": [
+      {
+        "file": "index-7m3kFwYC.js",
+        "bytes": 300068,
+        "gzBytes": 96775
+      },
+      {
+        "file": "card-BDR_7XY1.js",
+        "bytes": 51509,
+        "gzBytes": 17214
+      },
+      {
+        "file": "index-By4nOVXE.css",
+        "bytes": 59625,
+        "gzBytes": 11228
+      },
+      {
+        "file": "ReviewRoute-DMccCcZO.js",
+        "bytes": 34997,
+        "gzBytes": 10394
+      },
+      {
+        "file": "MatchDetailRoute-DJolBF52.js",
+        "bytes": 29287,
+        "gzBytes": 8482
+      },
+      {
+        "file": "LiveBoardRoute-BycsDY_V.js",
+        "bytes": 22871,
+        "gzBytes": 7540
+      },
+      {
+        "file": "AdminHubRoute-BTDzTKKt.js",
+        "bytes": 19530,
+        "gzBytes": 6377
+      },
+      {
+        "file": "BettorMatchupPanel-DnbJpFoL.js",
+        "bytes": 17499,
+        "gzBytes": 4963
+      },
+      {
+        "file": "OpsConsoleRoute-BZiaUKd9.js",
+        "bytes": 11730,
+        "gzBytes": 4088
+      },
+      {
+        "file": "ScrapeRoute-CT7sd9-M.js",
+        "bytes": 12972,
+        "gzBytes": 3987
+      },
+      {
+        "file": "MlQualityRoute-C7rzjX-x.js",
+        "bytes": 11664,
+        "gzBytes": 3849
+      },
+      {
+        "file": "OpsDiffsRoute-Bjxjw2QE.js",
+        "bytes": 12150,
+        "gzBytes": 3828
+      },
+      {
+        "file": "OpsFeedsRoute-DIe4MrvD.js",
+        "bytes": 11976,
+        "gzBytes": 3704
+      },
+      {
+        "file": "OpsIngestRoute-COI8Szv-.js",
+        "bytes": 11680,
+        "gzBytes": 3620
+      },
+      {
+        "file": "OpsStreamsRoute-BP9wkrM3.js",
+        "bytes": 11251,
+        "gzBytes": 3465
+      },
+      {
+        "file": "api-DZ1QdZ6t.js",
+        "bytes": 1472,
+        "gzBytes": 586
+      },
+      {
+        "file": "api-B4Nn2Sql.js",
+        "bytes": 1199,
+        "gzBytes": 498
+      },
+      {
+        "file": "api-wfhLC4dg.js",
+        "bytes": 1432,
+        "gzBytes": 428
+      },
+      {
+        "file": "index.html",
+        "bytes": 572,
+        "gzBytes": 357
+      },
+      {
+        "file": "api-C9DPuymP.js",
+        "bytes": 467,
+        "gzBytes": 324
+      },
+      {
+        "file": "shield-alert-HmcUj-90.js",
+        "bytes": 354,
+        "gzBytes": 261
+      },
+      {
+        "file": "radio-Dzna87EH.js",
+        "bytes": 375,
+        "gzBytes": 250
+      },
+      {
+        "file": "database-zap-1SMUzGke.js",
+        "bytes": 340,
+        "gzBytes": 246
+      },
+      {
+        "file": "timer-reset-Bl_JR8Nl.js",
+        "bytes": 270,
+        "gzBytes": 207
+      },
+      {
+        "file": "dollar-sign-YxpIz-i7.js",
+        "bytes": 220,
+        "gzBytes": 189
+      },
+      {
+        "file": "circle-check-zFdmEwWP.js",
+        "bytes": 174,
+        "gzBytes": 164
+      },
+      {
+        "file": "clock-3-oB-yoFxb.js",
+        "bytes": 165,
+        "gzBytes": 164
+      },
+      {
+        "file": "target-CfvgKMl7.js",
+        "bytes": 222,
+        "gzBytes": 158
+      },
+      {
+        "file": "loader-circle-BRQK-jkZ.js",
+        "bytes": 140,
+        "gzBytes": 153
+      },
+      {
+        "file": "chevron-left-DyvOxNew.js",
+        "bytes": 131,
+        "gzBytes": 144
+      }
+    ]
+  },
+  "runtime": {
+    "samples": 3,
+    "lcpMs": 148,
+    "ttiMs": 59.299999952316284,
+    "fcpMs": 148,
+    "rawLcp": [
+      488,
+      148,
+      148
+    ],
+    "rawTti": [
+      106.69999992847443,
+      57.700000047683716,
+      59.299999952316284
+    ],
+    "rawFcp": [
+      488,
+      148,
+      148
+    ]
+  }
+}

@@ -89,6 +89,12 @@ export function AdminPage() {
     queryFn: () => apiClient.getLiveStudioIntegrity(),
   })
 
+  const settlementReviewQuery = useQuery({
+    queryKey: ['admin-settlement-review'],
+    queryFn: () => apiClient.getSettlementReview(0, 8, false),
+    refetchInterval: 15_000,
+  })
+
   const runScrapeMutation = useMutation({
     mutationFn: apiClient.runScrape,
     onSuccess: () => {
@@ -350,6 +356,11 @@ export function AdminPage() {
           {apiErrorMessage(integrityQuery.error, 'Integrity telemetry failed to load.')}
         </Alert>
       ) : null}
+      {settlementReviewQuery.error ? (
+        <Alert severity="error">
+          {apiErrorMessage(settlementReviewQuery.error, 'Settlement review failed to load.')}
+        </Alert>
+      ) : null}
 
       <Grid container spacing={2}>
         <Grid size={{ md: 3, xs: 12 }}>
@@ -405,6 +416,124 @@ export function AdminPage() {
           />
         </Grid>
       </Grid>
+
+      <Card>
+        <CardContent>
+          <Stack spacing={1.5}>
+            <Stack
+              alignItems={{ md: 'center', xs: 'flex-start' }}
+              direction={{ md: 'row', xs: 'column' }}
+              justifyContent="space-between"
+              spacing={1}
+            >
+              <div>
+                <Typography variant="h6">Settlement Review</Typography>
+                <Typography color="text.secondary" variant="body2">
+                  The newest automatic settlements with archive identity, score-direction, and collision
+                  checks.
+                </Typography>
+              </div>
+              <Stack direction="row" spacing={1}>
+                <Chip
+                  label={`${settlementReviewQuery.data?.suspiciousItems ?? 0} flagged here`}
+                  color={settlementReviewQuery.data?.suspiciousItems ? 'warning' : 'success'}
+                  size="small"
+                />
+                <Chip label={`${settlementReviewQuery.data?.totalItems ?? 0} total`} size="small" />
+              </Stack>
+            </Stack>
+            <Divider />
+            {settlementReviewQuery.isLoading ? (
+              <Alert severity="info">Building settlement explanations…</Alert>
+            ) : settlementReviewQuery.data?.items.length ? (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Trust</TableCell>
+                    <TableCell>Match / explanation</TableCell>
+                    <TableCell>Candidate</TableCell>
+                    <TableCell>Feed ID</TableCell>
+                    <TableCell>Late score</TableCell>
+                    <TableCell align="right">Confidence</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {settlementReviewQuery.data.items.map((item) => (
+                    <TableRow key={item.betId} sx={item.suspicious ? { bgcolor: 'warning.50' } : undefined}>
+                      <TableCell>
+                        <Chip
+                          color={
+                            item.trustBand === 'HIGH'
+                              ? 'success'
+                              : item.trustBand === 'LOW'
+                                ? 'error'
+                                : 'warning'
+                          }
+                          label={item.trustBand}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell sx={{ minWidth: 320 }}>
+                        <Typography fontWeight={700} variant="body2">
+                          {item.eventName}
+                        </Typography>
+                        <Typography color="text.secondary" variant="caption">
+                          {item.explanation}
+                        </Typography>
+                        {item.contradictionFlags.length ? (
+                          <Stack direction="row" flexWrap="wrap" gap={0.5} mt={0.75}>
+                            {item.contradictionFlags.slice(0, 3).map((flag) => (
+                              <Chip
+                                key={flag}
+                                label={flag.replaceAll('_', ' ')}
+                                size="small"
+                                variant="outlined"
+                              />
+                            ))}
+                          </Stack>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        {item.selectedCandidateMatchId
+                          ? `#${item.selectedCandidateMatchId}`
+                          : item.selectedCandidateDate
+                            ? 'External row'
+                            : 'Score evidence'}
+                        <Typography color="text.secondary" display="block" variant="caption">
+                          {item.selectedCandidateDate ?? item.settlementReason ?? '—'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        {item.feedIdentityMatch == null
+                          ? 'N/A'
+                          : item.feedIdentityMatch
+                            ? 'Match'
+                            : 'No match'}
+                      </TableCell>
+                      <TableCell>
+                        {item.lastObservedScore ?? '—'}
+                        <Typography color="text.secondary" display="block" variant="caption">
+                          {item.lateScoreDirectionName ?? item.lastObservedPhase ?? 'No direction'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">
+                        {asPct(
+                          item.archiveConfidence ??
+                            item.scoreEvidenceConfidence ??
+                            item.settlementConfidence ??
+                            0
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <Alert severity="info">No completed settlements are available yet.</Alert>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
 
       <Grid container spacing={2}>
         <Grid size={{ md: 3, xs: 6 }}>

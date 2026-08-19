@@ -2,6 +2,10 @@
 
 This directory is the working planning set for the TTLElite Series 2.0 upgrade.
 
+If you are looking for source-code navigation instead of roadmap/planning docs, use the codebase atlas:
+
+- [`/Users/alexcannon/Downloads/TTLEliteSeries/docs/codebase-atlas/README.md`](../codebase-atlas/README.md)
+
 The planning set now reflects three things at once:
 
 - the refined 2.0 thesis
@@ -37,11 +41,13 @@ Read and work from these docs in this order:
    - the concrete launch gate with scripts, test commands, endpoint checks, and stop-ship conditions
 6. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/TTLElite-Series-2.0-Launch-Summary.md`
    - the short launch-state readout: what is proven, what remains optional, and what risks still deserve monitoring
-7. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/TTLElite-Series-2.0-Run-56-Bug-Closure-Plan.md`
-   - the run-specific postmortem and bug-fix plan for the current live session, especially the official-result settlement ambiguity problem
-8. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/phases/`
+7. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/TTLElite-Series-2.0-Score-Detection-And-Void-Recovery-Plan.md`
+   - the current deep-dive recovery plan for score-detection coverage, identity stability, source expansion, and void reduction
+8. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/TTLElite-Series-2.0-Run-56-Bug-Closure-Plan.md`
+   - the earlier run-specific settlement-truth postmortem, still useful for archive ambiguity history
+9. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/phases/`
    - broken-out phase notes that can be marked up and tracked individually during implementation
-9. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/phases/README.md`
+10. `/Users/alexcannon/Downloads/TTLEliteSeries/docs/ttlelite-series-2.0/phases/README.md`
    - the working phase index and lightweight execution tracker
 
 ## What Changed In This Revision

@@ -1,5 +1,32 @@
 # TTLElite Series 2.0 Run 56 Bug Closure Plan
 
+## Current Implementation Status
+
+- Phase 1 is now implemented in code.
+- Non-feed-identity archive/database settlements are blocked when candidate selection is ambiguous.
+- Feed-identity settlement now refuses conflicting duplicate candidates instead of silently picking one.
+- Strong late live-score leaders now block later-date archive auto-settlement when the archive winner conflicts.
+- Replay coverage now includes same-day duplicate official results and contradictory later-date archive candidates.
+- Phase 2 is now implemented in code.
+- Score evidence is classified per bet by finality, confidence, source agreement, completion signals, inferred winner, and contradiction state.
+- Unfinished commanding scores remain telemetry only; mathematical finals, effective finals, and identity-locked targeted completions can become settlement claims.
+- Primary settlement refreshes the current score row before building evidence, so a targeted completion can close in the same sync.
+- Targeted completion can settle from one identity-locked high-confidence feed, while model calibration still requires independent agreeing support.
+- Score-backed, targeted, heuristic, official, database, and void paths are reported as exclusive integrity categories.
+- The active v3 bettor and admin surfaces expose score-evidence strength, settlement trust, and score-backed closure share.
+- Phase 3 is now implemented in code.
+- `GET /api/score-truth/settlement-review` provides a paged forensic explanation for every completed paper settlement, with an optional suspicious-only filter.
+- Each explanation normalizes the selected archive match/date, player-set confidence, feed-identity match, archive confidence, late-score direction, score-evidence strength, coverage, ambiguity, trust band, and persisted contradiction kinds.
+- Automatic flags identify archive results absent from the recent completed ledger, archived winners that conflict with the late score direction, and same-player same-day candidate collisions.
+- The v3 Settlement Review page combines the automatic-settlement forensic ledger with the existing human review queue; the retained Operations UI exposes the same evidence in a compact scan table.
+- Phase 4 is now implemented in code.
+- Settlement evidence and learning samples persist an explicit `learningEligible` decision plus a machine-readable exclusion reason; unmatched legacy evidence is quarantined rather than assumed trustworthy.
+- Ambiguous archives, contradictory score evidence, evidence/winner conflicts, invalid identities, non-binary outcomes, and sub-0.90 confidence labels are excluded from learning.
+- Trigger ROI, recent calibration, adaptive thresholds, and operational regime tuning all consume the same `learningEligible=true` contract.
+- The learning audit, Admin Command, ML Quality, and Match Evidence surfaces show trusted/excluded counts and the exclusion-reason breakdown; Micrometer publishes trusted/excluded settlement counters.
+- Flyway migrations `V20260729001`, `V20260729002`, and `V20260807001` preserve the evidence-integrity, score-evidence, and learning-eligibility fields on upgrade.
+- Verification on 2026-08-07: 823 backend tests passed with zero failures, the `web-v3` production build passed after the Phase 4 UI changes, both frontend production builds passed during the preceding Phase 3 check, and the v3 Settlement Review route passed a local browser layout/console inspection.
+
 ## Purpose
 
 This document captures what the current live run is teaching us, which bugs look real versus cosmetic, and the exact closure plan needed to finish the remaining 2.0 reliability work.

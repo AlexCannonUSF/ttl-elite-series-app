@@ -226,6 +226,9 @@ gradle-app.setting
 web/node_modules/
 web/dist/
 web/dev-dist/
+node_modules/
+.npm-cache/
+*.tsbuildinfo
 
 # Local workspace helpers
 .claude/
@@ -233,3 +236,11 @@ web/dev-dist/
 # Local runtime databases
 data/*.mv.db
 data/*.trace.db
+
+# Local runtime and generated training datasets
+data/
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

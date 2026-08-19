@@ -1,0 +1,22 @@
+groups:
+  - name: ttl-phase-03-score-truth-advisory
+    rules:
+      - alert: ManualReviewQueueDepthHigh
+        expr: ttl_score_truth_manual_review_queue_depth > 15
+        for: 10m
+        labels:
+          severity: warning
+          phase: "3.0-p03"
+        annotations:
+          summary: "Score Truth manual review queue is above 15"
+          description: "More than 15 unresolved manual-review decisions are waiting in /v3/review; triage the queue before advisory decisions pile up."
+
+      - alert: PendingEvidenceTtlExpiriesHigh
+        expr: ttl_score_truth_pending_evidence_ttl_expired_last_hour > 2
+        for: 5m
+        labels:
+          severity: warning
+          phase: "3.0-p03"
+        annotations:
+          summary: "Pending-evidence TTL expiries are above 2 per hour"
+          description: "More than two PENDING_EVIDENCE bets had score-truth TTLs expire in the last hour; inspect stale-live recovery and feed coverage."

@@ -1,0 +1,206 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #f3ede1;
+  --panel: rgba(255, 255, 255, 0.86);
+  --panel-soft: rgba(248, 241, 232, 0.92);
+  --line: rgba(17, 37, 40, 0.09);
+  --line-strong: rgba(17, 37, 40, 0.18);
+  --ink: #365157;
+  --ink-muted: #52686c;
+  --ink-strong: #18282c;
+  --accent-soft: rgba(18, 131, 117, 0.24);
+  --accent-fade: rgba(18, 131, 117, 0.1);
+  --accent-strong: #efb66d;
+  --accent-bright: #f5c786;
+  --accent-ink: #0e6257;
+  --accent-glow: rgba(239, 182, 109, 0.5);
+}
+
+@theme {
+  --font-sans: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.gateway-shell {
+  background:
+    radial-gradient(circle at 12% 18%, rgba(16, 185, 129, 0.16), transparent 27%),
+    radial-gradient(circle at 88% 76%, rgba(59, 130, 246, 0.16), transparent 30%),
+    linear-gradient(145deg, #07110f 0%, #0a111d 54%, #08101a 100%);
+}
+
+.gateway-grid {
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 54px 54px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.role-shell {
+  --panel: rgba(250, 252, 250, 0.96);
+  --panel-soft: rgba(240, 245, 241, 0.94);
+  --line: rgba(22, 42, 44, 0.1);
+  --line-strong: rgba(22, 42, 44, 0.2);
+  --ink: #334e52;
+  --ink-muted: #415b60;
+  --ink-strong: #15282c;
+  --accent-soft: rgba(5, 150, 105, 0.26);
+  --accent-fade: rgba(5, 150, 105, 0.1);
+  --accent-strong: #68e0b5;
+  --accent-bright: #8cebc8;
+  --accent-ink: #047857;
+  --accent-glow: rgba(16, 185, 129, 0.34);
+  background: #081511;
+}
+
+.theme-admin {
+  --panel: rgba(249, 251, 255, 0.97);
+  --panel-soft: rgba(238, 243, 252, 0.95);
+  --line: rgba(25, 48, 82, 0.1);
+  --line-strong: rgba(25, 48, 82, 0.2);
+  --ink: #344a67;
+  --ink-muted: #405979;
+  --ink-strong: #14243b;
+  --accent-soft: rgba(59, 130, 246, 0.26);
+  --accent-fade: rgba(59, 130, 246, 0.1);
+  --accent-strong: #76a9fa;
+  --accent-bright: #93c5fd;
+  --accent-ink: #1d4ed8;
+  --accent-glow: rgba(59, 130, 246, 0.34);
+  background: #080f1d;
+}
+
+.role-atmosphere {
+  background:
+    radial-gradient(circle at 14% 3%, rgba(16, 185, 129, 0.15), transparent 26%),
+    radial-gradient(circle at 84% 8%, rgba(245, 158, 11, 0.08), transparent 22%),
+    linear-gradient(180deg, #091713 0%, #0b1514 48%, #101814 100%);
+}
+
+.theme-admin .role-atmosphere {
+  background:
+    radial-gradient(circle at 15% 3%, rgba(59, 130, 246, 0.18), transparent 28%),
+    radial-gradient(circle at 88% 15%, rgba(34, 211, 238, 0.08), transparent 25%),
+    linear-gradient(180deg, #090f1d 0%, #0d1422 48%, #111827 100%);
+}
+
+.role-header {
+  background: rgba(8, 22, 18, 0.88);
+}
+
+.theme-admin .role-header {
+  background: rgba(8, 15, 29, 0.9);
+}
+
+.role-shell-actions > div {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #e2e8f0 !important;
+}
+
+.role-shell-actions > a {
+  color: #e2e8f0 !important;
+}
+
+.role-shell-actions > a:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.admin-hero {
+  background:
+    radial-gradient(circle at 86% 18%, rgba(34, 211, 238, 0.13), transparent 28%),
+    linear-gradient(135deg, rgba(17, 38, 71, 0.98), rgba(8, 18, 36, 0.98));
+}
+
+.user-board-banner {
+  background:
+    radial-gradient(circle at 87% 12%, rgba(16, 185, 129, 0.16), transparent 28%),
+    radial-gradient(circle at 74% 110%, rgba(245, 158, 11, 0.1), transparent 28%),
+    linear-gradient(135deg, rgba(12, 47, 38, 0.99), rgba(6, 25, 21, 0.99));
+}
+
+.hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+a {
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.skip-link {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  z-index: 100;
+  transform: translateY(-150%);
+  border: 2px solid var(--ink-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink-strong);
+  padding: 0.7rem 1rem;
+  font-weight: 700;
+  box-shadow: 0 18px 48px -28px rgba(8, 25, 28, 0.8);
+  transition: transform 160ms ease;
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+:is(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 3px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+
+  .skip-link {
+    transition: none;
+  }
+}

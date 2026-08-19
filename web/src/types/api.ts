@@ -424,6 +424,13 @@ export interface PaperTradeBetDto {
   liveAtPlacement: boolean
   startTimeIso: string | null
   externalEventId: string | null
+  identityLocked: boolean
+  identityLockedAt: string | null
+  lockedStartTimeIso: string | null
+  lockedExternalEventId: string | null
+  lockedSourceFeedEventId: string | null
+  identityDriftCount: number
+  lastIdentityDriftAt: string | null
   player1Name: string
   player2Name: string
   sideName: string
@@ -455,6 +462,28 @@ export interface PaperTradeBetDto {
   trackingState: string | null
   settlementReason: string | null
   settlementSource: string | null
+  settlementConfidence: number | null
+  settlementEvidenceId: number | null
+  settlementEvidenceFingerprint: string | null
+  settlementEvidenceSourceCount: number | null
+  settlementCoverageState: string | null
+  settlementAmbiguityScore: number | null
+  settlementObservedAt: string | null
+  scoreEvidenceQuality: string | null
+  scoreEvidenceFinality: string | null
+  scoreEvidenceConfidence: number | null
+  scoreEvidenceObservationCount: number | null
+  scoreEvidenceSourceCount: number | null
+  scoreEvidenceAgreeingSources: number | null
+  scoreEvidenceCompletionSignals: number | null
+  scoreEvidenceInferredWinnerId: number | null
+  scoreEvidenceLatestScore: string | null
+  scoreEvidenceLatestPhase: string | null
+  scoreEvidenceContradictory: boolean
+  closingDecimalOdds: number | null
+  closingObservedAt: string | null
+  closingSource: string | null
+  closingMarketState: string | null
   lastObservedAt: string | null
   placedAt: string
   settledAt: string | null
@@ -564,6 +593,8 @@ export interface PaperTradingSyncResultDto {
   betsVoided: number
   syncedAt: string
   session: PaperTradingSessionDto
+  status?: 'COMPLETED' | 'ALREADY_RUNNING' | string
+  message?: string | null
 }
 
 export interface TrackedMatchObservationDto {
@@ -621,4 +652,46 @@ export interface CompletedMatchLogDto {
   score: string
   picked: boolean
   pickStatus: string | null
+}
+
+export interface SettlementReviewItemDto {
+  betId: number
+  status: string
+  eventName: string
+  selectedSide: string
+  winnerName: string | null
+  settlementSource: string | null
+  settlementReason: string | null
+  settledAt: string | null
+  selectedCandidateMatchId: number | null
+  selectedCandidateDate: string | null
+  playerSetConfidence: number | null
+  feedIdentityMatch: boolean | null
+  archiveConfidence: number | null
+  selectedCandidateInRecentCompleted: boolean
+  sameDayCandidateCount: number
+  lastObservedScore: string | null
+  lastObservedPhase: string | null
+  lateScoreDirectionName: string | null
+  scoreEvidenceConfidence: number | null
+  settlementConfidence: number | null
+  trustBand: 'HIGH' | 'MEDIUM' | 'LOW'
+  suspicious: boolean
+  suspicionFlags: string[]
+  contradictionFlags: string[]
+  explanation: string
+}
+
+export interface SettlementReviewPageDto {
+  generatedAt: string
+  page: number
+  size: number
+  totalItems: number
+  totalPages: number
+  hasPrevious: boolean
+  hasNext: boolean
+  suspiciousItems: number
+  highTrustItems: number
+  lowTrustItems: number
+  items: SettlementReviewItemDto[]
 }
