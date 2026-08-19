@@ -130,7 +130,7 @@ export function MlQualityRoute() {
 
       <ModelCommandCenter history={history} scorecard={scorecard} />
 
-      <R4ResearchBrief />
+      <R5ResearchBrief />
 
       <ExperimentCollections history={history} />
 
@@ -250,32 +250,32 @@ export function MlQualityRoute() {
 
 // ---- Subcomponents ---------------------------------------------------------
 
-function R4ResearchBrief() {
+function R5ResearchBrief() {
   return (
     <Card className="mb-5 overflow-hidden border-blue-300/40 bg-[linear-gradient(135deg,rgba(239,246,255,.98),rgba(255,255,255,.96))]">
       <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-3"><Badge variant="accent" className="w-fit"><FlaskConical className="mr-1 size-3.5" /> R4 weekly challenger</Badge><span className="rounded-full border border-blue-200 bg-white/70 px-3 py-1 font-mono text-[10px] font-bold text-blue-800">market-anchor-residual-r4-20260817</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-3"><Badge variant="accent" className="w-fit"><FlaskConical className="mr-1 size-3.5" /> R5 seven-day challenger</Badge><span className="rounded-full border border-blue-200 bg-white/70 px-3 py-1 font-mono text-[10px] font-bold text-blue-800">factor-aware-market-calibrator-r5-20260818</span></div>
         <CardTitle>What we learned, what changed, and what must prove itself</CardTitle>
-        <CardDescription>Frozen Aug 17 research brief. Champion remains R3; R4 is a shadow lane and cannot place production paper bets.</CardDescription>
+        <CardDescription>Frozen Aug 18 protocol. R5 scores beside the trained Champion and Hard Rock; no forward result may rewrite its parameters.</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4 xl:grid-cols-3">
         <ResearchBriefPanel title="Evidence from the strongest completed run" tone="rose">
-          <BriefMetric label="R3 winner accuracy" value="58.89%" detail="169 correct / 287 trusted" />
-          <BriefMetric label="Hard Rock favorite" value="62.37%" detail="Outperformed the model" />
-          <BriefMetric label="Flat-$1 model ROI" value="−10.22%" detail="95% CI −19.52% to −0.91%" />
-          <p>Large positive model-versus-market gaps were weaker, not stronger. Trigger leaders were too thin and correlated to justify production reweighting.</p>
+          <BriefMetric label="R3 winner accuracy" value="63.76%" detail="95 correct / 149 trusted" />
+          <BriefMetric label="R3 Brier" value="0.2331" detail="54.09% mean confidence" />
+          <BriefMetric label="Flat-$1 model ROI" value="−2.91%" detail="95% CI −15.67% to +9.86%" />
+          <p>The model remained directionally useful but materially under-confident. Anti-market value lanes failed; their apparent edge was not executable evidence.</p>
         </ResearchBriefPanel>
-        <ResearchBriefPanel title="The materially different R4 hypothesis" tone="blue">
-          <BriefMetric label="Market prior" value="79%+" detail="Hard Rock no-vig logit anchor" />
-          <BriefMetric label="Model residual" value="21% max" detail="Decays as disagreement widens" />
-          <BriefMetric label="Training protocol" value="400 / 200" detail="Runs 71+72 train · run 76 holdout" />
-          <p>R4 asks whether the model improves the market only at the margin. The fitted residual reduced holdout Brier from 0.2383 to 0.2366; accuracy was 59.0% vs. 59.5%, so this is promising calibration evidence—not a winner.</p>
+        <ResearchBriefPanel title="The materially different R5 hypothesis" tone="blue">
+          <BriefMetric label="Market prior" value="No-vig logit" detail="Keeps Hard Rock's margin separate" />
+          <BriefMetric label="Model residual" value="40% max" detail="Quality- and gap-weighted" />
+          <BriefMetric label="Weak-factor shrink" value="30%" detail="Schedule, H2H, OppAdj, volatility" />
+          <p>R5 gives strong Glicko, Elo, TrueSkill, and rater consensus room to adjust the market, while shrinking the unstable factor families found across runs 75, 76, and 93.</p>
         </ResearchBriefPanel>
-        <ResearchBriefPanel title="One-week promotion contract" tone="emerald">
+        <ResearchBriefPanel title="Seven-day promotion contract" tone="emerald">
           <BriefMetric label="Minimum evidence" value="300" detail="Trusted forward outcomes" />
-          <BriefMetric label="Primary score" value="Log loss" detail="Then Brier and calibration" />
-          <BriefMetric label="Economic guard" value="EV after vig" detail="No-vig edge alone is insufficient" />
-          <p>Promote nothing unless R4 beats R3 and the market benchmark out of sample, preserves identity/settlement integrity, and avoids concentrated gains from one player, trigger, or time regime.</p>
+          <BriefMetric label="Paper audit" value="30+" detail="Market-agreement $1 samples" />
+          <BriefMetric label="EV ladders" value="0/1/2/3/5%" detail="Actual offered price after vig" />
+          <p>Promote nothing unless R5 improves log loss and Brier out of sample, preserves settlement and artifact integrity, and the result is not concentrated in one player, trigger, price, or time regime.</p>
         </ResearchBriefPanel>
       </CardContent>
     </Card>
@@ -498,9 +498,10 @@ function ModelCommandCenter({ history, scorecard }: { history: ModelRunHistory |
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-semibold">
           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-emerald-800">$1 fixed research stake</span>
-          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Model win p ≥ 60%</span>
-          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Model-market gap ≤ 10 pp</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Accuracy audit p ≥ 52%</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Model + market direction agree</span>
           <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">Plus-money bets quarantined</span>
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-800">EV after vig: 0/1/2/3/5% lanes</span>
           <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-700">Adaptive changes evidence-only</span>
         </div>
       </CardContent>

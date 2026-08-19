@@ -140,6 +140,8 @@ export function AdminLiveRunRoute() {
         </div>
       </section>
 
+      <WeekLearningContract analytics={analytics} monitor={monitor} session={session} />
+
       <section className="mt-5 grid gap-5 xl:grid-cols-[1.28fr_0.72fr]">
         <Card>
           <CardHeader>
@@ -262,6 +264,64 @@ export function AdminLiveRunRoute() {
         </CardContent>
       </Card>
     </V3Shell>
+  )
+}
+
+function WeekLearningContract({ analytics, monitor, session }: {
+  analytics: LiveRunAnalytics | null
+  monitor: ModelCallMonitor | null
+  session: PaperTradingSession | null
+}) {
+  const settled = analytics?.settledCalls ?? 0
+  const total = analytics?.totalCalls ?? 0
+  const paperSamples = session?.decisionTelemetry?.placedCount ?? session?.totalBets ?? 0
+  const settlementCoverage = total ? (settled / total) * 100 : 0
+  const pricedCalls = (monitor?.calls ?? []).filter((call) => call.hardRockAmericanOdds != null && call.opponentHardRockAmericanOdds != null).length
+  const priceCoverage = monitor?.calls.length ? (pricedCalls / monitor.calls.length) * 100 : 0
+  return (
+    <Card className="mt-5 overflow-hidden border-cyan-200 bg-[linear-gradient(135deg,rgba(236,254,255,.95),rgba(255,255,255,.96))]">
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Badge variant="accent" className="w-fit"><Target className="mr-1 size-3.5" /> Seven-day evidence contract</Badge>
+          <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-cyan-900">R5 · frozen forward test</span>
+        </div>
+        <CardTitle>Checkpoints required before any parameter earns trust</CardTitle>
+        <CardDescription>
+          Forecast accuracy, paper sampling, and economic value are separate tests. Paper positions are a market-agreement accuracy audit; the 0/1/2/3/5% shadow ladders answer whether any edge survives the actual Hard Rock margin.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <Checkpoint label="Frozen calls" current={total} target={500} detail="Opportunity coverage" />
+        <Checkpoint label="Trusted outcomes" current={settled} target={300} detail="Promotion minimum" />
+        <Checkpoint label="Paper audit" current={paperSamples} target={30} detail="Fixed-$1 samples" />
+        <Checkpoint label="Settlement coverage" current={settlementCoverage} target={95} detail={`${analytics?.awaitingCalls ?? 0} awaiting`} percent />
+        <Checkpoint label="Two-sided prices" current={priceCoverage} target={95} detail={`${pricedCalls}/${monitor?.calls.length ?? 0} calls`} percent />
+      </CardContent>
+    </Card>
+  )
+}
+
+function Checkpoint({ current, detail, label, percent = false, target }: {
+  current: number
+  detail: string
+  label: string
+  percent?: boolean
+  target: number
+}) {
+  const progress = Math.min(100, target > 0 ? (current / target) * 100 : 0)
+  const passed = current >= target
+  return (
+    <div className="rounded-[18px] border border-white/90 bg-white/80 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--ink-muted)]">{label}</p>
+        {passed ? <CheckCircle2 className="size-4 text-emerald-600" /> : <Clock3 className="size-4 text-amber-600" />}
+      </div>
+      <p className="mt-2 font-mono text-xl font-bold text-[var(--ink-strong)]">
+        {percent ? `${current.toFixed(1)}%` : Math.round(current)} <span className="text-xs text-[var(--ink-muted)]">/ {target}{percent ? '%' : ''}</span>
+      </p>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className={cn('h-full rounded-full', passed ? 'bg-emerald-500' : 'bg-cyan-500')} style={{ width: `${progress}%` }} /></div>
+      <p className="mt-2 text-[10px] text-[var(--ink-muted)]">{detail}</p>
+    </div>
   )
 }
 

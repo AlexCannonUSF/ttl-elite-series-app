@@ -3,7 +3,7 @@
     <module name="TTLEliteSeries" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.ttl.tabletennis.TtlEliteSeriesApplication" />
     <option name="VM_PARAMETERS" value="-Djava.awt.headless=false -Dfile.encoding=UTF-8" />
-    <option name="PROGRAM_PARAMETERS" value="--scrape.auto=true --ttl.elo.sync.onStartup=false --ttl.elo.sync.scheduled=false --ttl.glicko2.rebuildOnStartupIfMissing=false --ttl.paper.allowLive=true --ttl.paper.onlyUpcoming=true --ttl.odds.defaultModelFamily=accuracy-symmetric-market-r3-20260815121735-GBT_LIKE-87125 --ttl.paper.policyVersion=accuracy-consensus-r3-live-no-vig-fixed-dollar --app.build.revision=workspace-market-anchor-r4-live-eligibility-20260817 --server.port=8080 --spring.lifecycle.timeout-per-shutdown-phase=5s --app.openBrowserOnStartup=true --app.autoStartWebUiDevServer=true --app.webUiUrl=http://127.0.0.1:5174/v3/user" />
+    <option name="PROGRAM_PARAMETERS" value="--scrape.auto=true --ttl.elo.sync.onStartup=false --ttl.elo.sync.scheduled=false --ttl.glicko2.rebuildOnStartupIfMissing=false --ttl.paper.allowLive=true --ttl.paper.onlyUpcoming=true --ttl.odds.defaultModelFamily=accuracy-symmetric-market-r3-20260815121735-GBT_LIKE-87125 --ttl.paper.selectionMode=MODEL_MARKET_AGREEMENT_ACCURACY_AUDIT --ttl.paper.policyVersion=week-r5-factor-aware-market-calibrated-accuracy-audit --app.build.revision=week-01-r5-factor-aware-market-calibrator-20260819 --server.port=8080 --spring.lifecycle.timeout-per-shutdown-phase=5s --app.openBrowserOnStartup=true --app.autoStartWebUiDevServer=true --app.webUiUrl=http://127.0.0.1:5174/v3/user" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
     <method v="2">
       <option name="Make" enabled="true" />

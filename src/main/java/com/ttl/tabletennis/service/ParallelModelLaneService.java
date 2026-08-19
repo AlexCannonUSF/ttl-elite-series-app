@@ -41,6 +41,11 @@ public class ParallelModelLaneService {
     static final String MARKET_ANCHOR_VERSION = "market-anchor-residual-r4-20260817";
     private static final String MARKET_ANCHOR_SCHEMA =
             "market-no-vig-logit+champion-residual+adaptive-disagreement-v1";
+    static final String MARKET_CALIBRATED_R5_LANE_KEY = "SHADOW_MARKET_CALIBRATED_R5";
+    static final String MARKET_CALIBRATED_R5_VERSION = "factor-aware-market-calibrator-r5-20260818";
+    private static final String MARKET_CALIBRATED_R5_SCHEMA =
+            "market-no-vig-logit+champion-residual+signal-quality+rating-agreement+weak-factor-shrink-v2";
+    private static final List<Double> R5_EXPECTED_RETURN_LADDER = List.of(0.00, 0.01, 0.02, 0.03, 0.05);
 
     private final PredictionFacade predictionFacade;
     private final ModelArtifactIdentityService identityService;
@@ -60,6 +65,13 @@ public class ParallelModelLaneService {
     @Value("${ttl.research.marketAnchor.disagreementScale:0.50}") private double marketAnchorDisagreementScale;
     @Value("${ttl.research.marketAnchor.minExpectedValue:0.005}") private double marketAnchorMinExpectedValue;
     @Value("${ttl.research.marketAnchor.minNoVigEdge:0.002}") private double marketAnchorMinNoVigEdge;
+    @Value("${ttl.research.marketCalibrator.enabled:true}") private boolean marketCalibratorEnabled;
+    @Value("${ttl.research.marketCalibrator.baseModelWeight:0.40}") private double marketCalibratorBaseModelWeight;
+    @Value("${ttl.research.marketCalibrator.disagreementScale:0.50}") private double marketCalibratorDisagreementScale;
+    @Value("${ttl.research.marketCalibrator.weakFactorMultiplier:0.70}") private double marketCalibratorWeakFactorMultiplier;
+    @Value("${ttl.research.marketCalibrator.accuracyAudit.minChampionProbability:0.52}") private double accuracyAuditMinChampionProbability;
+    @Value("${ttl.research.marketCalibrator.accuracyAudit.minSignalQuality:0.62}") private double accuracyAuditMinSignalQuality;
+    @Value("${ttl.research.marketCalibrator.accuracyAudit.minRatingAgreement:0.50}") private double accuracyAuditMinRatingAgreement;
 
     public ParallelModelLaneService(PredictionFacade predictionFacade,
                                     ModelArtifactIdentityService identityService,
@@ -81,7 +93,8 @@ public class ParallelModelLaneService {
                                PaperTradeModelCall championCall) {
         if (!enabled || session == null || opportunity == null || championCall == null
                 || championCall.getPlayer1Id() == null || championCall.getPlayer2Id() == null) return;
-        long familyLimit = Math.max(0, MAX_TOTAL_LANES - (marketAnchorEnabled ? 2L : 1L));
+        long reservedLanes = 1L + (marketAnchorEnabled ? 1L : 0L) + (marketCalibratorEnabled ? 1L : 0L);
+        long familyLimit = Math.max(0, MAX_TOTAL_LANES - reservedLanes);
         List<String> families = Arrays.stream(shadowFamilies.split(","))
                 .map(String::trim).filter(StringUtils::hasText).map(value -> value.toUpperCase(Locale.ROOT))
                 .distinct().limit(familyLimit).toList();
@@ -108,6 +121,18 @@ public class ParallelModelLaneService {
                 }
             } catch (RuntimeException failure) {
                 log.warn("[research-lane] market anchor unavailable session={} event={} reason={}",
+                        session.getId(), championCall.getEventKey(), failure.getMessage());
+            }
+        }
+        if (marketCalibratorEnabled) {
+            try {
+                RunModelLaneEvaluation marketCalibrator = evaluateMarketCalibratedR5(
+                        session, opportunity, championCall, ordinal);
+                if (marketCalibrator != null) {
+                    recordMarketCalibratedR5Portfolios(session, opportunity, championCall, marketCalibrator);
+                }
+            } catch (RuntimeException failure) {
+                log.warn("[research-lane] R5 market calibrator unavailable session={} event={} reason={}",
                         session.getId(), championCall.getEventKey(), failure.getMessage());
             }
         }
@@ -249,6 +274,148 @@ public class ParallelModelLaneService {
         return evaluationRepository.save(evaluation);
     }
 
+    /**
+     * Forward-only R5 challenger. R4 established that the timestamp-correct
+     * no-vig market is a materially better probability anchor than the raw
+     * Champion in the latest run, while large anti-market residuals lost.
+     * R5 therefore keeps the market logit as the prior and lets the Champion
+     * move it only in proportion to predictor quality, rating agreement, and
+     * the historical stability of the leading factor family.
+     */
+    private RunModelLaneEvaluation evaluateMarketCalibratedR5(PaperTradeSession session,
+                                                               DecisionOpportunity opportunity,
+                                                               PaperTradeModelCall call,
+                                                               int ordinal) {
+        MarketPair market = marketPair(call);
+        if (call.getModelProbability() == null
+                || call.getPredictedWinnerPlayerId() == null
+                || market.p1Probability() == null
+                || market.p2Probability() == null) return null;
+        boolean championSelectedP1 = call.getPredictedWinnerPlayerId().equals(call.getPlayer1Id());
+        double championP1 = championSelectedP1
+                ? clampProbability(call.getModelProbability())
+                : 1.0 - clampProbability(call.getModelProbability());
+        double marketP1 = clampProbability(market.p1Probability());
+        double disagreement = Math.abs(championP1 - marketP1);
+        double evidenceMultiplier = factorAwareEvidenceMultiplier(
+                call.getSignalQuality(),
+                call.getRatingAgreement(),
+                call.getTopTrigger(),
+                marketCalibratorWeakFactorMultiplier);
+        double effectiveWeight = adaptiveModelWeight(
+                marketCalibratorBaseModelWeight,
+                disagreement,
+                marketCalibratorDisagreementScale) * evidenceMultiplier;
+        double anchoredP1 = anchoredProbability(marketP1, championP1, effectiveWeight);
+        double anchoredP2 = 1.0 - anchoredP1;
+
+        RunModelLaneDefinition lane = laneRepository.findBySessionIdAndLaneKey(
+                        session.getId(), MARKET_CALIBRATED_R5_LANE_KEY)
+                .orElseGet(RunModelLaneDefinition::new);
+        if (lane.getId() != null && !MARKET_CALIBRATED_R5_VERSION.equals(lane.getModelVersion())) {
+            throw new IllegalStateException("R5 market-calibrator lane artifact drift");
+        }
+        lane.setSessionId(session.getId());
+        lane.setLaneKey(MARKET_CALIBRATED_R5_LANE_KEY);
+        lane.setDisplayName("Factor-Aware Market Calibrator R5");
+        lane.setLaneRole("SHADOW");
+        lane.setOrdinalPosition(ordinal);
+        lane.setModelFamily("FACTOR_AWARE_MARKET_CALIBRATOR");
+        lane.setModelVersion(MARKET_CALIBRATED_R5_VERSION);
+        lane.setArtifactChecksum(sha256(MARKET_CALIBRATED_R5_VERSION + "|" + MARKET_CALIBRATED_R5_SCHEMA
+                + "|baseWeight=" + marketCalibratorBaseModelWeight
+                + "|scale=" + marketCalibratorDisagreementScale
+                + "|weakFactorMultiplier=" + marketCalibratorWeakFactorMultiplier));
+        lane.setFeatureSchemaChecksum(sha256(MARKET_CALIBRATED_R5_SCHEMA));
+        lane.setCalibrationId("NO_VIG_LOGIT_FACTOR_AWARE_RESIDUAL_V2");
+        lane.setEnabled(true);
+        lane.setPrimaryLane(false);
+        lane = laneRepository.save(lane);
+
+        RunModelLaneEvaluation evaluation = evaluationRepository
+                .findByOpportunityIdAndLaneDefinitionId(opportunity.getId(), lane.getId())
+                .orElseGet(RunModelLaneEvaluation::new);
+        boolean player1 = anchoredP1 >= anchoredP2;
+        double winnerProbability = player1 ? anchoredP1 : anchoredP2;
+        evaluation.setOpportunityId(opportunity.getId());
+        evaluation.setLaneDefinitionId(lane.getId());
+        evaluation.setSourceModelCallId(call.getId());
+        evaluation.setCapturedAt(call.getCapturedAt());
+        evaluation.setPlayer1Probability(anchoredP1);
+        evaluation.setPlayer2Probability(anchoredP2);
+        evaluation.setPredictedWinnerPlayerId(player1 ? call.getPlayer1Id() : call.getPlayer2Id());
+        evaluation.setPredictedWinnerName(player1 ? call.getPlayer1Name() : call.getPlayer2Name());
+        evaluation.setRawProbability(player1 ? championP1 : 1.0 - championP1);
+        evaluation.setFairAmericanOdds(toAmerican(winnerProbability));
+        evaluation.setSelectionScore(effectiveWeight);
+        evaluation.setSignalQuality(evidenceMultiplier);
+        evaluation.setTopTrigger("FACTOR_AWARE_MARKET_CALIBRATION");
+        evaluation.setFeatureContributions("market_no_vig_anchor=" + round4(marketP1)
+                + ";champion_probability=" + round4(championP1)
+                + ";absolute_disagreement=" + round4(disagreement)
+                + ";evidence_multiplier=" + round4(evidenceMultiplier)
+                + ";effective_model_weight=" + round4(effectiveWeight)
+                + ";anchored_probability=" + round4(anchoredP1)
+                + ";champion_top_trigger=" + safeText(call.getTopTrigger()));
+        return evaluationRepository.save(evaluation);
+    }
+
+    private void recordMarketCalibratedR5Portfolios(PaperTradeSession session,
+                                                     DecisionOpportunity opportunity,
+                                                     PaperTradeModelCall call,
+                                                     RunModelLaneEvaluation lane) {
+        MarketPair market = marketPair(call);
+        Candidate valueCandidate = bestEconomicValueCandidate(call, lane, market);
+        double expectedValue = valueCandidate == null ? Double.NEGATIVE_INFINITY
+                : expectedValue(valueCandidate.probability(), valueCandidate.americanOdds());
+        for (double threshold : R5_EXPECTED_RETURN_LADDER) {
+            String basisPoints = String.valueOf((int) Math.round(threshold * 100));
+            RunPortfolioDefinition portfolio = portfolio(session,
+                    "R5_VALUE_EV_" + basisPoints + "PP",
+                    "R5 value · EV ≥ " + basisPoints + "%",
+                    "COUNTERFACTUAL",
+                    lane,
+                    false,
+                    "{\"model\":\"FACTOR_AWARE_MARKET_CALIBRATOR_R5\","
+                            + "\"edgeBasis\":\"ACTUAL_HARD_ROCK_PRICE_AFTER_VIG\","
+                            + "\"minimumExpectedReturn\":" + threshold
+                            + ",\"stake\":1.0,\"mode\":\"SHADOW_ONLY\"}");
+            boolean tracked = valueCandidate != null && expectedValue >= threshold;
+            decision(opportunity, portfolio, lane, valueCandidate,
+                    tracked ? "TRACKED" : "SKIPPED",
+                    tracked ? "EXPECTED_RETURN_LADDER_PASS"
+                            : valueCandidate == null ? "PRICE_OR_MODEL_MISSING" : "EXPECTED_RETURN_BELOW_LADDER",
+                    tracked ? 1.0 : 0.0);
+        }
+
+        Candidate accuracyCandidate = predictedWinnerCandidate(call, lane, market);
+        boolean modelAndMarketAgree = accuracyCandidate != null
+                && accuracyCandidate.marketProbability() >= 0.50;
+        boolean accuracyTracked = modelAndMarketAgree
+                && call.getModelProbability() != null
+                && call.getModelProbability() >= accuracyAuditMinChampionProbability
+                && valueOr(call.getSignalQuality(), 0.0) >= accuracyAuditMinSignalQuality
+                && valueOr(call.getRatingAgreement(), 0.0) >= accuracyAuditMinRatingAgreement
+                && accuracyCandidate.americanOdds() != null
+                && accuracyCandidate.americanOdds() <= 0;
+        RunPortfolioDefinition accuracyPortfolio = portfolio(session,
+                "R5_MARKET_AGREEMENT_ACCURACY",
+                "R5 market-agreement accuracy audit",
+                "RESEARCH",
+                lane,
+                false,
+                "{\"purpose\":\"FORECAST_ACCURACY_AND_FLAT_DOLLAR_AUDIT\","
+                        + "\"modelMarketAgreement\":true,"
+                        + "\"minChampionProbability\":" + accuracyAuditMinChampionProbability + ","
+                        + "\"minSignalQuality\":" + accuracyAuditMinSignalQuality + ","
+                        + "\"minRatingAgreement\":" + accuracyAuditMinRatingAgreement + ","
+                        + "\"positiveOddsAllowed\":false,\"stake\":1.0,\"mode\":\"SHADOW_ONLY\"}");
+        decision(opportunity, accuracyPortfolio, lane, accuracyCandidate,
+                accuracyTracked ? "TRACKED" : "SKIPPED",
+                accuracyTracked ? "MARKET_AGREEMENT_ACCURACY_PASS" : "ACCURACY_AUDIT_GATE",
+                accuracyTracked ? 1.0 : 0.0);
+    }
+
     private void recordMarketAnchorPortfolio(PaperTradeSession session,
                                              DecisionOpportunity opportunity,
                                              PaperTradeModelCall call,
@@ -366,6 +533,37 @@ public class ParallelModelLaneService {
                 : new Candidate(call.getPlayer2Id(), call.getPlayer2Name(), lane.getPlayer2Probability(), market.p2Probability(), edge2, market.p2Odds());
     }
 
+    private static Candidate bestEconomicValueCandidate(PaperTradeModelCall call,
+                                                         RunModelLaneEvaluation lane,
+                                                         MarketPair market) {
+        if (lane.getPlayer1Probability() == null || lane.getPlayer2Probability() == null
+                || market.p1Probability() == null || market.p2Probability() == null
+                || market.p1Odds() == null || market.p2Odds() == null) return null;
+        double ev1 = expectedValue(lane.getPlayer1Probability(), market.p1Odds());
+        double ev2 = expectedValue(lane.getPlayer2Probability(), market.p2Odds());
+        return ev1 >= ev2
+                ? new Candidate(call.getPlayer1Id(), call.getPlayer1Name(), lane.getPlayer1Probability(), market.p1Probability(), lane.getPlayer1Probability() - market.p1Probability(), market.p1Odds())
+                : new Candidate(call.getPlayer2Id(), call.getPlayer2Name(), lane.getPlayer2Probability(), market.p2Probability(), lane.getPlayer2Probability() - market.p2Probability(), market.p2Odds());
+    }
+
+    private static Candidate predictedWinnerCandidate(PaperTradeModelCall call,
+                                                       RunModelLaneEvaluation lane,
+                                                       MarketPair market) {
+        if (lane.getPredictedWinnerPlayerId() == null
+                || lane.getPlayer1Probability() == null || lane.getPlayer2Probability() == null
+                || market.p1Probability() == null || market.p2Probability() == null) return null;
+        boolean player1 = lane.getPredictedWinnerPlayerId().equals(call.getPlayer1Id());
+        double probability = player1 ? lane.getPlayer1Probability() : lane.getPlayer2Probability();
+        double marketProbability = player1 ? market.p1Probability() : market.p2Probability();
+        return new Candidate(
+                player1 ? call.getPlayer1Id() : call.getPlayer2Id(),
+                player1 ? call.getPlayer1Name() : call.getPlayer2Name(),
+                probability,
+                marketProbability,
+                probability - marketProbability,
+                player1 ? market.p1Odds() : market.p2Odds());
+    }
+
     private static MarketPair marketPair(PaperTradeModelCall call) {
         Double selectedProbability = call.getHardRockNoVigProbability();
         if (call.getPredictedWinnerPlayerId() == null) return new MarketPair(null, null, null, null);
@@ -387,6 +585,44 @@ public class ParallelModelLaneService {
         double weight = Math.max(0.0, Math.min(1.0, modelWeight));
         double anchoredLogit = logit(market) + weight * (logit(model) - logit(market));
         return clampProbability(1.0 / (1.0 + Math.exp(-anchoredLogit)));
+    }
+
+    static double factorAwareEvidenceMultiplier(Double signalQuality,
+                                                Double ratingAgreement,
+                                                String topTrigger,
+                                                double weakFactorMultiplier) {
+        double signal = clamp01(valueOr(signalQuality, 0.65));
+        double agreement = clamp01(valueOr(ratingAgreement, 0.50));
+        double normalizedSignal = clamp01((signal - 0.50) / 0.40);
+        double evidence = clamp01(0.50 + (0.30 * normalizedSignal) + (0.20 * agreement));
+        if (isWeakOrUnstableFactor(topTrigger)) {
+            evidence *= Math.max(0.20, Math.min(1.0, weakFactorMultiplier));
+        }
+        return clamp01(evidence);
+    }
+
+    private static boolean isWeakOrUnstableFactor(String trigger) {
+        if (!StringUtils.hasText(trigger)) return false;
+        String normalized = trigger.trim().toUpperCase(Locale.ROOT);
+        return normalized.contains("SCHEDULE")
+                || normalized.contains("HEAD-TO-HEAD")
+                || normalized.contains("HEAD_TO_HEAD")
+                || normalized.contains("OPPONENT-ADJUSTED")
+                || normalized.contains("OPPONENT_ADJUSTED")
+                || normalized.contains("VOLATILITY")
+                || normalized.contains("GLICKO RD");
+    }
+
+    private static double valueOr(Double value, double fallback) {
+        return value == null || !Double.isFinite(value) ? fallback : value;
+    }
+
+    private static double clamp01(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
+    }
+
+    private static String safeText(String value) {
+        return StringUtils.hasText(value) ? value.trim().replace(';', ',') : "UNKNOWN";
     }
     private static double expectedValue(double probability, Integer americanOdds) {
         if (americanOdds == null || americanOdds == 0) return Double.NEGATIVE_INFINITY;

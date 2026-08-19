@@ -37,6 +37,18 @@ class ParallelModelLaneServiceTests {
     }
 
     @Test
+    void r5ShrinksHistoricallyWeakFactorFamiliesWithoutDiscardingTheSignal() {
+        double strong = ParallelModelLaneService.factorAwareEvidenceMultiplier(
+                0.74, 0.80, "Glicko Probability Delta^3", 0.70);
+        double weak = ParallelModelLaneService.factorAwareEvidenceMultiplier(
+                0.74, 0.80, "Schedule Strength Delta", 0.70);
+
+        assertThat(strong).isGreaterThan(weak);
+        assertThat(weak).isCloseTo(strong * 0.70, within(1.0e-12));
+        assertThat(weak).isGreaterThan(0.0);
+    }
+
+    @Test
     void disabledShadowEngineCannotTouchProductionOrResearchRepositories() {
         PredictionFacade prediction = mock(PredictionFacade.class);
         ModelArtifactIdentityService identity = mock(ModelArtifactIdentityService.class);

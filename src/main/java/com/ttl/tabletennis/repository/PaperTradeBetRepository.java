@@ -45,6 +45,8 @@ public interface PaperTradeBetRepository extends JpaRepository<PaperTradeBet, Lo
 
     boolean existsBySessionIdAndEventKeyAndStatus(Long sessionId, String eventKey, String status);
 
+    boolean existsBySessionIdAndEventKey(Long sessionId, String eventKey);
+
     boolean existsBySessionIdAndResultMatchId(Long sessionId, Long resultMatchId);
 
     Optional<PaperTradeBet> findFirstBySessionIdAndResultMatchIdOrderByIdAsc(Long sessionId, Long resultMatchId);

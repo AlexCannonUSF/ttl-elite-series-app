@@ -12,6 +12,7 @@ import com.ttl.tabletennis.repository.PlayerRatingWlRepository;
 import com.ttl.tabletennis.repository.PlayerRepository;
 import com.ttl.tabletennis.repository.RatingSnapshotRepository;
 import com.ttl.tabletennis.util.MatchResultParser;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -43,6 +44,16 @@ class FeatureServiceTests {
 
     @Autowired
     private PlayerRatingWlRepository playerRatingWlRepository;
+
+    @BeforeEach
+    void clearFeatureCachesBeforeRolledBackFixtureIdsCanBeReused() {
+        // This class deliberately verifies cache reuse inside individual
+        // tests. Spring then rolls each transaction back while the singleton
+        // service survives, and H2 may reuse those rolled-back identity values.
+        // Clear once between fixtures so a previous test's synthetic players
+        // cannot masquerade as the next test's players.
+        featureService.invalidateForFreshMatchData(java.util.Set.of());
+    }
 
     @Test
     void buildMatchupFeatureVectorProducesCoreSignals() {

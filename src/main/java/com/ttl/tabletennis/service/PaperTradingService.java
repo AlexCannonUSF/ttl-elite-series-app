@@ -384,6 +384,12 @@ public class PaperTradingService {
     @Value("${ttl.paper.accuracyGuard.allowPositiveOdds:false}")
     private boolean accuracyGuardAllowPositiveOdds;
 
+    @Value("${ttl.paper.selectionMode:BEST_VALUE}")
+    private String paperSelectionMode;
+
+    @Value("${ttl.paper.accuracyAudit.minNoVigMarketProbability:0.50}")
+    private double accuracyAuditMinNoVigMarketProbability;
+
     @Value("${ttl.paper.adaptive.enabled:true}")
     private boolean adaptiveEnabled;
 
@@ -670,9 +676,9 @@ public class PaperTradingService {
             String eventKey = StringUtils.hasText(row.matchupKey())
                     ? row.matchupKey().trim()
                     : com.ttl.tabletennis.service.papertrade.MatchKeyBuilder.buildEventKey(row);
-            String dedupeKey = StringUtils.hasText(row.suggestedDedupeKey())
-                    ? row.suggestedDedupeKey().trim()
-                    : eventKey + "|" + normalizeKey(candidate.sideName());
+            // Dedupe the side that will actually be paper traded. The value engine's
+            // suggested side can differ from the model-winner side in accuracy-audit mode.
+            String dedupeKey = eventKey + "|" + normalizeKey(candidate.sideName());
             String playerPairKey = canonicalPlayerPairKey(row.player1Id(), row.player2Id());
             if (row.live()
                     && StringUtils.hasText(playerPairKey)
@@ -685,7 +691,7 @@ public class PaperTradingService {
                 skipped++;
                 continue;
             }
-            if (betRepository.existsBySessionIdAndEventKeyAndStatus(session.getId(), eventKey, PaperTradeBet.STATUS_OPEN)) {
+            if (betRepository.existsBySessionIdAndEventKey(session.getId(), eventKey)) {
                 persistDecisionSample(
                         session.getId(),
                         strategy,
@@ -699,7 +705,7 @@ public class PaperTradingService {
                         null,
                         false,
                         "SKIPPED",
-                        "DUPLICATE_OPEN_EVENT"
+                        "DUPLICATE_EVENT_IN_RUN"
                 );
                 skipped++;
                 continue;
@@ -843,7 +849,7 @@ public class PaperTradingService {
                 skipped++;
                 continue;
             }
-            if (betRepository.existsBySessionIdAndEventKeyAndStatus(session.getId(), ranked.eventKey(), PaperTradeBet.STATUS_OPEN)
+            if (betRepository.existsBySessionIdAndEventKey(session.getId(), ranked.eventKey())
                     || betRepository.existsBySessionIdAndDedupeKey(session.getId(), ranked.dedupeKey())) {
                 persistDecisionSample(
                         session.getId(),
@@ -914,7 +920,15 @@ public class PaperTradingService {
                     && policyDecision.reasonCodes().stream().allMatch(reason ->
                     com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD.equals(reason)
                             || com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_KELLY_CAP.equals(reason));
-            if (stakePolicyPrimary && !policyDecision.isBet() && !explorationEdgeOverride) {
+            boolean accuracyAuditStakingOverride = stakePolicyPrimary
+                    && isAccuracyAuditMode()
+                    && ranked.fallbackPick()
+                    && !policyDecision.isBet()
+                    && isAccuracyAuditStakingOnlyRejection(policyDecision.reasonCodes());
+            if (stakePolicyPrimary
+                    && !policyDecision.isBet()
+                    && !explorationEdgeOverride
+                    && !accuracyAuditStakingOverride) {
                 persistDecisionSample(
                         session.getId(),
                         strategy,
@@ -3701,7 +3715,8 @@ public class PaperTradingService {
         if (row.player1Id().equals(row.player2Id())) {
             return "DUPLICATE_PLAYER_IDS";
         }
-        if (row.suggestedEdge() == null) {
+        boolean accuracyAudit = isAccuracyAuditMode();
+        if (!accuracyAudit && row.suggestedEdge() == null) {
             return "MISSING_SUGGESTED_EDGE";
         }
         double edgeThreshold = row.live()
@@ -3718,11 +3733,13 @@ public class PaperTradingService {
         if (explorationEnabled) {
             edgeThreshold = Math.min(edgeThreshold, clamp(explorationMinEdge, 0.005, 0.10));
         }
-        if (row.suggestedEdge() < edgeThreshold) {
+        if (!accuracyAudit && row.suggestedEdge() < edgeThreshold) {
             return "EDGE_BELOW_THRESHOLD";
         }
 
-        if (row.suggestedFairAmericanOdds() != null && row.suggestedFairAmericanOdds() > maxLongshotAmericanOdds) {
+        if (!accuracyAudit
+                && row.suggestedFairAmericanOdds() != null
+                && row.suggestedFairAmericanOdds() > maxLongshotAmericanOdds) {
             return "FAIR_ODDS_TOO_LONG";
         }
 
@@ -3737,11 +3754,15 @@ public class PaperTradingService {
             }
         }
 
-        if (requireRecommendation && !row.recommended() && !explorationEnabled) {
+        if (!accuracyAudit && requireRecommendation && !row.recommended() && !explorationEnabled) {
             return "RECOMMENDATION_REQUIRED";
         }
-        if (row.suggestedSide() == null) {
+        if (!accuracyAudit && row.suggestedSide() == null) {
             return "MISSING_SUGGESTED_SIDE";
+        }
+        if (accuracyAudit
+                && (row.modelProbabilityPlayer1() == null || row.modelProbabilityPlayer2() == null)) {
+            return "MISSING_MODEL_PROBABILITY";
         }
         return null;
     }
@@ -3791,19 +3812,35 @@ public class PaperTradingService {
     // a 3-line wrapper around resolveCandidate.candidate() with no call sites.
 
     private CandidateResolution resolveCandidate(LiveOddsRecommendationDto row, AdaptiveProfile adaptiveProfile) {
-        String side = row.suggestedSide();
-        if (!StringUtils.hasText(side)) {
-            return new CandidateResolution(null, "MISSING_SUGGESTED_SIDE");
-        }
-        boolean pickPlayer1 = side.trim().equalsIgnoreCase(row.player1Name());
-        boolean pickPlayer2 = side.trim().equalsIgnoreCase(row.player2Name());
-
-        if (!pickPlayer1 && !pickPlayer2) {
-            if (row.edgePlayer1() == null || row.edgePlayer2() == null) {
-                return new CandidateResolution(null, "UNRESOLVED_SUGGESTED_SIDE");
+        boolean pickPlayer1;
+        boolean pickPlayer2;
+        if (isAccuracyAuditMode()) {
+            Double player1Probability = row.modelProbabilityPlayer1();
+            Double player2Probability = row.modelProbabilityPlayer2();
+            if (player1Probability == null || player2Probability == null
+                    || !Double.isFinite(player1Probability) || !Double.isFinite(player2Probability)) {
+                return new CandidateResolution(null, "MISSING_MODEL_PROBABILITY");
             }
-            pickPlayer1 = row.edgePlayer1() >= row.edgePlayer2();
+            if (Math.abs(player1Probability - player2Probability) < 1.0e-9) {
+                return new CandidateResolution(null, "MODEL_PROBABILITY_TIE");
+            }
+            pickPlayer1 = player1Probability > player2Probability;
             pickPlayer2 = !pickPlayer1;
+        } else {
+            String side = row.suggestedSide();
+            if (!StringUtils.hasText(side)) {
+                return new CandidateResolution(null, "MISSING_SUGGESTED_SIDE");
+            }
+            pickPlayer1 = side.trim().equalsIgnoreCase(row.player1Name());
+            pickPlayer2 = side.trim().equalsIgnoreCase(row.player2Name());
+
+            if (!pickPlayer1 && !pickPlayer2) {
+                if (row.edgePlayer1() == null || row.edgePlayer2() == null) {
+                    return new CandidateResolution(null, "UNRESOLVED_SUGGESTED_SIDE");
+                }
+                pickPlayer1 = row.edgePlayer1() >= row.edgePlayer2();
+                pickPlayer2 = !pickPlayer1;
+            }
         }
 
         Long sidePlayerId = pickPlayer1 ? row.player1Id() : row.player2Id();
@@ -3899,6 +3936,20 @@ public class PaperTradingService {
         }
         if (accuracyGuardEnabled && signalQuality < clamp(accuracyGuardMinSignalQuality, 0.50, 0.90)) {
             return "SIGNAL_QUALITY_ACCURACY_GUARD";
+        }
+        if (isAccuracyAuditMode()) {
+            if (noVigMarketProbability == null) {
+                return "NO_VIG_MARKET_UNAVAILABLE";
+            }
+            if (noVigMarketProbability < clamp(accuracyAuditMinNoVigMarketProbability, 0.50, 0.80)) {
+                return "MODEL_MARKET_DIRECTION_DISAGREEMENT";
+            }
+            // This is a pre-registered fixed-$1 forecast-accuracy audit, not a
+            // bettor-facing value recommendation. The parallel R5 portfolios
+            // still grade true expected return at 0/1/2/3/5% after the actual
+            // Hard Rock margin. Do not fabricate a positive EV merely to make
+            // the operational sampler place observations.
+            return null;
         }
         double edgeThreshold = row.live()
                 ? clamp(minEdgeLive, 0.005, 0.20)
@@ -4003,6 +4054,7 @@ public class PaperTradingService {
     private boolean isExplorationCandidate(LiveOddsRecommendationDto row,
                                            BetCandidate candidate,
                                            AdaptiveProfile adaptiveProfile) {
+        if (isAccuracyAuditMode()) return true;
         if (!explorationEnabled) return false;
         double productionEdge = row.live()
                 ? clamp(minEdgeLive, 0.005, 0.20)
@@ -4027,6 +4079,15 @@ public class PaperTradingService {
     }
 
     private double scoreCandidate(LiveOddsRecommendationDto row, BetCandidate candidate, AdaptiveProfile adaptiveProfile) {
+        if (isAccuracyAuditMode()) {
+            Double noVig = noVigMarketProbability(row, candidate.sidePlayerId());
+            double agreement = noVig == null ? 0.0 : Math.max(0.0, noVig - 0.50);
+            return 6.0
+                    + ((candidate.modelProbability() - 0.50) * 24.0)
+                    + (agreement * 10.0)
+                    + ((candidate.signalQuality() - 0.62) * 8.0)
+                    + ((valueOrZero(row.ratingAgreement()) - 0.50) * 2.0);
+        }
         double edge = clamp(candidate.edge(), -0.20, 0.30);
         double probabilityEdge = clamp(candidate.modelProbability() - candidate.impliedProbability(), -0.25, 0.35);
         double ciWidth = confidenceWidth(row);
@@ -4068,6 +4129,20 @@ public class PaperTradingService {
         score -= adaptiveProfile.selectionPenalty();
         score -= candidate.triggerSignal().selectionPenalty();
         return score;
+    }
+
+    private boolean isAccuracyAuditMode() {
+        return StringUtils.hasText(paperSelectionMode)
+                && "MODEL_MARKET_AGREEMENT_ACCURACY_AUDIT".equalsIgnoreCase(paperSelectionMode.trim());
+    }
+
+    static boolean isAccuracyAuditStakingOnlyRejection(List<String> reasonCodes) {
+        return reasonCodes != null
+                && !reasonCodes.isEmpty()
+                && reasonCodes.stream().allMatch(reason ->
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD.equals(reason)
+                        || com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_NEGATIVE_KELLY.equals(reason)
+                        || com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_KELLY_CAP.equals(reason));
     }
 
     private Comparator<RankedCandidate> rankComparator() {

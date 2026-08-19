@@ -449,7 +449,7 @@ function MarketWatchCard({
         <div className="flex flex-wrap items-center gap-2">
           <StatusPill live={row.live} />
           {row.recommended ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-800"><Flame className="size-3" />Value</span> : null}
-          {myPick ? <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700"><Star className="size-3" />My pick</span> : null}
+          {myPick ? <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700"><Star className="size-3" />Audit pick · {myPick.sideName}</span> : null}
         </div>
         <div className="flex items-center gap-2"><span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]"><Clock3 className="size-3" />{formatTimeOnly(row.startTimeIso)}</span><button aria-label={watched ? `Remove ${row.eventName} from watchlist` : `Add ${row.eventName} to watchlist`} aria-pressed={watched} className={cn('grid size-8 place-items-center rounded-xl border transition', watched ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-[var(--line)] bg-white text-[var(--ink-muted)] hover:border-amber-300 hover:text-amber-700')} onClick={(event) => { event.stopPropagation(); onToggleWatch() }} type="button"><Star className={cn('size-4', watched && 'fill-current')} /></button></div>
       </div>
@@ -479,7 +479,7 @@ function MarketWatchCard({
 
       <div className="mt-3 grid grid-cols-[1.15fr_0.7fr_0.7fr_0.7fr] items-center gap-2 border-t border-[var(--line)] pt-3">
         <div className="min-w-0">
-          <p className="text-[9px] font-semibold uppercase tracking-[0.15em] text-[var(--ink-muted)]">{row.recommended ? 'Model lean' : 'Model status'}</p>
+          <p className="text-[9px] font-semibold uppercase tracking-[0.15em] text-[var(--ink-muted)]">{row.recommended ? 'Value side' : 'Compared side'}</p>
           <p className="mt-1 truncate text-xs font-bold text-[var(--ink-strong)]">{row.suggestedSide ?? 'Pass / watch'}</p>
         </div>
         <CompactPrice label="Hard Rock" value={formatAmerican(suggestedBook)} detail={`${formatPct(bookMargin)} hold`} />

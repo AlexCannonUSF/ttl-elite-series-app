@@ -6,14 +6,14 @@ schema_version: 1
 
 prediction:
   minimumEdge:
-    default: 0.025
+    default: 0.018
     # Ladder per Prediction Engine Spec §9.3 — consumed once the Phase 06
     # follow-up adds odds-bucket-aware thresholds.
     ladder:
-      "1.50-1.79": 0.035
-      "1.80-2.20": 0.025
-      "2.21-2.80": 0.035
-      ">2.80":     0.060
+      "1.50-1.79": 0.020
+      "1.80-2.20": 0.015
+      "2.21-2.80": 0.020
+      ">2.80":     0.040
 
   shrink:
     raterDisagreement:        0.30

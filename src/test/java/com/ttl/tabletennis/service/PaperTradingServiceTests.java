@@ -53,7 +53,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
+@SpringBootTest(properties = "ttl.paper.selectionMode=BEST_VALUE")
 @Transactional
 class PaperTradingServiceTests {
 
@@ -71,6 +71,113 @@ class PaperTradingServiceTests {
         LiveOddsRecommendationDto row = marketRow(11L, 22L, 0.60, 0.0);
 
         assertNull(PaperTradingService.noVigMarketProbability(row, 11L));
+    }
+
+    @Test
+    void accuracyAuditMayOverrideOnlyEdgeAndNegativeKellyRejections() {
+        assertTrue(PaperTradingService.isAccuracyAuditStakingOnlyRejection(List.of(
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD,
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_NEGATIVE_KELLY
+        )));
+        assertFalse(PaperTradingService.isAccuracyAuditStakingOnlyRejection(List.of(
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_EDGE_BELOW_THRESHOLD,
+                com.ttl.tabletennis.prediction.staking.StakingPolicy.REASON_MAX_OPEN_EXPOSURE
+        )));
+    }
+
+    @Test
+    void accuracyAuditSelectsTheModelWinnerWhenTheValueSideIsTheOpponent() {
+        Player alpha = playerRepository.save(new Player("Audit", "Alpha"));
+        Player beta = playerRepository.save(new Player("Audit", "Beta"));
+        String startIso = isoDateTimeMinutesFromNow(120);
+        LiveOddsRecommendationDto row = new LiveOddsRecommendationDto(
+                "TEST_BOOK",
+                "CONSERVATIVE",
+                "ENSEMBLE",
+                "Audit Alpha vs Audit Beta",
+                "TTL Elite Series",
+                false,
+                startIso,
+                null,
+                "UPCOMING",
+                alpha.getId(),
+                alpha.getName(),
+                beta.getId(),
+                beta.getName(),
+                1.64,
+                2.40,
+                -156,
+                140,
+                0.61,
+                0.42,
+                0.54,
+                0.46,
+                -0.07,
+                0.04,
+                -117,
+                117,
+                beta.getName(),
+                0.04,
+                117,
+                0.48,
+                0.62,
+                false,
+                "WATCH",
+                "The separate value engine prefers Beta, while Alpha remains the model winner.",
+                "Rater Ensemble Delta",
+                0.09,
+                0.90,
+                0.80,
+                0.85,
+                0.90,
+                matchupKey(alpha, beta, startIso),
+                dedupeKey(alpha, beta, startIso, beta.getName())
+        );
+        when(oddsValueEngineService.liveOddsRecommendations(eq("CONSERVATIVE"), eq("ENSEMBLE"), anyInt(), eq(false)))
+                .thenReturn(List.of(row));
+
+        Object previousMode = ReflectionTestUtils.getField(paperTradingService, "paperSelectionMode");
+        Object previousProbabilityFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinModelProbability");
+        Object previousMarketFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyAuditMinNoVigMarketProbability");
+        Object previousRatingFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinRatingAgreement");
+        Object previousSignalFloor = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMinSignalQuality");
+        Object previousAbsoluteGap = ReflectionTestUtils.getField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap");
+        try {
+            ReflectionTestUtils.setField(paperTradingService, "paperSelectionMode", "MODEL_MARKET_AGREEMENT_ACCURACY_AUDIT");
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinModelProbability", 0.52);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyAuditMinNoVigMarketProbability", 0.50);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", 0.50);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinSignalQuality", 0.62);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", 0.25);
+
+            PaperTradingSyncResultDto result = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+
+            assertEquals(1, result.betsPlaced());
+            List<PaperTradeBet> bets = paperTradeBetRepository.findAll();
+            assertEquals(1, bets.size());
+            assertEquals(alpha.getId(), bets.get(0).getSidePlayerId());
+            assertEquals(-156, bets.get(0).getAmericanOdds());
+
+            // A later synchronization must not create a second $1 observation for
+            // the same event after the first position has already settled. This is
+            // event-level deduplication, independent of which side the value engine
+            // happens to display on a later market snapshot.
+            PaperTradeBet settled = bets.get(0);
+            settled.setStatus(PaperTradeBet.STATUS_WON);
+            settled.setDedupeKey(matchupKey(alpha, beta, startIso) + "|" + normalizeToken(alpha.getName()));
+            paperTradeBetRepository.saveAndFlush(settled);
+
+            PaperTradingSyncResultDto duplicateSync = paperTradingService.syncLiveSession("CONSERVATIVE", "ENSEMBLE", 30);
+            assertEquals(0, duplicateSync.betsPlaced());
+            assertEquals(1, paperTradeBetRepository.count());
+        } finally {
+            ReflectionTestUtils.setField(paperTradingService, "paperSelectionMode", previousMode);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinModelProbability", previousProbabilityFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyAuditMinNoVigMarketProbability", previousMarketFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinRatingAgreement", previousRatingFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMinSignalQuality", previousSignalFloor);
+            ReflectionTestUtils.setField(paperTradingService, "accuracyGuardMaxNoVigModelMarketGap", previousAbsoluteGap);
+        }
     }
 
     @Test
